@@ -305,7 +305,7 @@ document.docx (ZIP)
 
 ## 效能測試
 
-Apple Silicon (M1/M2/M3) 測試結果：
+Apple Silicon (M4 Max, 128GB RAM) 測試結果：
 
 ### 讀取效能
 

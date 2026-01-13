@@ -305,7 +305,7 @@ document.docx (ZIP)
 
 ## Performance
 
-Benchmarks on Apple Silicon (M1/M2/M3):
+Benchmarks on Apple Silicon (M4 Max, 128GB RAM):
 
 ### Read Performance
 
