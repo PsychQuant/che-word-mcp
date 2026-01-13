@@ -50,6 +50,60 @@ claude mcp add che-word-mcp /path/to/che-word-mcp/.build/release/CheWordMCP
 }
 ```
 
+## AI Agent 使用方式
+
+### 直接告訴 Agent
+
+最簡單的方式 - 直接告訴 AI agent 使用它：
+
+```
+使用 che-word-mcp 建立一個新的 Word 文件，標題為「報告」，並儲存到 ~/Documents/report.docx
+```
+
+如果 che-word-mcp 已設定，agent 會自動使用 MCP 工具。
+
+### AGENTS.md / CLAUDE.md
+
+如需更一致的結果，將以下內容加入專案或全域指示檔：
+
+```markdown
+## Word 文件操作
+
+使用 `che-word-mcp` 讀取和寫入 Microsoft Word (.docx) 檔案。
+
+核心流程：
+1. `open_document` - 開啟現有的 .docx 檔案
+2. `get_text` / `get_paragraphs` - 讀取文件內容
+3. `insert_paragraph` / `format_text` - 修改內容
+4. `save_document` - 儲存變更
+
+建立新文件：
+1. `create_document` - 建立新文件
+2. 使用 `insert_paragraph`、`insert_table` 等工具添加內容
+3. `save_document` - 儲存為 .docx 檔案
+
+匯出選項：
+- `export_text` - 匯出為純文字
+- `export_markdown` - 匯出為 Markdown
+```
+
+### Claude Code Skill
+
+對於 Claude Code，skill 可提供更豐富的上下文：
+
+```bash
+# 下載 skill
+mkdir -p .claude/skills/che-word-mcp
+curl -o .claude/skills/che-word-mcp/SKILL.md \
+  https://raw.githubusercontent.com/kiki830621/che-word-mcp/main/skills/che-word-mcp/SKILL.md
+```
+
+或從專案複製：
+
+```bash
+cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
+```
+
 ## 可用工具（共 83 個）
 
 ### 文件管理 (6 個)

@@ -50,6 +50,60 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 }
 ```
 
+## Usage with AI Agents
+
+### Just ask the agent
+
+The simplest approach - just tell your agent to use it:
+
+```
+Use che-word-mcp to create a new Word document with title "Report" and save it to ~/Documents/report.docx
+```
+
+The agent will automatically use the MCP tools if che-word-mcp is configured.
+
+### AGENTS.md / CLAUDE.md
+
+For more consistent results, add to your project or global instructions file:
+
+```markdown
+## Word Document Manipulation
+
+Use `che-word-mcp` for reading and writing Microsoft Word (.docx) files.
+
+Core workflow:
+1. `open_document` - Open an existing .docx file
+2. `get_text` / `get_paragraphs` - Read document content
+3. `insert_paragraph` / `format_text` - Modify content
+4. `save_document` - Save changes
+
+Creating new documents:
+1. `create_document` - Create new document
+2. Add content with `insert_paragraph`, `insert_table`, etc.
+3. `save_document` - Save to .docx file
+
+Export options:
+- `export_text` - Export as plain text
+- `export_markdown` - Export as Markdown
+```
+
+### Claude Code Skill
+
+For Claude Code, a skill provides richer context:
+
+```bash
+# Download the skill
+mkdir -p .claude/skills/che-word-mcp
+curl -o .claude/skills/che-word-mcp/SKILL.md \
+  https://raw.githubusercontent.com/kiki830621/che-word-mcp/main/skills/che-word-mcp/SKILL.md
+```
+
+Or copy from the repository:
+
+```bash
+cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
+```
+
 ## Available Tools (83 Total)
 
 ### Document Management (6 tools)
