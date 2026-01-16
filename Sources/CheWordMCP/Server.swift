@@ -3,25 +3,26 @@ import MCP
 import OOXMLSwift
 
 /// Word MCP Server - Swift OOXML Word 文件處理
-actor WordMCPServer {
+class WordMCPServer {
     private let server: Server
     private let transport: StdioTransport
 
     /// 目前開啟的文件 (doc_id -> WordDocument)
     private var openDocuments: [String: WordDocument] = [:]
 
-    init() {
+    init() async {
         self.server = Server(
             name: "che-word-mcp",
-            version: "1.2.0"
+            version: "1.2.1",
+            capabilities: .init(tools: .init())
         )
         self.transport = StdioTransport()
+
+        // 註冊 Tool handlers
+        await registerToolHandlers()
     }
 
     func run() async throws {
-        // 註冊 Tool handlers
-        await registerToolHandlers()
-
         // 啟動 server
         try await server.start(transport: transport)
 
