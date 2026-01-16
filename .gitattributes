@@ -1,0 +1,13 @@
+# Git LFS - Binary files
+*.mcpb filter=lfs diff=lfs merge=lfs -text
+mcpb/server/* filter=lfs diff=lfs merge=lfs -text
+*.png filter=lfs diff=lfs merge=lfs -text
+*.jpg filter=lfs diff=lfs merge=lfs -text
+*.jpeg filter=lfs diff=lfs merge=lfs -text
+
+# Keep line endings consistent
+*.swift text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf

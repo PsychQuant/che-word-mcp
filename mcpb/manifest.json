@@ -1,0 +1,21 @@
+{
+  "id": "che-word-mcp",
+  "name": "Word Document MCP",
+  "version": "1.0.0",
+  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. First Swift OOXML library with 83 tools.",
+  "author": "Che Cheng",
+  "license": "MIT",
+  "homepage": "https://github.com/kiki830621/che-word-mcp",
+  "repository": "https://github.com/kiki830621/che-word-mcp",
+  "entrypoint": {
+    "type": "binary",
+    "path": "server/CheWordMCP"
+  },
+  "platforms": ["darwin-arm64", "darwin-x86_64"],
+  "keywords": ["word", "docx", "ooxml", "document", "swift"],
+  "capabilities": {
+    "tools": true,
+    "resources": false,
+    "prompts": false
+  }
+}

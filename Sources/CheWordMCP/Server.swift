@@ -1,5 +1,6 @@
 import Foundation
 import MCP
+import OOXMLSwift
 
 /// Word MCP Server - Swift OOXML Word 文件處理
 actor WordMCPServer {
