@@ -13,14 +13,33 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 - **Complete OOXML Support**: Full support for tables, styles, images, headers/footers, comments, footnotes, and more
 - **Cross-platform**: Works on macOS (and potentially other platforms supporting Swift)
 
+## Version History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| v1.0.0 | 2026-01-16 | Initial release with 83 tools, refactored to use ooxml-swift |
+
 ## Installation
 
-### Prerequisites
+### Option 1: Download from Release (Recommended)
+
+Download the latest release from [GitHub Releases](https://github.com/kiki830621/che-word-mcp/releases):
+
+- **CheWordMCP** - Universal Binary (arm64 + x86_64)
+- **che-word-mcp.mcpb** - MCPB package
+
+```bash
+# Download and install
+curl -L https://github.com/kiki830621/che-word-mcp/releases/latest/download/CheWordMCP -o ~/bin/CheWordMCP
+chmod +x ~/bin/CheWordMCP
+```
+
+### Option 2: Build from Source
+
+#### Prerequisites
 
 - macOS 13.0+ (Ventura or later)
 - Swift 5.9+
-
-### Build from Source
 
 ```bash
 git clone https://github.com/kiki830621/che-word-mcp.git
