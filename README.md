@@ -9,7 +9,7 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 - **Pure Swift Implementation**: No Node.js, Python, or external runtime required
 - **Direct OOXML Manipulation**: Works directly with XML, no Microsoft Word installation needed
 - **Single Binary**: Just one executable file
-- **83 MCP Tools**: Comprehensive document manipulation capabilities
+- **95 MCP Tools**: Comprehensive document manipulation capabilities
 - **Complete OOXML Support**: Full support for tables, styles, images, headers/footers, comments, footnotes, and more
 - **Cross-platform**: Works on macOS (and potentially other platforms supporting Swift)
 
@@ -17,6 +17,9 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 
 | Version | Date | Changes |
 |---------|------|---------|
+| v1.2.1 | 2026-01-16 | Fix MCP SDK compatibility (actor→class, add capabilities) |
+| v1.2.0 | 2026-01-16 | Add 12 new tools (95 total): search, hyperlinks, bookmarks, footnotes, endnotes, revisions, properties |
+| v1.1.0 | 2026-01-16 | Fix MCPB manifest.json format for Claude Desktop |
 | v1.0.0 | 2026-01-16 | Initial release with 83 tools, refactored to use ooxml-swift |
 
 ## Installation
