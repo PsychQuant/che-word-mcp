@@ -13,7 +13,7 @@ actor WordMCPServer {
     init() {
         self.server = Server(
             name: "che-word-mcp",
-            version: "1.1.0"
+            version: "1.2.0"
         )
         self.transport = StdioTransport()
     }
@@ -2118,6 +2118,240 @@ actor WordMCPServer {
                     ]),
                     "required": .array([.string("doc_id"), .string("tag")])
                 ])
+            ),
+
+            // P9 新增功能：列表查詢、文件屬性、搜尋文字、批次修訂
+
+            // 9.1 insert_text - 在指定位置插入文字
+            Tool(
+                name: "insert_text",
+                description: "在指定段落的指定位置插入文字",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ]),
+                        "paragraph_index": .object([
+                            "type": .string("integer"),
+                            "description": .string("段落索引（從 0 開始）")
+                        ]),
+                        "text": .object([
+                            "type": .string("string"),
+                            "description": .string("要插入的文字")
+                        ]),
+                        "position": .object([
+                            "type": .string("integer"),
+                            "description": .string("字元位置（從 0 開始，不指定則插入到段落末尾）")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("paragraph_index"), .string("text")])
+                ])
+            ),
+
+            // 9.2 get_document_text - get_text 的增強版別名
+            Tool(
+                name: "get_document_text",
+                description: "取得文件的完整純文字內容（get_text 的別名，更直覺的命名）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
+            ),
+
+            // 9.3 search_text - 搜尋文字並返回位置
+            Tool(
+                name: "search_text",
+                description: "在文件中搜尋指定文字，返回所有符合的位置",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ]),
+                        "query": .object([
+                            "type": .string("string"),
+                            "description": .string("要搜尋的文字")
+                        ]),
+                        "case_sensitive": .object([
+                            "type": .string("boolean"),
+                            "description": .string("是否區分大小寫（預設 false）")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("query")])
+                ])
+            ),
+
+            // 9.4 list_hyperlinks - 列出所有超連結
+            Tool(
+                name: "list_hyperlinks",
+                description: "列出文件中所有的超連結",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
+            ),
+
+            // 9.5 list_bookmarks - 列出所有書籤
+            Tool(
+                name: "list_bookmarks",
+                description: "列出文件中所有的書籤",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
+            ),
+
+            // 9.6 list_footnotes - 列出所有腳註
+            Tool(
+                name: "list_footnotes",
+                description: "列出文件中所有的腳註",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
+            ),
+
+            // 9.7 list_endnotes - 列出所有尾註
+            Tool(
+                name: "list_endnotes",
+                description: "列出文件中所有的尾註",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
+            ),
+
+            // 9.8 get_revisions - 取得所有修訂記錄
+            Tool(
+                name: "get_revisions",
+                description: "取得文件中所有的修訂追蹤記錄",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
+            ),
+
+            // 9.9 accept_all_revisions - 接受所有修訂
+            Tool(
+                name: "accept_all_revisions",
+                description: "接受文件中所有的修訂",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
+            ),
+
+            // 9.10 reject_all_revisions - 拒絕所有修訂
+            Tool(
+                name: "reject_all_revisions",
+                description: "拒絕文件中所有的修訂",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
+            ),
+
+            // 9.11 set_document_properties - 設定文件屬性
+            Tool(
+                name: "set_document_properties",
+                description: "設定文件屬性（標題、作者、主旨、關鍵字等）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ]),
+                        "title": .object([
+                            "type": .string("string"),
+                            "description": .string("文件標題")
+                        ]),
+                        "subject": .object([
+                            "type": .string("string"),
+                            "description": .string("主旨")
+                        ]),
+                        "creator": .object([
+                            "type": .string("string"),
+                            "description": .string("作者")
+                        ]),
+                        "keywords": .object([
+                            "type": .string("string"),
+                            "description": .string("關鍵字（以逗號分隔）")
+                        ]),
+                        "description": .object([
+                            "type": .string("string"),
+                            "description": .string("描述/備註")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
+            ),
+
+            // 9.12 get_document_properties - 取得文件屬性
+            Tool(
+                name: "get_document_properties",
+                description: "取得文件屬性（標題、作者、建立日期等）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
             )
         ]
     }
@@ -2342,6 +2576,32 @@ actor WordMCPServer {
             return try await insertContentControl(args: args)
         case "insert_repeating_section":
             return try await insertRepeatingSection(args: args)
+
+        // 9. 新增功能 (P9)
+        case "insert_text":
+            return try await insertText(args: args)
+        case "get_document_text":
+            return try await getDocumentText(args: args)
+        case "search_text":
+            return try await searchText(args: args)
+        case "list_hyperlinks":
+            return try await listHyperlinks(args: args)
+        case "list_bookmarks":
+            return try await listBookmarks(args: args)
+        case "list_footnotes":
+            return try await listFootnotes(args: args)
+        case "list_endnotes":
+            return try await listEndnotes(args: args)
+        case "get_revisions":
+            return try await getRevisions(args: args)
+        case "accept_all_revisions":
+            return try await acceptAllRevisions(args: args)
+        case "reject_all_revisions":
+            return try await rejectAllRevisions(args: args)
+        case "set_document_properties":
+            return try await setDocumentProperties(args: args)
+        case "get_document_properties":
+            return try await getDocumentProperties(args: args)
 
         default:
             throw WordError.unknownTool(name)
@@ -4536,5 +4796,305 @@ actor WordMCPServer {
         openDocuments[docId] = doc
 
         return "Inserted repeating section '\(tag)' with \(items.count) item(s) at index \(index)"
+    }
+
+    // MARK: - P9 新增功能
+
+    // 9.1 insert_text - 在指定位置插入文字
+    private func insertText(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+            throw WordError.missingParameter("paragraph_index")
+        }
+        guard let text = args["text"]?.stringValue else {
+            throw WordError.missingParameter("text")
+        }
+        guard var doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        let position = args["position"]?.intValue
+
+        // 取得段落並插入文字
+        let paragraphs = doc.getParagraphs()
+        guard paragraphIndex >= 0 && paragraphIndex < paragraphs.count else {
+            throw WordError.invalidIndex(paragraphIndex)
+        }
+
+        // 取得現有文字並在指定位置插入
+        let currentText = paragraphs[paragraphIndex].getText()
+        let insertPosition = position ?? currentText.count
+
+        let startIndex = currentText.startIndex
+        let insertIndex = currentText.index(startIndex, offsetBy: min(insertPosition, currentText.count))
+        let newText = String(currentText[..<insertIndex]) + text + String(currentText[insertIndex...])
+
+        try doc.updateParagraph(at: paragraphIndex, text: newText)
+        openDocuments[docId] = doc
+
+        return "Inserted text at paragraph \(paragraphIndex)\(position.map { ", position \($0)" } ?? " (at end)")"
+    }
+
+    // 9.2 get_document_text - get_text 的別名
+    private func getDocumentText(args: [String: Value]) async throws -> String {
+        // 直接呼叫 getText，這是一個更直覺的別名
+        return try await getText(args: args)
+    }
+
+    // 9.3 search_text - 搜尋文字
+    private func searchText(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let query = args["query"]?.stringValue else {
+            throw WordError.missingParameter("query")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        let caseSensitive = args["case_sensitive"]?.boolValue ?? false
+
+        // 搜尋每個段落中的文字
+        let paragraphs = doc.getParagraphs()
+        var results: [(paragraphIndex: Int, startPosition: Int, text: String)] = []
+
+        for (index, para) in paragraphs.enumerated() {
+            let paraText = para.getText()
+            let searchText = caseSensitive ? paraText : paraText.lowercased()
+            let searchQuery = caseSensitive ? query : query.lowercased()
+
+            var searchStart = searchText.startIndex
+            while let range = searchText.range(of: searchQuery, range: searchStart..<searchText.endIndex) {
+                let position = searchText.distance(from: searchText.startIndex, to: range.lowerBound)
+                let matchedText = String(paraText[range])
+                results.append((index, position, matchedText))
+                searchStart = range.upperBound
+            }
+        }
+
+        if results.isEmpty {
+            return "No matches found for '\(query)'"
+        }
+
+        var output = "Found \(results.count) match(es) for '\(query)':\n"
+        for result in results {
+            output += "- Paragraph \(result.paragraphIndex), position \(result.startPosition): \"\(result.text)\"\n"
+        }
+        return output
+    }
+
+    // 9.4 list_hyperlinks - 列出所有超連結
+    private func listHyperlinks(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        let hyperlinks = doc.getHyperlinks()
+        if hyperlinks.isEmpty {
+            return "No hyperlinks in document"
+        }
+
+        var output = "Hyperlinks in document (\(hyperlinks.count)):\n"
+        for (index, link) in hyperlinks.enumerated() {
+            let displayText = link.text
+            let target = link.url ?? link.anchor ?? "(unknown target)"
+            output += "[\(index)] (\(link.type)) \(displayText) -> \(target)\n"
+        }
+        return output
+    }
+
+    // 9.5 list_bookmarks - 列出所有書籤
+    private func listBookmarks(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        let bookmarks = doc.getBookmarks()
+        if bookmarks.isEmpty {
+            return "No bookmarks in document"
+        }
+
+        var output = "Bookmarks in document (\(bookmarks.count)):\n"
+        for (index, bookmark) in bookmarks.enumerated() {
+            output += "[\(index)] \(bookmark.name)\n"
+        }
+        return output
+    }
+
+    // 9.6 list_footnotes - 列出所有腳註
+    private func listFootnotes(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        let footnotes = doc.getFootnotes()
+        if footnotes.isEmpty {
+            return "No footnotes in document"
+        }
+
+        var output = "Footnotes in document (\(footnotes.count)):\n"
+        for footnote in footnotes {
+            let preview = String(footnote.text.prefix(50))
+            output += "[\(footnote.id)] \(preview)...\n"
+        }
+        return output
+    }
+
+    // 9.7 list_endnotes - 列出所有尾註
+    private func listEndnotes(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        let endnotes = doc.getEndnotes()
+        if endnotes.isEmpty {
+            return "No endnotes in document"
+        }
+
+        var output = "Endnotes in document (\(endnotes.count)):\n"
+        for endnote in endnotes {
+            let preview = String(endnote.text.prefix(50))
+            output += "[\(endnote.id)] \(preview)...\n"
+        }
+        return output
+    }
+
+    // 9.8 get_revisions - 取得所有修訂記錄
+    private func getRevisions(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        let revisions = doc.getRevisions()
+        if revisions.isEmpty {
+            return "No revisions in document"
+        }
+
+        var output = "Revisions in document (\(revisions.count)):\n"
+        for revision in revisions {
+            // revision.type 是 String (rawValue)
+            let typeStr = revision.type.uppercased()
+            let author = revision.author
+            output += "[\(revision.id)] \(typeStr) by \(author) at paragraph \(revision.paragraphIndex)\n"
+            if let original = revision.originalText {
+                output += "    Original: \(original.prefix(30))...\n"
+            }
+            if let newText = revision.newText {
+                output += "    New: \(newText.prefix(30))...\n"
+            }
+        }
+        return output
+    }
+
+    // 9.9 accept_all_revisions - 接受所有修訂
+    private func acceptAllRevisions(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard var doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        let count = doc.getRevisions().count
+        doc.acceptAllRevisions()
+        openDocuments[docId] = doc
+
+        return "Accepted \(count) revision(s)"
+    }
+
+    // 9.10 reject_all_revisions - 拒絕所有修訂
+    private func rejectAllRevisions(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard var doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        let count = doc.getRevisions().count
+        doc.rejectAllRevisions()
+        openDocuments[docId] = doc
+
+        return "Rejected \(count) revision(s)"
+    }
+
+    // 9.11 set_document_properties - 設定文件屬性
+    private func setDocumentProperties(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard var doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        var props = doc.properties
+
+        if let title = args["title"]?.stringValue {
+            props.title = title
+        }
+        if let subject = args["subject"]?.stringValue {
+            props.subject = subject
+        }
+        if let creator = args["creator"]?.stringValue {
+            props.creator = creator
+        }
+        if let keywords = args["keywords"]?.stringValue {
+            props.keywords = keywords
+        }
+        if let description = args["description"]?.stringValue {
+            props.description = description
+        }
+
+        doc.properties = props
+        openDocuments[docId] = doc
+
+        return "Updated document properties"
+    }
+
+    // 9.12 get_document_properties - 取得文件屬性
+    private func getDocumentProperties(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        let props = doc.properties
+
+        var output = "Document Properties:\n"
+        if let title = props.title { output += "- Title: \(title)\n" }
+        if let subject = props.subject { output += "- Subject: \(subject)\n" }
+        if let creator = props.creator { output += "- Creator: \(creator)\n" }
+        if let keywords = props.keywords { output += "- Keywords: \(keywords)\n" }
+        if let description = props.description { output += "- Description: \(description)\n" }
+        if let lastModifiedBy = props.lastModifiedBy { output += "- Last Modified By: \(lastModifiedBy)\n" }
+        if let revision = props.revision { output += "- Revision: \(revision)\n" }
+        if let created = props.created { output += "- Created: \(created)\n" }
+        if let modified = props.modified { output += "- Modified: \(modified)\n" }
+
+        if output == "Document Properties:\n" {
+            return "No document properties set"
+        }
+
+        return output
     }
 }

@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-01-16
+
+### Added
+- New tools for enhanced document manipulation (total 95 tools):
+  - `insert_text` - Insert text at specific position in paragraph
+  - `get_document_text` - Alias for `get_text` with more intuitive naming
+  - `search_text` - Search text and return all matching positions
+  - `list_hyperlinks` - List all hyperlinks in document
+  - `list_bookmarks` - List all bookmarks in document
+  - `list_footnotes` - List all footnotes in document
+  - `list_endnotes` - List all endnotes in document
+  - `get_revisions` - Get all revision tracking records
+  - `accept_all_revisions` - Accept all tracked changes at once
+  - `reject_all_revisions` - Reject all tracked changes at once
+  - `set_document_properties` - Set document metadata (title, author, etc.)
+  - `get_document_properties` - Get document metadata
+
 ## [1.1.0] - 2026-01-16
 
 ### Fixed
