@@ -13,7 +13,7 @@ actor WordMCPServer {
     init() {
         self.server = Server(
             name: "che-word-mcp",
-            version: "1.0.0"
+            version: "1.1.0"
         )
         self.transport = StdioTransport()
     }

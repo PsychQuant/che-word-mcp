@@ -28,5 +28,6 @@ xcuserdata/
 *.md
 !README.md
 !README_zh-TW.md
+!CHANGELOG.md
 !docs/**/*.md
 !skills/**/*.md
