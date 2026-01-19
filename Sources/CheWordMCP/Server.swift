@@ -13,7 +13,7 @@ class WordMCPServer {
     init() async {
         self.server = Server(
             name: "che-word-mcp",
-            version: "1.2.1",
+            version: "1.4.0",
             capabilities: .init(tools: .init())
         )
         self.transport = StdioTransport()
@@ -1017,6 +1017,44 @@ class WordMCPServer {
                 ])
             ),
             Tool(
+                name: "insert_image_from_path",
+                description: "從檔案路徑插入圖片（推薦用於大型圖片，避免 base64 傳輸）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ]),
+                        "path": .object([
+                            "type": .string("string"),
+                            "description": .string("圖片檔案的完整路徑")
+                        ]),
+                        "width": .object([
+                            "type": .string("integer"),
+                            "description": .string("圖片寬度（像素）")
+                        ]),
+                        "height": .object([
+                            "type": .string("integer"),
+                            "description": .string("圖片高度（像素）")
+                        ]),
+                        "index": .object([
+                            "type": .string("integer"),
+                            "description": .string("插入位置（段落索引，可選）")
+                        ]),
+                        "name": .object([
+                            "type": .string("string"),
+                            "description": .string("圖片名稱（可選，用於替代文字）")
+                        ]),
+                        "description": .object([
+                            "type": .string("string"),
+                            "description": .string("圖片描述（可選，用於無障礙）")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("path"), .string("width"), .string("height")])
+                ])
+            ),
+            Tool(
                 name: "update_image",
                 description: "更新圖片尺寸",
                 inputSchema: .object([
@@ -1072,6 +1110,46 @@ class WordMCPServer {
                         ])
                     ]),
                     "required": .array([.string("doc_id")])
+                ])
+            ),
+            Tool(
+                name: "export_image",
+                description: "匯出單一圖片到檔案",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ]),
+                        "image_id": .object([
+                            "type": .string("string"),
+                            "description": .string("圖片 ID（從 list_images 取得）")
+                        ]),
+                        "save_path": .object([
+                            "type": .string("string"),
+                            "description": .string("完整存檔路徑（含檔名，如 /tmp/output.png）")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("image_id"), .string("save_path")])
+                ])
+            ),
+            Tool(
+                name: "export_all_images",
+                description: "匯出所有圖片到目錄",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ]),
+                        "output_dir": .object([
+                            "type": .string("string"),
+                            "description": .string("輸出目錄路徑（自動建立）")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("output_dir")])
                 ])
             ),
             Tool(
@@ -2339,7 +2417,79 @@ class WordMCPServer {
                 ])
             ),
 
-            // 9.12 get_document_properties - 取得文件屬性
+            // 9.12 get_paragraph_runs - 取得段落的 runs 及其格式
+            Tool(
+                name: "get_paragraph_runs",
+                description: "取得指定段落的所有 runs（文字片段）及其格式資訊，包含顏色、粗體、斜體等",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ]),
+                        "paragraph_index": .object([
+                            "type": .string("integer"),
+                            "description": .string("段落索引（從 0 開始）")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("paragraph_index")])
+                ])
+            ),
+
+            // 9.13 get_text_with_formatting - 取得帶格式標記的文字
+            Tool(
+                name: "get_text_with_formatting",
+                description: "取得文件文字，並以 Markdown 標記格式（粗體用 **、斜體用 *、紅色用 {{color:red}}）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ]),
+                        "paragraph_index": .object([
+                            "type": .string("integer"),
+                            "description": .string("指定段落索引（可選，不指定則取得全部）")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
+            ),
+
+            // 9.14 search_by_formatting - 搜尋特定格式的文字
+            Tool(
+                name: "search_by_formatting",
+                description: "搜尋具有特定格式的文字（如紅色、粗體）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ]),
+                        "color": .object([
+                            "type": .string("string"),
+                            "description": .string("顏色 RGB hex（如 FF0000 代表紅色）")
+                        ]),
+                        "bold": .object([
+                            "type": .string("boolean"),
+                            "description": .string("是否為粗體")
+                        ]),
+                        "italic": .object([
+                            "type": .string("boolean"),
+                            "description": .string("是否為斜體")
+                        ]),
+                        "highlight": .object([
+                            "type": .string("string"),
+                            "description": .string("螢光標記顏色（yellow, green, cyan 等）")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
+            ),
+
+            // 9.15 get_document_properties - 取得文件屬性
             Tool(
                 name: "get_document_properties",
                 description: "取得文件屬性（標題、作者、建立日期等）",
@@ -2471,12 +2621,18 @@ class WordMCPServer {
         // 圖片
         case "insert_image":
             return try await insertImage(args: args)
+        case "insert_image_from_path":
+            return try await insertImageFromPath(args: args)
         case "update_image":
             return try await updateImage(args: args)
         case "delete_image":
             return try await deleteImage(args: args)
         case "list_images":
             return try await listImages(args: args)
+        case "export_image":
+            return try await exportImage(args: args)
+        case "export_all_images":
+            return try await exportAllImages(args: args)
         case "set_image_style":
             return try await setImageStyle(args: args)
 
@@ -2603,6 +2759,12 @@ class WordMCPServer {
             return try await setDocumentProperties(args: args)
         case "get_document_properties":
             return try await getDocumentProperties(args: args)
+        case "get_paragraph_runs":
+            return try await getParagraphRuns(args: args)
+        case "get_text_with_formatting":
+            return try await getTextWithFormatting(args: args)
+        case "search_by_formatting":
+            return try await searchByFormatting(args: args)
 
         default:
             throw WordError.unknownTool(name)
@@ -3604,6 +3766,48 @@ class WordMCPServer {
         return "Inserted image '\(fileName)' with id '\(imageId)' (\(width)x\(height) pixels)"
     }
 
+    private func insertImageFromPath(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let path = args["path"]?.stringValue else {
+            throw WordError.missingParameter("path")
+        }
+        guard let width = args["width"]?.intValue else {
+            throw WordError.missingParameter("width")
+        }
+        guard let height = args["height"]?.intValue else {
+            throw WordError.missingParameter("height")
+        }
+        guard var doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        // 檢查檔案是否存在
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: path) else {
+            throw WordError.fileNotFound(path)
+        }
+
+        let index = args["index"]?.intValue
+        let name = args["name"]?.stringValue ?? "Picture"
+        let description = args["description"]?.stringValue ?? ""
+
+        let imageId = try doc.insertImage(
+            path: path,
+            widthPx: width,
+            heightPx: height,
+            at: index,
+            name: name,
+            description: description
+        )
+
+        openDocuments[docId] = doc
+
+        let url = URL(fileURLWithPath: path)
+        return "Inserted image '\(url.lastPathComponent)' from path with id '\(imageId)' (\(width)x\(height) pixels)"
+    }
+
     private func updateImage(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -3662,6 +3866,70 @@ class WordMCPServer {
         var result = "Found \(images.count) image(s):\n"
         for img in images {
             result += "- id: \(img.id), file: \(img.fileName), size: \(img.widthPx)x\(img.heightPx)px\n"
+        }
+
+        return result
+    }
+
+    // MARK: - 9.17 export_image - 匯出單一圖片
+    private func exportImage(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let imageId = args["image_id"]?.stringValue else {
+            throw WordError.missingParameter("image_id")
+        }
+        guard let savePath = args["save_path"]?.stringValue else {
+            throw WordError.missingParameter("save_path")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        // 找到對應的圖片
+        guard let imageRef = doc.images.first(where: { $0.id == imageId }) else {
+            throw WordError.parseError("找不到圖片 ID: \(imageId)")
+        }
+
+        // 確保目錄存在
+        let url = URL(fileURLWithPath: savePath)
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        // 寫入檔案
+        try imageRef.data.write(to: url)
+
+        let sizeKB = imageRef.data.count / 1024
+        return "Saved image \(imageId) to \(savePath) (\(sizeKB)KB)"
+    }
+
+    // MARK: - 9.18 export_all_images - 匯出所有圖片
+    private func exportAllImages(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let outputDir = args["output_dir"]?.stringValue else {
+            throw WordError.missingParameter("output_dir")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        let images = doc.images
+        if images.isEmpty {
+            return "No images to export"
+        }
+
+        // 建立輸出目錄
+        let dirURL = URL(fileURLWithPath: outputDir)
+        try FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true)
+
+        var result = "Exported \(images.count) image(s) to \(outputDir):\n"
+        for imageRef in images {
+            let fileURL = dirURL.appendingPathComponent(imageRef.fileName)
+            try imageRef.data.write(to: fileURL)
+            let sizeKB = imageRef.data.count / 1024
+            result += "  - \(imageRef.fileName) (\(sizeKB)KB)\n"
         }
 
         return result
@@ -5094,6 +5362,232 @@ class WordMCPServer {
 
         if output == "Document Properties:\n" {
             return "No document properties set"
+        }
+
+        return output
+    }
+
+    // 9.13 get_paragraph_runs - 取得段落的 runs 及格式
+    private func getParagraphRuns(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+            throw WordError.missingParameter("paragraph_index")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        let paragraphs = doc.getParagraphs()
+        guard paragraphIndex >= 0 && paragraphIndex < paragraphs.count else {
+            throw WordError.invalidIndex(paragraphIndex)
+        }
+
+        let para = paragraphs[paragraphIndex]
+        var output = "Paragraph [\(paragraphIndex)] Runs:\n"
+
+        for (runIndex, run) in para.runs.enumerated() {
+            output += "  Run [\(runIndex)]:\n"
+            output += "    Text: \"\(run.text)\"\n"
+
+            // 格式資訊
+            let props = run.properties
+            var formatParts: [String] = []
+
+            if props.bold { formatParts.append("bold") }
+            if props.italic { formatParts.append("italic") }
+            if props.strikethrough { formatParts.append("strikethrough") }
+            if let underline = props.underline { formatParts.append("underline:\(underline.rawValue)") }
+            if let color = props.color { formatParts.append("color:#\(color)") }
+            if let highlight = props.highlight { formatParts.append("highlight:\(highlight.rawValue)") }
+            if let fontSize = props.fontSize { formatParts.append("size:\(fontSize / 2)pt") }
+            if let fontName = props.fontName { formatParts.append("font:\(fontName)") }
+            if let verticalAlign = props.verticalAlign { formatParts.append("vertAlign:\(verticalAlign.rawValue)") }
+
+            if formatParts.isEmpty {
+                output += "    Format: (none)\n"
+            } else {
+                output += "    Format: \(formatParts.joined(separator: ", "))\n"
+            }
+        }
+
+        // 也顯示超連結
+        if !para.hyperlinks.isEmpty {
+            output += "  Hyperlinks:\n"
+            for hyperlink in para.hyperlinks {
+                output += "    - \"\(hyperlink.text)\" -> \(hyperlink.url ?? hyperlink.anchor ?? "unknown")\n"
+            }
+        }
+
+        return output
+    }
+
+    // 9.14 get_text_with_formatting - 取得帶格式標記的文字
+    private func getTextWithFormatting(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        let paragraphs = doc.getParagraphs()
+
+        // 如果指定了段落索引，只處理該段落
+        if let paragraphIndex = args["paragraph_index"]?.intValue {
+            guard paragraphIndex >= 0 && paragraphIndex < paragraphs.count else {
+                throw WordError.invalidIndex(paragraphIndex)
+            }
+            return formatParagraphWithMarkup(paragraphs[paragraphIndex], index: paragraphIndex)
+        }
+
+        // 處理所有段落
+        var output = ""
+        for (index, para) in paragraphs.enumerated() {
+            output += formatParagraphWithMarkup(para, index: index) + "\n"
+        }
+
+        return output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // Helper: 將段落轉換為帶格式標記的文字
+    private func formatParagraphWithMarkup(_ para: Paragraph, index: Int) -> String {
+        var result = "[\(index)] "
+
+        for run in para.runs {
+            var text = run.text
+            let props = run.properties
+
+            // 加入格式標記
+            if props.bold {
+                text = "**\(text)**"
+            }
+            if props.italic {
+                text = "*\(text)*"
+            }
+            if props.strikethrough {
+                text = "~~\(text)~~"
+            }
+            if let color = props.color {
+                // 常見顏色轉換為名稱
+                let colorName = colorHexToName(color)
+                text = "{{color:\(colorName)}}\(text){{/color}}"
+            }
+            if let highlight = props.highlight {
+                text = "{{highlight:\(highlight.rawValue)}}\(text){{/highlight}}"
+            }
+            if let underline = props.underline {
+                text = "{{underline:\(underline.rawValue)}}\(text){{/underline}}"
+            }
+
+            result += text
+        }
+
+        // 加入超連結
+        for hyperlink in para.hyperlinks {
+            result += " [\(hyperlink.text)](\(hyperlink.url ?? "#\(hyperlink.anchor ?? "")"))"
+        }
+
+        return result
+    }
+
+    // Helper: 顏色 hex 轉名稱
+    private func colorHexToName(_ hex: String) -> String {
+        let upperHex = hex.uppercased()
+        switch upperHex {
+        case "FF0000": return "red"
+        case "00FF00": return "green"
+        case "0000FF": return "blue"
+        case "FFFF00": return "yellow"
+        case "00FFFF": return "cyan"
+        case "FF00FF": return "magenta"
+        case "000000": return "black"
+        case "FFFFFF": return "white"
+        case "808080": return "gray"
+        case "FFA500": return "orange"
+        case "800080": return "purple"
+        default: return "#\(hex)"
+        }
+    }
+
+    // 9.15 search_by_formatting - 搜尋特定格式的文字
+    private func searchByFormatting(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        // 取得搜尋條件
+        let searchColor = args["color"]?.stringValue?.uppercased()
+        let searchBold = args["bold"]?.boolValue
+        let searchItalic = args["italic"]?.boolValue
+        let searchHighlight = args["highlight"]?.stringValue
+
+        let paragraphs = doc.getParagraphs()
+        var results: [(paragraphIndex: Int, runIndex: Int, text: String, format: String)] = []
+
+        for (paraIndex, para) in paragraphs.enumerated() {
+            for (runIndex, run) in para.runs.enumerated() {
+                let props = run.properties
+                var matches = true
+
+                // 檢查顏色
+                if let color = searchColor {
+                    if props.color?.uppercased() != color {
+                        matches = false
+                    }
+                }
+
+                // 檢查粗體
+                if let bold = searchBold {
+                    if props.bold != bold {
+                        matches = false
+                    }
+                }
+
+                // 檢查斜體
+                if let italic = searchItalic {
+                    if props.italic != italic {
+                        matches = false
+                    }
+                }
+
+                // 檢查螢光標記
+                if let highlight = searchHighlight {
+                    if props.highlight?.rawValue != highlight {
+                        matches = false
+                    }
+                }
+
+                // 如果符合且文字不為空，加入結果
+                if matches && !run.text.isEmpty {
+                    var formatParts: [String] = []
+                    if props.bold { formatParts.append("bold") }
+                    if props.italic { formatParts.append("italic") }
+                    if let color = props.color { formatParts.append("color:#\(color)") }
+                    if let highlight = props.highlight { formatParts.append("highlight:\(highlight.rawValue)") }
+
+                    results.append((
+                        paragraphIndex: paraIndex,
+                        runIndex: runIndex,
+                        text: run.text,
+                        format: formatParts.isEmpty ? "(none)" : formatParts.joined(separator: ", ")
+                    ))
+                }
+            }
+        }
+
+        if results.isEmpty {
+            return "No text found matching the specified formatting"
+        }
+
+        var output = "Found \(results.count) match(es):\n"
+        for result in results {
+            output += "  [Para \(result.paragraphIndex), Run \(result.runIndex)]: \"\(result.text)\"\n"
+            output += "    Format: \(result.format)\n"
         }
 
         return output

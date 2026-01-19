@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-01-19
+
+### Added
+- `insert_image_from_path` - Insert image from file path (recommended for large images, avoids base64 transfer overhead)
+
+### Changed
+- Updated tool count from 100 to 101
+
+### Fixed
+- Fixed crash when inserting large images via base64 - now users can use file path instead
+
+## [1.4.0] - 2026-01-18
+
+### Added
+- New image export tools (total 100 tools):
+  - `export_image` - Export a single image to file by image ID
+  - `export_all_images` - Export all images to a directory
+
+### Changed
+- Updated tool count from 98 to 100
+
+## [1.3.0] - 2026-01-18
+
+### Added
+- New formatting inspection tools (total 98 tools):
+  - `get_paragraph_runs` - Get all runs (text fragments) in a paragraph with formatting info (color, bold, italic, font size, etc.)
+  - `get_text_with_formatting` - Get document text with Markdown-style format markers (**bold**, *italic*, {{color:red}}, etc.)
+  - `search_by_formatting` - Search for text with specific formatting (e.g., find all red text, all bold text)
+- Added `mcpb/PRIVACY.md` - Privacy policy documentation
+
+### Changed
+- Updated tool count from 95 to 98
+
 ## [1.2.1] - 2026-01-16
 
 ### Fixed

@@ -6,7 +6,7 @@ let package = Package(
     platforms: [.macOS(.v13)],
     dependencies: [
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.10.2"),
-        .package(url: "https://github.com/kiki830621/ooxml-swift.git", from: "0.1.3"),
+        .package(url: "https://github.com/kiki830621/ooxml-swift.git", from: "0.1.5"),
     ],
     targets: [
         .executableTarget(
