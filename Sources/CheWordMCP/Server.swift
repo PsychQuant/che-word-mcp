@@ -13,7 +13,7 @@ class WordMCPServer {
     init() async {
         self.server = Server(
             name: "che-word-mcp",
-            version: "1.4.0",
+            version: "1.6.0",
             capabilities: .init(tools: .init())
         )
         self.transport = StdioTransport()
@@ -2503,6 +2503,90 @@ class WordMCPServer {
                     ]),
                     "required": .array([.string("doc_id")])
                 ])
+            ),
+
+            // 9.16 search_text_with_formatting - 搜尋文字並顯示格式
+            Tool(
+                name: "search_text_with_formatting",
+                description: "搜尋文字並返回匹配位置及其格式標記（粗體、斜體、顏色等）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ]),
+                        "query": .object([
+                            "type": .string("string"),
+                            "description": .string("要搜尋的文字")
+                        ]),
+                        "case_sensitive": .object([
+                            "type": .string("boolean"),
+                            "description": .string("是否區分大小寫（預設 false）")
+                        ]),
+                        "context_chars": .object([
+                            "type": .string("integer"),
+                            "description": .string("顯示匹配位置前後多少字元（預設 20）")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("query")])
+                ])
+            ),
+
+            // 9.17 list_all_formatted_text - 列出特定格式的所有文字
+            Tool(
+                name: "list_all_formatted_text",
+                description: "列出所有具有特定格式的文字（如所有斜體、所有粗體、特定顏色文字）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ]),
+                        "format_type": .object([
+                            "type": .string("string"),
+                            "description": .string("格式類型：italic, bold, underline, color, highlight, strikethrough")
+                        ]),
+                        "color_filter": .object([
+                            "type": .string("string"),
+                            "description": .string("當 format_type=color 時，可指定顏色（如 FF0000 代表紅色）")
+                        ]),
+                        "paragraph_start": .object([
+                            "type": .string("integer"),
+                            "description": .string("起始段落索引（可選）")
+                        ]),
+                        "paragraph_end": .object([
+                            "type": .string("integer"),
+                            "description": .string("結束段落索引（可選）")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("format_type")])
+                ])
+            ),
+
+            // 9.18 get_word_count_by_section - 按區段統計字數
+            Tool(
+                name: "get_word_count_by_section",
+                description: "按區段統計字數，可自訂分隔標記（如 References）並排除特定區段",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ]),
+                        "section_markers": .object([
+                            "type": .string("array"),
+                            "description": .string("區段分隔標記文字陣列（如 [\"Abstract\", \"Introduction\", \"References\"]）")
+                        ]),
+                        "exclude_sections": .object([
+                            "type": .string("array"),
+                            "description": .string("不計入總字數的區段名稱（如 [\"References\", \"Appendix\"]）")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
             )
         ]
     }
@@ -2765,6 +2849,12 @@ class WordMCPServer {
             return try await getTextWithFormatting(args: args)
         case "search_by_formatting":
             return try await searchByFormatting(args: args)
+        case "search_text_with_formatting":
+            return try await searchTextWithFormatting(args: args)
+        case "list_all_formatted_text":
+            return try await listAllFormattedText(args: args)
+        case "get_word_count_by_section":
+            return try await getWordCountBySection(args: args)
 
         default:
             throw WordError.unknownTool(name)
@@ -5591,5 +5681,324 @@ class WordMCPServer {
         }
 
         return output
+    }
+
+    // 9.16 search_text_with_formatting - 搜尋文字並顯示格式
+    private func searchTextWithFormatting(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let query = args["query"]?.stringValue else {
+            throw WordError.missingParameter("query")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        let caseSensitive = args["case_sensitive"]?.boolValue ?? false
+        let contextChars = args["context_chars"]?.intValue ?? 20
+
+        let paragraphs = doc.getParagraphs()
+        var results: [(paraIndex: Int, position: Int, matchedText: String, context: String, formats: [String])] = []
+
+        for (paraIndex, para) in paragraphs.enumerated() {
+            let paraText = para.getText()
+            let searchText = caseSensitive ? paraText : paraText.lowercased()
+            let searchQuery = caseSensitive ? query : query.lowercased()
+
+            var searchStart = searchText.startIndex
+            while let range = searchText.range(of: searchQuery, range: searchStart..<searchText.endIndex) {
+                let position = searchText.distance(from: searchText.startIndex, to: range.lowerBound)
+                let matchedText = String(paraText[range])
+
+                // 取得上下文
+                let contextStart = max(0, position - contextChars)
+                let contextEnd = min(paraText.count, position + matchedText.count + contextChars)
+                let startIndex = paraText.index(paraText.startIndex, offsetBy: contextStart)
+                let endIndex = paraText.index(paraText.startIndex, offsetBy: contextEnd)
+                var context = String(paraText[startIndex..<endIndex])
+                if contextStart > 0 { context = "..." + context }
+                if contextEnd < paraText.count { context = context + "..." }
+
+                // 找出該位置的格式
+                var formats: [String] = []
+                var currentPos = 0
+                for run in para.runs {
+                    let runEnd = currentPos + run.text.count
+                    // 檢查這個 run 是否包含搜尋結果
+                    if currentPos <= position && position < runEnd {
+                        let props = run.properties
+                        if props.bold { formats.append("bold") }
+                        if props.italic { formats.append("italic") }
+                        if props.strikethrough { formats.append("strikethrough") }
+                        if let color = props.color {
+                            formats.append("color:\(colorHexToName(color))")
+                        }
+                        if let highlight = props.highlight {
+                            formats.append("highlight:\(highlight.rawValue)")
+                        }
+                        if let underline = props.underline {
+                            formats.append("underline:\(underline.rawValue)")
+                        }
+                        break
+                    }
+                    currentPos = runEnd
+                }
+
+                results.append((paraIndex, position, matchedText, context, formats))
+                searchStart = range.upperBound
+            }
+        }
+
+        if results.isEmpty {
+            return "No matches found for '\(query)'"
+        }
+
+        var output = "Found \(results.count) match(es) for '\(query)':\n"
+        for result in results {
+            output += "[Para \(result.paraIndex)] \(result.context)\n"
+            if result.formats.isEmpty {
+                output += "  Format: (none)\n"
+            } else {
+                output += "  Format: \(result.formats.joined(separator: ", "))\n"
+            }
+        }
+        return output
+    }
+
+    // 9.17 list_all_formatted_text - 列出特定格式的所有文字
+    private func listAllFormattedText(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let formatType = args["format_type"]?.stringValue?.lowercased() else {
+            throw WordError.missingParameter("format_type")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        let colorFilter = args["color_filter"]?.stringValue?.uppercased()
+        let paragraphStart = args["paragraph_start"]?.intValue ?? 0
+        let paragraphEnd = args["paragraph_end"]?.intValue
+
+        let paragraphs = doc.getParagraphs()
+        let endIndex = paragraphEnd ?? paragraphs.count - 1
+
+        guard paragraphStart >= 0 && paragraphStart < paragraphs.count else {
+            throw WordError.invalidIndex(paragraphStart)
+        }
+        guard endIndex >= paragraphStart && endIndex < paragraphs.count else {
+            throw WordError.invalidIndex(endIndex)
+        }
+
+        var results: [(paraIndex: Int, text: String)] = []
+
+        for paraIndex in paragraphStart...endIndex {
+            let para = paragraphs[paraIndex]
+            for run in para.runs {
+                let props = run.properties
+                var matches = false
+
+                switch formatType {
+                case "italic":
+                    matches = props.italic
+                case "bold":
+                    matches = props.bold
+                case "underline":
+                    matches = props.underline != nil
+                case "strikethrough":
+                    matches = props.strikethrough
+                case "highlight":
+                    matches = props.highlight != nil
+                case "color":
+                    if let colorFilter = colorFilter {
+                        matches = props.color?.uppercased() == colorFilter
+                    } else {
+                        matches = props.color != nil
+                    }
+                default:
+                    break
+                }
+
+                if matches && !run.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    results.append((paraIndex, run.text))
+                }
+            }
+        }
+
+        if results.isEmpty {
+            let rangeInfo = paragraphEnd != nil ? " in paragraphs \(paragraphStart)-\(endIndex)" : ""
+            return "No \(formatType) text found\(rangeInfo)"
+        }
+
+        var output = "Found \(results.count) \(formatType) text segment(s):\n"
+        for result in results {
+            // 截斷過長的文字
+            let displayText = result.text.count > 60 ? String(result.text.prefix(57)) + "..." : result.text
+            output += "[Para \(result.paraIndex)] \"\(displayText)\"\n"
+        }
+        return output
+    }
+
+    // 9.18 get_word_count_by_section - 按區段統計字數
+    private func getWordCountBySection(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        // 解析區段標記
+        var sectionMarkers: [String] = []
+        if let markersValue = args["section_markers"] {
+            if let markersArray = markersValue.arrayValue {
+                sectionMarkers = markersArray.compactMap { $0.stringValue }
+            }
+        }
+
+        // 解析排除區段
+        var excludeSections: Set<String> = []
+        if let excludeValue = args["exclude_sections"] {
+            if let excludeArray = excludeValue.arrayValue {
+                excludeSections = Set(excludeArray.compactMap { $0.stringValue })
+            }
+        }
+
+        let paragraphs = doc.getParagraphs()
+
+        // 如果沒有指定區段標記，直接計算總字數
+        if sectionMarkers.isEmpty {
+            var totalWords = 0
+            var totalChars = 0
+            for para in paragraphs {
+                let text = para.getText()
+                totalWords += countWords(text)
+                totalChars += text.filter { !$0.isWhitespace }.count
+            }
+            return """
+            Word Count Summary:
+              Total words: \(formatNumber(totalWords))
+              Total characters (no spaces): \(formatNumber(totalChars))
+              Total paragraphs: \(paragraphs.count)
+            """
+        }
+
+        // 找出每個區段的起始段落
+        var sectionStarts: [(name: String, startIndex: Int)] = []
+        for (index, para) in paragraphs.enumerated() {
+            let paraText = para.getText().trimmingCharacters(in: .whitespacesAndNewlines)
+            for marker in sectionMarkers {
+                // 檢查段落是否以標記開頭（支援各種格式如 "1. Introduction", "Introduction:", "INTRODUCTION" 等）
+                let lowerParaText = paraText.lowercased()
+                let lowerMarker = marker.lowercased()
+                if lowerParaText == lowerMarker ||
+                   lowerParaText.hasPrefix(lowerMarker + ":") ||
+                   lowerParaText.hasPrefix(lowerMarker + " ") ||
+                   lowerParaText.hasSuffix(" " + lowerMarker) ||
+                   lowerParaText.contains(". " + lowerMarker) {
+                    sectionStarts.append((marker, index))
+                    break
+                }
+            }
+        }
+
+        // 如果沒有找到任何區段，返回總字數
+        if sectionStarts.isEmpty {
+            var totalWords = 0
+            for para in paragraphs {
+                totalWords += countWords(para.getText())
+            }
+            return """
+            No section markers found in document.
+            Total words: \(formatNumber(totalWords))
+
+            Tip: Section markers should match paragraph text (e.g., "Abstract", "Introduction", "References")
+            """
+        }
+
+        // 計算每個區段的字數
+        var sectionCounts: [(name: String, words: Int, excluded: Bool)] = []
+        var totalWords = 0
+        var excludedWords = 0
+
+        // 處理第一個區段之前的內容
+        if sectionStarts[0].startIndex > 0 {
+            var preWords = 0
+            for i in 0..<sectionStarts[0].startIndex {
+                preWords += countWords(paragraphs[i].getText())
+            }
+            if preWords > 0 {
+                sectionCounts.append(("(Before first section)", preWords, false))
+                totalWords += preWords
+            }
+        }
+
+        // 計算各區段
+        for (i, section) in sectionStarts.enumerated() {
+            let startIndex = section.startIndex
+            let endIndex = (i + 1 < sectionStarts.count) ? sectionStarts[i + 1].startIndex : paragraphs.count
+
+            var sectionWords = 0
+            for j in startIndex..<endIndex {
+                sectionWords += countWords(paragraphs[j].getText())
+            }
+
+            let isExcluded = excludeSections.contains(section.name)
+            sectionCounts.append((section.name, sectionWords, isExcluded))
+            totalWords += sectionWords
+            if isExcluded {
+                excludedWords += sectionWords
+            }
+        }
+
+        // 生成輸出
+        var output = "Word Count by Section:\n"
+        for section in sectionCounts {
+            let excludeTag = section.excluded ? " (excluded)" : ""
+            output += "  \(section.name): \(formatNumber(section.words)) words\(excludeTag)\n"
+        }
+        output += "  ─────────────────────────────\n"
+        if excludedWords > 0 {
+            output += "  Main Text: \(formatNumber(totalWords - excludedWords)) words\n"
+        }
+        output += "  Total: \(formatNumber(totalWords)) words\n"
+
+        return output
+    }
+
+    // Helper: 計算字數（支援中英文混合）
+    private func countWords(_ text: String) -> Int {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return 0 }
+
+        // 分離中文和英文
+        var englishWords = 0
+        var chineseChars = 0
+
+        // 用正規表達式分割
+        let englishPattern = try? NSRegularExpression(pattern: "[a-zA-Z]+", options: [])
+        let chinesePattern = try? NSRegularExpression(pattern: "[\\u4e00-\\u9fff]", options: [])
+
+        let range = NSRange(trimmed.startIndex..., in: trimmed)
+
+        if let matches = englishPattern?.matches(in: trimmed, options: [], range: range) {
+            englishWords = matches.count
+        }
+
+        if let matches = chinesePattern?.matches(in: trimmed, options: [], range: range) {
+            chineseChars = matches.count
+        }
+
+        // 中文每個字算一個詞
+        return englishWords + chineseChars
+    }
+
+    // Helper: 格式化數字（加入千分位）
+    private func formatNumber(_ number: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        return formatter.string(from: NSNumber(value: number)) ?? "\(number)"
     }
 }

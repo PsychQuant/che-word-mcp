@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-01-27
+
+### Added
+- New academic document analysis tools (total 104 tools):
+  - `search_text_with_formatting` - Search text and display formatting at match positions (bold, italic, color markers)
+  - `list_all_formatted_text` - List all text with specific formatting (e.g., all italic text, all bold text, specific color)
+  - `get_word_count_by_section` - Word count by section with customizable markers (e.g., Abstract, Methods, References) and exclusion support
+
+### Changed
+- Updated tool count from 101 to 104
+
+### Use Cases
+- Academic paper review: quickly verify italic formatting for statistical terms
+- Anonymization check: search for specific text and verify no highlighting remains
+- Journal submission: count main text words excluding References section
+
 ## [1.5.0] - 2026-01-19
 
 ### Added
