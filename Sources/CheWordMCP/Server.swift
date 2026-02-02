@@ -13,7 +13,7 @@ class WordMCPServer {
     init() async {
         self.server = Server(
             name: "che-word-mcp",
-            version: "1.6.0",
+            version: "1.7.0",
             capabilities: .init(tools: .init())
         )
         self.transport = StdioTransport()
@@ -2587,6 +2587,35 @@ class WordMCPServer {
                     ]),
                     "required": .array([.string("doc_id")])
                 ])
+            ),
+            Tool(
+                name: "compare_documents",
+                description: "比對兩個 Word 文件的差異（段落層級），只回傳差異部分。支援文字、格式、結構比對模式",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id_a": .object([
+                            "type": .string("string"),
+                            "description": .string("基準文件（舊版本）的識別碼")
+                        ]),
+                        "doc_id_b": .object([
+                            "type": .string("string"),
+                            "description": .string("比較文件（新版本）的識別碼")
+                        ]),
+                        "mode": .object([
+                            "type": .string("string"),
+                            "description": .string("比對模式：text（預設，純文字差異）、formatting（含格式差異）、structure（結構摘要）、full（完整比對）"),
+                            "enum": .array([.string("text"), .string("formatting"), .string("structure"), .string("full")])
+                        ]),
+                        "context_lines": .object([
+                            "type": .string("integer"),
+                            "description": .string("差異前後顯示的未變更段落數（0-3，預設 0）"),
+                            "minimum": .int(0),
+                            "maximum": .int(3)
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id_a"), .string("doc_id_b")])
+                ])
             )
         ]
     }
@@ -2855,6 +2884,8 @@ class WordMCPServer {
             return try await listAllFormattedText(args: args)
         case "get_word_count_by_section":
             return try await getWordCountBySection(args: args)
+        case "compare_documents":
+            return try await compareDocuments(args: args)
 
         default:
             throw WordError.unknownTool(name)
@@ -6000,5 +6031,368 @@ class WordMCPServer {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
         return formatter.string(from: NSNumber(value: number)) ?? "\(number)"
+    }
+
+    // MARK: - Document Comparison
+
+    private struct ParagraphSnapshot {
+        let index: Int
+        let text: String
+        let textHash: Int
+        let style: String?
+        let formattedText: String
+    }
+
+    private enum DiffType {
+        case unchanged, modified, deleted, added, formatOnly
+    }
+
+    private struct DiffEntry {
+        let type: DiffType
+        let indexA: Int?
+        let indexB: Int?
+        let style: String?
+        let textA: String?
+        let textB: String?
+        let formattedA: String?
+        let formattedB: String?
+    }
+
+    private func snapshotParagraphs(_ doc: WordDocument) -> [ParagraphSnapshot] {
+        let paragraphs = doc.getParagraphs()
+        return paragraphs.enumerated().map { (index, para) in
+            let text = para.getText().trimmingCharacters(in: .whitespacesAndNewlines)
+            return ParagraphSnapshot(
+                index: index,
+                text: text,
+                textHash: text.hashValue,
+                style: para.properties.style,
+                formattedText: formatParagraphWithMarkup(para, index: index)
+            )
+        }
+    }
+
+    private func computeLCS(_ a: [ParagraphSnapshot], _ b: [ParagraphSnapshot]) -> [[Int]] {
+        let n = a.count
+        let m = b.count
+        var dp = Array(repeating: Array(repeating: 0, count: m + 1), count: n + 1)
+        for i in 1...max(n, 1) {
+            guard i <= n else { break }
+            for j in 1...max(m, 1) {
+                guard j <= m else { break }
+                if a[i - 1].textHash == b[j - 1].textHash && a[i - 1].text == b[j - 1].text {
+                    dp[i][j] = dp[i - 1][j - 1] + 1
+                } else {
+                    dp[i][j] = max(dp[i - 1][j], dp[i][j - 1])
+                }
+            }
+        }
+        return dp
+    }
+
+    private func textSimilarity(_ a: String, _ b: String) -> Double {
+        let wordsA = Set(a.lowercased().split(whereSeparator: { $0.isWhitespace || $0.isPunctuation }))
+        let wordsB = Set(b.lowercased().split(whereSeparator: { $0.isWhitespace || $0.isPunctuation }))
+        guard !wordsA.isEmpty || !wordsB.isEmpty else { return 1.0 }
+        let intersection = wordsA.intersection(wordsB).count
+        let union = wordsA.union(wordsB).count
+        guard union > 0 else { return 0.0 }
+        return Double(intersection) / Double(union)
+    }
+
+    private func buildDiffEntries(
+        _ a: [ParagraphSnapshot],
+        _ b: [ParagraphSnapshot],
+        _ dp: [[Int]],
+        mode: String
+    ) -> [DiffEntry] {
+        // Backtrack LCS to get aligned sequence
+        var aligned: [(aIdx: Int?, bIdx: Int?)] = []
+        var i = a.count
+        var j = b.count
+        while i > 0 || j > 0 {
+            if i > 0 && j > 0 && a[i - 1].textHash == b[j - 1].textHash && a[i - 1].text == b[j - 1].text {
+                aligned.append((i - 1, j - 1))
+                i -= 1
+                j -= 1
+            } else if j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j]) {
+                aligned.append((nil, j - 1))
+                j -= 1
+            } else {
+                aligned.append((i - 1, nil))
+                i -= 1
+            }
+        }
+        aligned.reverse()
+
+        // Post-process: merge adjacent DELETED+ADDED into MODIFIED if similar
+        var entries: [DiffEntry] = []
+        var idx = 0
+        while idx < aligned.count {
+            let (aIdx, bIdx) = aligned[idx]
+            if let ai = aIdx, let bi = bIdx {
+                // Matched pair
+                let checkFormatting = (mode == "formatting" || mode == "full")
+                if checkFormatting && a[ai].formattedText != b[bi].formattedText {
+                    entries.append(DiffEntry(
+                        type: .formatOnly,
+                        indexA: ai, indexB: bi,
+                        style: a[ai].style ?? b[bi].style,
+                        textA: a[ai].text, textB: b[bi].text,
+                        formattedA: a[ai].formattedText, formattedB: b[bi].formattedText
+                    ))
+                } else {
+                    entries.append(DiffEntry(
+                        type: .unchanged,
+                        indexA: ai, indexB: bi,
+                        style: a[ai].style,
+                        textA: a[ai].text, textB: nil,
+                        formattedA: nil, formattedB: nil
+                    ))
+                }
+                idx += 1
+            } else if aIdx != nil && bIdx == nil {
+                // Check if next is ADDED and they are similar → MODIFIED
+                if idx + 1 < aligned.count,
+                   aligned[idx + 1].aIdx == nil,
+                   let bi = aligned[idx + 1].bIdx,
+                   let ai = aIdx,
+                   textSimilarity(a[ai].text, b[bi].text) > 0.5 {
+                    entries.append(DiffEntry(
+                        type: .modified,
+                        indexA: ai, indexB: bi,
+                        style: a[ai].style ?? b[bi].style,
+                        textA: a[ai].text, textB: b[bi].text,
+                        formattedA: a[ai].formattedText, formattedB: b[bi].formattedText
+                    ))
+                    idx += 2
+                } else {
+                    entries.append(DiffEntry(
+                        type: .deleted,
+                        indexA: aIdx, indexB: nil,
+                        style: a[aIdx!].style,
+                        textA: a[aIdx!].text, textB: nil,
+                        formattedA: a[aIdx!].formattedText, formattedB: nil
+                    ))
+                    idx += 1
+                }
+            } else {
+                // ADDED - check if next is DELETED and they are similar → MODIFIED
+                if idx + 1 < aligned.count,
+                   aligned[idx + 1].bIdx == nil,
+                   let ai = aligned[idx + 1].aIdx,
+                   let bi = bIdx,
+                   textSimilarity(a[ai].text, b[bi].text) > 0.5 {
+                    entries.append(DiffEntry(
+                        type: .modified,
+                        indexA: ai, indexB: bi,
+                        style: a[ai].style ?? b[bi].style,
+                        textA: a[ai].text, textB: b[bi].text,
+                        formattedA: a[ai].formattedText, formattedB: b[bi].formattedText
+                    ))
+                    idx += 2
+                } else {
+                    entries.append(DiffEntry(
+                        type: .added,
+                        indexA: nil, indexB: bIdx,
+                        style: b[bIdx!].style,
+                        textA: nil, textB: b[bIdx!].text,
+                        formattedA: nil, formattedB: b[bIdx!].formattedText
+                    ))
+                    idx += 1
+                }
+            }
+        }
+        return entries
+    }
+
+    private func truncateText(_ text: String, maxLength: Int = 200, contextChars: Int = 30) -> String {
+        guard text.count > maxLength else { return text }
+        let start = text.prefix(contextChars)
+        let end = text.suffix(contextChars)
+        return "\(start) [...] \(end)"
+    }
+
+    private func formatStructureComparison(
+        docIdA: String, docIdB: String,
+        snapshotsA: [ParagraphSnapshot], snapshotsB: [ParagraphSnapshot],
+        infoA: (paragraphs: Int, words: Int), infoB: (paragraphs: Int, words: Int)
+    ) -> String {
+        var output = """
+        === Document Comparison (Structure) ===
+        Base: \(docIdA) (\(infoA.paragraphs) paragraphs, \(formatNumber(infoA.words)) words)
+        Compare: \(docIdB) (\(infoB.paragraphs) paragraphs, \(formatNumber(infoB.words)) words)
+
+        --- Statistics ---
+        Paragraph count: \(infoA.paragraphs) → \(infoB.paragraphs) (\(infoB.paragraphs >= infoA.paragraphs ? "+" : "")\(infoB.paragraphs - infoA.paragraphs))
+        Word count: \(formatNumber(infoA.words)) → \(formatNumber(infoB.words)) (\(infoB.words >= infoA.words ? "+" : "")\(formatNumber(infoB.words - infoA.words)))
+
+        --- Heading Outline: Base (\(docIdA)) ---
+
+        """
+        let headingStyles = Set(["Heading1", "Heading2", "Heading3", "Heading 1", "Heading 2", "Heading 3", "heading 1", "heading 2", "heading 3", "Title"])
+        for s in snapshotsA {
+            if let style = s.style, headingStyles.contains(style) {
+                let indent = style.contains("2") ? "  " : (style.contains("3") ? "    " : "")
+                output += "\(indent)[\(s.index)] (\(style)) \(truncateText(s.text, maxLength: 80))\n"
+            }
+        }
+        output += "\n--- Heading Outline: Compare (\(docIdB)) ---\n"
+        for s in snapshotsB {
+            if let style = s.style, headingStyles.contains(style) {
+                let indent = style.contains("2") ? "  " : (style.contains("3") ? "    " : "")
+                output += "\(indent)[\(s.index)] (\(style)) \(truncateText(s.text, maxLength: 80))\n"
+            }
+        }
+        return output
+    }
+
+    private func formatComparisonResult(
+        docIdA: String, docIdB: String,
+        infoA: (paragraphs: Int, words: Int), infoB: (paragraphs: Int, words: Int),
+        entries: [DiffEntry], mode: String, contextLines: Int
+    ) -> String {
+        let unchanged = entries.filter { $0.type == .unchanged }.count
+        let modified = entries.filter { $0.type == .modified }.count
+        let added = entries.filter { $0.type == .added }.count
+        let deleted = entries.filter { $0.type == .deleted }.count
+        let formatOnly = entries.filter { $0.type == .formatOnly }.count
+
+        if modified == 0 && added == 0 && deleted == 0 && formatOnly == 0 {
+            return """
+            === Document Comparison ===
+            Base: \(docIdA) (\(infoA.paragraphs) paragraphs, \(formatNumber(infoA.words)) words)
+            Compare: \(docIdB) (\(infoB.paragraphs) paragraphs, \(formatNumber(infoB.words)) words)
+            Mode: \(mode)
+
+            Documents are identical.
+            """
+        }
+
+        var output = """
+        === Document Comparison ===
+        Base: \(docIdA) (\(infoA.paragraphs) paragraphs, \(formatNumber(infoA.words)) words)
+        Compare: \(docIdB) (\(infoB.paragraphs) paragraphs, \(formatNumber(infoB.words)) words)
+        Mode: \(mode)
+
+        --- Summary ---
+        Unchanged: \(unchanged)  Modified: \(modified)  Added: \(added)  Deleted: \(deleted)
+        """
+        if formatOnly > 0 {
+            output += "  Format-only: \(formatOnly)"
+        }
+        output += "\n\n--- Differences ---\n"
+
+        var diffCount = 0
+        let maxDiffs = 50
+        for (entryIdx, entry) in entries.enumerated() {
+            if entry.type == .unchanged { continue }
+            diffCount += 1
+            if diffCount > maxDiffs {
+                let remaining = entries.filter { $0.type != .unchanged }.count - maxDiffs
+                output += "\n... and \(remaining) more differences (truncated)\n"
+                break
+            }
+
+            // Context: show preceding unchanged paragraphs
+            if contextLines > 0 {
+                var contextEntries: [DiffEntry] = []
+                var lookBack = entryIdx - 1
+                while lookBack >= 0 && contextEntries.count < contextLines {
+                    if entries[lookBack].type == .unchanged {
+                        contextEntries.insert(entries[lookBack], at: 0)
+                    } else {
+                        break
+                    }
+                    lookBack -= 1
+                }
+                for ctx in contextEntries {
+                    output += "\n  . A[\(ctx.indexA ?? 0)] \(truncateText(ctx.textA ?? "", maxLength: 80))"
+                }
+            }
+
+            let style = entry.style ?? "Normal"
+            switch entry.type {
+            case .modified:
+                output += "\n[MODIFIED] A[\(entry.indexA!)] → B[\(entry.indexB!)] (\(style))"
+                output += "\n  - \(truncateText(entry.textA ?? "", maxLength: 200))"
+                output += "\n  + \(truncateText(entry.textB ?? "", maxLength: 200))"
+            case .deleted:
+                output += "\n[DELETED] A[\(entry.indexA!)] (\(style))"
+                output += "\n  \(truncateText(entry.textA ?? "", maxLength: 200))"
+            case .added:
+                output += "\n[ADDED] B[\(entry.indexB!)] (\(style))"
+                output += "\n  \(truncateText(entry.textB ?? "", maxLength: 200))"
+            case .formatOnly:
+                output += "\n[FORMAT_ONLY] A[\(entry.indexA!)] → B[\(entry.indexB!)] (\(style))"
+                output += "\n  Text: \(truncateText(entry.textA ?? "", maxLength: 120))"
+                // Show formatting diff
+                let fmtA = entry.formattedA ?? ""
+                let fmtB = entry.formattedB ?? ""
+                output += "\n  Base fmt: \(truncateText(fmtA, maxLength: 200))"
+                output += "\n  Comp fmt: \(truncateText(fmtB, maxLength: 200))"
+            case .unchanged:
+                break
+            }
+            output += "\n"
+        }
+        return output
+    }
+
+    private func compareDocuments(args: [String: Value]) async throws -> String {
+        guard let docIdA = args["doc_id_a"]?.stringValue else {
+            throw WordError.missingParameter("doc_id_a")
+        }
+        guard let docIdB = args["doc_id_b"]?.stringValue else {
+            throw WordError.missingParameter("doc_id_b")
+        }
+        if docIdA == docIdB {
+            return "Error: doc_id_a and doc_id_b must be different documents."
+        }
+        guard let docA = openDocuments[docIdA] else {
+            throw WordError.documentNotFound(docIdA)
+        }
+        guard let docB = openDocuments[docIdB] else {
+            throw WordError.documentNotFound(docIdB)
+        }
+
+        let mode = args["mode"]?.stringValue ?? "text"
+        let contextLines = min(max(args["context_lines"]?.intValue ?? 0, 0), 3)
+
+        let snapshotsA = snapshotParagraphs(docA)
+        let snapshotsB = snapshotParagraphs(docB)
+
+        if snapshotsA.isEmpty && snapshotsB.isEmpty {
+            return "Both documents have no paragraphs."
+        }
+        if snapshotsA.isEmpty {
+            return "Base document (\(docIdA)) has no paragraphs."
+        }
+        if snapshotsB.isEmpty {
+            return "Compare document (\(docIdB)) has no paragraphs."
+        }
+
+        let wordsA = snapshotsA.reduce(0) { $0 + countWords($1.text) }
+        let wordsB = snapshotsB.reduce(0) { $0 + countWords($1.text) }
+        let infoA = (paragraphs: snapshotsA.count, words: wordsA)
+        let infoB = (paragraphs: snapshotsB.count, words: wordsB)
+
+        // Structure mode: only statistics + heading outline
+        if mode == "structure" {
+            return formatStructureComparison(
+                docIdA: docIdA, docIdB: docIdB,
+                snapshotsA: snapshotsA, snapshotsB: snapshotsB,
+                infoA: infoA, infoB: infoB
+            )
+        }
+
+        let dp = computeLCS(snapshotsA, snapshotsB)
+        let entries = buildDiffEntries(snapshotsA, snapshotsB, dp, mode: mode)
+
+        return formatComparisonResult(
+            docIdA: docIdA, docIdB: docIdB,
+            infoA: infoA, infoB: infoB,
+            entries: entries, mode: mode, contextLines: contextLines
+        )
     }
 }
