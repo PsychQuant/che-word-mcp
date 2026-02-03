@@ -17,6 +17,7 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 
 | Version | Date | Changes |
 |---------|------|---------|
+| v1.8.0 | 2026-02-03 | Remove hard diff limit, add `max_results` & `heading_styles` params to `compare_documents` |
 | v1.7.0 | 2026-02-03 | Add `compare_documents` tool for server-side document diff (105 total) |
 | v1.2.1 | 2026-01-16 | Fix MCP SDK compatibility (actor→class, add capabilities) |
 | v1.2.0 | 2026-01-16 | Add 12 new tools (95 total): search, hyperlinks, bookmarks, footnotes, endnotes, revisions, properties |

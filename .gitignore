@@ -32,3 +32,7 @@ xcuserdata/
 !CLAUDE.md
 !docs/**/*.md
 !skills/**/*.md
+
+# MCP binary packages
+*.mcpb
+*.mcpb.zip

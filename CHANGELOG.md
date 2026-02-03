@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-02-03
+
+### Changed
+- Remove `maxDiffs = 50` hard limit in `compare_documents` — full results returned by default (no irreversible truncation)
+- Add `max_results` optional parameter (default 0 = unlimited) for caller-controlled diff limiting
+- Add `heading_styles` optional parameter for custom heading style recognition in structure mode
+- Improve structure mode heading detection with heuristic fallback (`keepNext` + short text, marked with `(?)`)
+- Increase `truncateText` default from 200 to 500 characters
+
+### Removed
+- Hard-coded `maxDiffs = 50` truncation logic
+- Old `.mcpb` and `.mcpb.zip` release artifacts from repository
+
 ## [1.7.0] - 2026-02-03
 
 ### Added

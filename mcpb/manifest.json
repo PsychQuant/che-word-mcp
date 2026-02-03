@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.3",
   "name": "che-word-mcp",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. First Swift OOXML library with 105 tools.",
   "author": {
     "name": "Che Cheng"

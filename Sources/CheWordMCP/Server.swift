@@ -13,7 +13,7 @@ class WordMCPServer {
     init() async {
         self.server = Server(
             name: "che-word-mcp",
-            version: "1.7.0",
+            version: "1.8.0",
             capabilities: .init(tools: .init())
         )
         self.transport = StdioTransport()
@@ -2612,6 +2612,16 @@ class WordMCPServer {
                             "description": .string("差異前後顯示的未變更段落數（0-3，預設 0）"),
                             "minimum": .int(0),
                             "maximum": .int(3)
+                        ]),
+                        "max_results": .object([
+                            "type": .string("integer"),
+                            "description": .string("最多回傳的差異筆數（預設 0 = 全部回傳）"),
+                            "minimum": .int(0)
+                        ]),
+                        "heading_styles": .object([
+                            "type": .string("array"),
+                            "description": .string("自定義 heading 樣式名稱（用於 structure mode，如 [\"EC8\", \"ECtitle\"]）"),
+                            "items": .object(["type": .string("string")])
                         ])
                     ]),
                     "required": .array([.string("doc_id_a"), .string("doc_id_b")])
@@ -6041,6 +6051,7 @@ class WordMCPServer {
         let textHash: Int
         let style: String?
         let formattedText: String
+        let keepNext: Bool
     }
 
     private enum DiffType {
@@ -6067,7 +6078,8 @@ class WordMCPServer {
                 text: text,
                 textHash: text.hashValue,
                 style: para.properties.style,
-                formattedText: formatParagraphWithMarkup(para, index: index)
+                formattedText: formatParagraphWithMarkup(para, index: index),
+                keepNext: para.properties.keepNext
             )
         }
     }
@@ -6206,7 +6218,7 @@ class WordMCPServer {
         return entries
     }
 
-    private func truncateText(_ text: String, maxLength: Int = 200, contextChars: Int = 30) -> String {
+    private func truncateText(_ text: String, maxLength: Int = 500, contextChars: Int = 30) -> String {
         guard text.count > maxLength else { return text }
         let start = text.prefix(contextChars)
         let end = text.suffix(contextChars)
@@ -6216,7 +6228,8 @@ class WordMCPServer {
     private func formatStructureComparison(
         docIdA: String, docIdB: String,
         snapshotsA: [ParagraphSnapshot], snapshotsB: [ParagraphSnapshot],
-        infoA: (paragraphs: Int, words: Int), infoB: (paragraphs: Int, words: Int)
+        infoA: (paragraphs: Int, words: Int), infoB: (paragraphs: Int, words: Int),
+        customHeadingStyles: [String]? = nil
     ) -> String {
         var output = """
         === Document Comparison (Structure) ===
@@ -6230,18 +6243,45 @@ class WordMCPServer {
         --- Heading Outline: Base (\(docIdA)) ---
 
         """
-        let headingStyles = Set(["Heading1", "Heading2", "Heading3", "Heading 1", "Heading 2", "Heading 3", "heading 1", "heading 2", "heading 3", "Title"])
+        let builtinHeadingStyles = Set(["Heading1", "Heading2", "Heading3", "Heading 1", "Heading 2", "Heading 3", "heading 1", "heading 2", "heading 3", "Title"])
+        let customSet: Set<String>? = customHeadingStyles.map { Set($0) }
+
+        func isHeading(_ s: ParagraphSnapshot) -> (isMatch: Bool, isHeuristic: Bool) {
+            guard let style = s.style else { return (false, false) }
+            // Custom heading styles take priority
+            if let custom = customSet {
+                return (custom.contains(style), false)
+            }
+            // Built-in heading styles
+            if builtinHeadingStyles.contains(style) {
+                return (true, false)
+            }
+            // Heuristic: keepNext + short text likely indicates a heading
+            if s.keepNext == true && s.text.count < 100 && !s.text.isEmpty {
+                return (true, true)
+            }
+            return (false, false)
+        }
+
+        func headingIndent(_ style: String) -> String {
+            style.contains("2") ? "  " : (style.contains("3") ? "    " : "")
+        }
+
         for s in snapshotsA {
-            if let style = s.style, headingStyles.contains(style) {
-                let indent = style.contains("2") ? "  " : (style.contains("3") ? "    " : "")
-                output += "\(indent)[\(s.index)] (\(style)) \(truncateText(s.text, maxLength: 80))\n"
+            let (isMatch, isHeuristic) = isHeading(s)
+            if isMatch {
+                let indent = headingIndent(s.style ?? "")
+                let marker = isHeuristic ? " (?)" : ""
+                output += "\(indent)[\(s.index)] (\(s.style ?? ""))\(marker) \(truncateText(s.text, maxLength: 80))\n"
             }
         }
         output += "\n--- Heading Outline: Compare (\(docIdB)) ---\n"
         for s in snapshotsB {
-            if let style = s.style, headingStyles.contains(style) {
-                let indent = style.contains("2") ? "  " : (style.contains("3") ? "    " : "")
-                output += "\(indent)[\(s.index)] (\(style)) \(truncateText(s.text, maxLength: 80))\n"
+            let (isMatch, isHeuristic) = isHeading(s)
+            if isMatch {
+                let indent = headingIndent(s.style ?? "")
+                let marker = isHeuristic ? " (?)" : ""
+                output += "\(indent)[\(s.index)] (\(s.style ?? ""))\(marker) \(truncateText(s.text, maxLength: 80))\n"
             }
         }
         return output
@@ -6250,7 +6290,7 @@ class WordMCPServer {
     private func formatComparisonResult(
         docIdA: String, docIdB: String,
         infoA: (paragraphs: Int, words: Int), infoB: (paragraphs: Int, words: Int),
-        entries: [DiffEntry], mode: String, contextLines: Int
+        entries: [DiffEntry], mode: String, contextLines: Int, maxResults: Int = 0
     ) -> String {
         let unchanged = entries.filter { $0.type == .unchanged }.count
         let modified = entries.filter { $0.type == .modified }.count
@@ -6284,13 +6324,12 @@ class WordMCPServer {
         output += "\n\n--- Differences ---\n"
 
         var diffCount = 0
-        let maxDiffs = 50
         for (entryIdx, entry) in entries.enumerated() {
             if entry.type == .unchanged { continue }
             diffCount += 1
-            if diffCount > maxDiffs {
-                let remaining = entries.filter { $0.type != .unchanged }.count - maxDiffs
-                output += "\n... and \(remaining) more differences (truncated)\n"
+            if maxResults > 0 && diffCount > maxResults {
+                let remaining = entries.filter { $0.type != .unchanged }.count - maxResults
+                output += "\n... and \(remaining) more differences (limited by max_results=\(maxResults))\n"
                 break
             }
 
@@ -6358,6 +6397,14 @@ class WordMCPServer {
 
         let mode = args["mode"]?.stringValue ?? "text"
         let contextLines = min(max(args["context_lines"]?.intValue ?? 0, 0), 3)
+        let maxResults = max(args["max_results"]?.intValue ?? 0, 0)
+
+        // Parse custom heading styles for structure mode
+        let customHeadingStyles: [String]? = {
+            guard let arr = args["heading_styles"]?.arrayValue else { return nil }
+            let styles = arr.compactMap { $0.stringValue }
+            return styles.isEmpty ? nil : styles
+        }()
 
         let snapshotsA = snapshotParagraphs(docA)
         let snapshotsB = snapshotParagraphs(docB)
@@ -6382,7 +6429,8 @@ class WordMCPServer {
             return formatStructureComparison(
                 docIdA: docIdA, docIdB: docIdB,
                 snapshotsA: snapshotsA, snapshotsB: snapshotsB,
-                infoA: infoA, infoB: infoB
+                infoA: infoA, infoB: infoB,
+                customHeadingStyles: customHeadingStyles
             )
         }
 
@@ -6392,7 +6440,7 @@ class WordMCPServer {
         return formatComparisonResult(
             docIdA: docIdA, docIdB: docIdB,
             infoA: infoA, infoB: infoB,
-            entries: entries, mode: mode, contextLines: contextLines
+            entries: entries, mode: mode, contextLines: contextLines, maxResults: maxResults
         )
     }
 }
