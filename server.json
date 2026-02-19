@@ -1,0 +1,21 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.kiki830621/che-word-mcp",
+  "description": "Swift-native MCP server for Word (.docx) manipulation with 105 tools",
+  "version": "1.8.0",
+  "repository": {
+    "url": "https://github.com/kiki830621/che-word-mcp",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/kiki830621/che-word-mcp/releases/download/v1.8.0/CheWordMCP",
+      "version": "1.8.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "fileSha256": "6e93d0686cbe5e191cf56053b62c03cd36433e10b6670cf85160d89a233f188a"
+    }
+  ]
+}
