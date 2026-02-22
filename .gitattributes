@@ -1,9 +1,5 @@
-# Git LFS - Binary files
-*.mcpb filter=lfs diff=lfs merge=lfs -text
-mcpb/server/* filter=lfs diff=lfs merge=lfs -text
-*.png filter=lfs diff=lfs merge=lfs -text
-*.jpg filter=lfs diff=lfs merge=lfs -text
-*.jpeg filter=lfs diff=lfs merge=lfs -text
+# No LFS needed — build artifacts are distributed via GitHub Release
+# Only use LFS for non-rebuildable files > 50MB (currently none)
 
 # Keep line endings consistent
 *.swift text eol=lf
