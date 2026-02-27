@@ -1,6 +1,8 @@
 import Foundation
 import MCP
 import OOXMLSwift
+import WordToMDSwift
+import DocConverterSwift
 
 /// Word MCP Server - Swift OOXML Word 文件處理
 class WordMCPServer {
@@ -5365,7 +5367,8 @@ class WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let markdown = doc.toMarkdown()
+        let converter = WordConverter()
+        let markdown = try converter.convertToString(document: doc)
         try markdown.write(toFile: path, atomically: true, encoding: .utf8)
 
         return "Exported Markdown to: \(path)"
