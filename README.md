@@ -9,7 +9,7 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 - **Pure Swift Implementation**: No Node.js, Python, or external runtime required
 - **Direct OOXML Manipulation**: Works directly with XML, no Microsoft Word installation needed
 - **Single Binary**: Just one executable file
-- **105 MCP Tools**: Comprehensive document manipulation capabilities
+- **145 MCP Tools**: Comprehensive document manipulation capabilities
 - **Complete OOXML Support**: Full support for tables, styles, images, headers/footers, comments, footnotes, and more
 - **Cross-platform**: Works on macOS (and potentially other platforms supporting Swift)
 
@@ -17,6 +17,7 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 
 | Version | Date | Changes |
 |---------|------|---------|
+| v1.9.0 | 2026-02-28 | `export_markdown` upgraded to use `word-to-md-swift` for high-quality output (145 total) |
 | v1.8.0 | 2026-02-03 | Remove hard diff limit, add `max_results` & `heading_styles` params to `compare_documents` |
 | v1.7.0 | 2026-02-03 | Add `compare_documents` tool for server-side document diff (105 total) |
 | v1.2.1 | 2026-01-16 | Fix MCP SDK compatibility (actor→class, add capabilities) |
@@ -362,8 +363,9 @@ document.docx (ZIP)
 
 ### Dependencies
 
-- [MCP Swift SDK](https://github.com/modelcontextprotocol/swift-sdk) (v0.10.0+) - Model Context Protocol implementation
-- [ZIPFoundation](https://github.com/weichsel/ZIPFoundation) (v0.9.0+) - ZIP compression/decompression
+- [MCP Swift SDK](https://github.com/modelcontextprotocol/swift-sdk) (v0.10.2+) - Model Context Protocol implementation
+- [ooxml-swift](https://github.com/kiki830621/ooxml-swift) (v0.2.0+) - OOXML parsing
+- [word-to-md-swift](https://github.com/kiki830621/word-to-md-swift) (v0.1.0+) - Word to Markdown conversion
 
 ## Comparison with Other Solutions
 
@@ -374,7 +376,7 @@ document.docx (ZIP)
 | Requires Word | Yes | No | No | **No** |
 | Runtime | Node.js | Python | Node.js | **None** |
 | Single Binary | No | No | No | **Yes** |
-| Tools Count | ~10 | N/A | N/A | **83** |
+| Tools Count | ~10 | N/A | N/A | **145** |
 | Images | Limited | Yes | Yes | **Yes** |
 | Comments | No | Limited | Limited | **Yes** |
 | Track Changes | No | No | No | **Yes** |

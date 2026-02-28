@@ -9,7 +9,7 @@
 - **純 Swift 實作**：不需要 Node.js、Python 或其他執行環境
 - **直接操作 OOXML**：直接處理 XML，不需要安裝 Microsoft Word
 - **單一執行檔**：只有一個 binary 檔案
-- **83 個 MCP 工具**：完整的文件操作功能
+- **145 個 MCP 工具**：完整的文件操作功能
 - **完整 OOXML 支援**：完整支援表格、樣式、圖片、頁首/頁尾、註解、腳註等
 - **跨平台**：支援 macOS（以及其他支援 Swift 的平台）
 
@@ -17,6 +17,7 @@
 
 | 版本 | 日期 | 變更 |
 |------|------|------|
+| v1.9.0 | 2026-02-28 | `export_markdown` 改用 `word-to-md-swift` 大幅提升 Markdown 輸出品質（共 145 個工具）|
 | v1.8.0 | 2026-02-03 | 移除硬性 diff 上限，新增 `max_results` 和 `heading_styles` 參數至 `compare_documents` |
 | v1.7.0 | 2026-02-03 | 新增 `compare_documents` 工具，Server 端文件比對（共 105 個工具）|
 | v1.2.1 | 2026-01-16 | 修復 MCP SDK 相容性（actor→class、新增 capabilities）|
@@ -349,8 +350,9 @@ document.docx (ZIP)
 
 ### 依賴套件
 
-- [MCP Swift SDK](https://github.com/modelcontextprotocol/swift-sdk) (v0.10.0+) - Model Context Protocol 實作
-- [ZIPFoundation](https://github.com/weichsel/ZIPFoundation) (v0.9.0+) - ZIP 壓縮/解壓縮
+- [MCP Swift SDK](https://github.com/modelcontextprotocol/swift-sdk) (v0.10.2+) - Model Context Protocol 實作
+- [ooxml-swift](https://github.com/kiki830621/ooxml-swift) (v0.2.0+) - OOXML 解析
+- [word-to-md-swift](https://github.com/kiki830621/word-to-md-swift) (v0.1.0+) - Word 轉 Markdown
 
 ## 與其他方案比較
 
@@ -361,7 +363,7 @@ document.docx (ZIP)
 | 需要 Word | 是 | 否 | 否 | **否** |
 | 執行環境 | Node.js | Python | Node.js | **無** |
 | 單一執行檔 | 否 | 否 | 否 | **是** |
-| 工具數量 | ~10 | N/A | N/A | **83** |
+| 工具數量 | ~10 | N/A | N/A | **145** |
 | 圖片支援 | 有限 | 是 | 是 | **是** |
 | 註解 | 否 | 有限 | 有限 | **是** |
 | 追蹤修訂 | 否 | 否 | 否 | **是** |

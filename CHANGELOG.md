@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-02-28
+
+### Changed
+- `export_markdown` now uses `word-to-md-swift` library for significantly better Markdown output
+  - Streaming architecture (O(1) memory)
+  - Proper heading detection via semantic annotations
+  - List detection (bullet + numbered) with nesting support
+  - Table formatting with alignment
+  - Inline styling (bold, italic, strikethrough, code)
+  - Special character escaping
+  - Optional YAML frontmatter
+- Switched all dependencies from `path:` to `url:` remote dependencies
+- Updated `ooxml-swift` to v0.2.0 (removed built-in `toMarkdown()`, now a clean OOXML parser)
+- Updated description to reflect 145 tools
+
+### Added
+- `word-to-md-swift` v0.1.0 as new dependency for high-quality Word→Markdown conversion
+
 ## [1.8.0] - 2026-02-03
 
 ### Changed
