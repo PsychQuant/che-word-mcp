@@ -5388,20 +5388,29 @@ class WordMCPServer {
         try DocxWriter.write(doc, to: tempDocx)
         defer { try? FileManager.default.removeItem(at: tempDocx) }
 
-        // 2. 組合 macdoc 命令
+        // 2. 組合 macdoc 命令（一律使用 -o 避免 pipe fsync 問題）
         var arguments = ["word", tempDocx.path]
 
         let outputPath = args["path"]?.stringValue
         let isMarker = args["marker"]?.boolValue == true
 
+        // 無 output path 時，用暫存 .md 再讀回內容
+        let tempMd: URL?
         if isMarker {
             arguments.append("--marker")
             guard let outPath = outputPath else {
                 throw WordError.missingParameter("path (required for marker mode)")
             }
             arguments += ["-o", outPath]
+            tempMd = nil
         } else if let outPath = outputPath {
             arguments += ["-o", outPath]
+            tempMd = nil
+        } else {
+            let t = FileManager.default.temporaryDirectory
+                .appendingPathComponent("che-word-mcp-\(UUID().uuidString).md")
+            arguments += ["-o", t.path]
+            tempMd = t
         }
 
         if args["include_frontmatter"]?.boolValue == true {
@@ -5416,15 +5425,12 @@ class WordMCPServer {
         process.executableURL = URL(fileURLWithPath: macdocPath)
         process.arguments = arguments
 
-        let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
         try process.run()
         process.waitUntilExit()
 
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
         let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
 
         guard process.terminationStatus == 0 else {
@@ -5433,14 +5439,13 @@ class WordMCPServer {
         }
 
         // 4. 回傳結果
-        let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
-
         if isMarker {
             return "Exported Marker format to: \(outputPath!)"
         } else if let outPath = outputPath {
             return "Exported Markdown to: \(outPath)"
         } else {
-            return stdout
+            defer { try? FileManager.default.removeItem(at: tempMd!) }
+            return try String(contentsOf: tempMd!, encoding: .utf8)
         }
     }
 
