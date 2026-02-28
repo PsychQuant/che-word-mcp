@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] - 2026-02-28
+
+### Added
+- `export_markdown` now accepts `source_path` for direct .docx → Markdown conversion
+  - No need to call `open_document` first for simple conversion
+  - `doc_id` still supported for converting in-memory (edited) documents
+
 ## [1.11.1] - 2026-02-28
 
 ### Fixed

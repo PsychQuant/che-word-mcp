@@ -21,7 +21,7 @@ class WordMCPServer {
     init() async {
         self.server = Server(
             name: "che-word-mcp",
-            version: "1.11.1",
+            version: "1.12.0",
             capabilities: .init(tools: .init())
         )
         self.transport = StdioTransport()
@@ -1216,13 +1216,17 @@ class WordMCPServer {
             ),
             Tool(
                 name: "export_markdown",
-                description: "匯出文件為 Markdown 格式（委託 macdoc CLI 轉換）",
+                description: "匯出文件為 Markdown 格式（委託 macdoc CLI 轉換）。可用 source_path 直接轉換 .docx 檔案，或用 doc_id 轉換已開啟的文件。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("來源 .docx 檔案路徑（直接轉換，不需先 open_document）")
+                        ]),
                         "doc_id": .object([
                             "type": .string("string"),
-                            "description": .string("文件識別碼")
+                            "description": .string("已開啟文件的識別碼（與 source_path 擇一）")
                         ]),
                         "path": .object([
                             "type": .string("string"),
@@ -1241,7 +1245,7 @@ class WordMCPServer {
                             "description": .string("將軟換行轉為硬換行（預設 false）")
                         ])
                     ]),
-                    "required": .array([.string("doc_id")])
+                    "required": .array([])
                 ])
             ),
 
@@ -5375,21 +5379,33 @@ class WordMCPServer {
     }
 
     private func exportMarkdown(args: [String: Value]) async throws -> String {
-        guard let docId = args["doc_id"]?.stringValue else {
-            throw WordError.missingParameter("doc_id")
-        }
-        guard let doc = openDocuments[docId] else {
-            throw WordError.documentNotFound(docId)
-        }
+        // 決定輸入來源：source_path 直接讀檔，doc_id 從記憶體序列化
+        let inputDocxPath: String
+        var tempDocxToClean: URL? = nil
 
-        // 1. 寫暫存 .docx（讓 macdoc 讀取）
-        let tempDocx = FileManager.default.temporaryDirectory
-            .appendingPathComponent("che-word-mcp-\(UUID().uuidString).docx")
-        try DocxWriter.write(doc, to: tempDocx)
-        defer { try? FileManager.default.removeItem(at: tempDocx) }
+        if let sourcePath = args["source_path"]?.stringValue {
+            // 直接模式：macdoc 讀原始 .docx
+            guard FileManager.default.fileExists(atPath: sourcePath) else {
+                throw WordError.fileNotFound(sourcePath)
+            }
+            inputDocxPath = sourcePath
+        } else if let docId = args["doc_id"]?.stringValue {
+            // 記憶體模式：先序列化到暫存檔
+            guard let doc = openDocuments[docId] else {
+                throw WordError.documentNotFound(docId)
+            }
+            let tempDocx = FileManager.default.temporaryDirectory
+                .appendingPathComponent("che-word-mcp-\(UUID().uuidString).docx")
+            try DocxWriter.write(doc, to: tempDocx)
+            inputDocxPath = tempDocx.path
+            tempDocxToClean = tempDocx
+        } else {
+            throw WordError.missingParameter("source_path or doc_id")
+        }
+        defer { if let t = tempDocxToClean { try? FileManager.default.removeItem(at: t) } }
 
-        // 2. 組合 macdoc 命令（一律使用 -o 避免 pipe fsync 問題）
-        var arguments = ["word", tempDocx.path]
+        // 組合 macdoc 命令（一律使用 -o 避免 pipe fsync 問題）
+        var arguments = ["word", inputDocxPath]
 
         let outputPath = args["path"]?.stringValue
         let isMarker = args["marker"]?.boolValue == true
