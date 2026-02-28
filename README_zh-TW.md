@@ -17,6 +17,7 @@
 
 | 版本 | 日期 | 變更 |
 |------|------|------|
+| v1.11.0 | 2026-02-28 | `export_markdown` 改為委託 `macdoc` CLI；移除 `word-to-md-swift` 依賴 |
 | v1.9.0 | 2026-02-28 | `export_markdown` 改用 `word-to-md-swift` 大幅提升 Markdown 輸出品質（共 145 個工具）|
 | v1.8.0 | 2026-02-03 | 移除硬性 diff 上限，新增 `max_results` 和 `heading_styles` 參數至 `compare_documents` |
 | v1.7.0 | 2026-02-03 | 新增 `compare_documents` 工具，Server 端文件比對（共 105 個工具）|

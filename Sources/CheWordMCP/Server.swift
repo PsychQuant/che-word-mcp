@@ -1,8 +1,6 @@
 import Foundation
 import MCP
 import OOXMLSwift
-import WordToMDSwift
-import DocConverterSwift
 
 /// Word MCP Server - Swift OOXML Word 文件處理
 class WordMCPServer {
@@ -12,10 +10,18 @@ class WordMCPServer {
     /// 目前開啟的文件 (doc_id -> WordDocument)
     private var openDocuments: [String: WordDocument] = [:]
 
+    /// macdoc CLI 路徑（優先環境變數，fallback ~/bin/macdoc）
+    private let macdocPath: String = {
+        if let envPath = ProcessInfo.processInfo.environment["MACDOC_PATH"] {
+            return envPath
+        }
+        return NSHomeDirectory() + "/bin/macdoc"
+    }()
+
     init() async {
         self.server = Server(
             name: "che-word-mcp",
-            version: "1.9.0",
+            version: "1.11.0",
             capabilities: .init(tools: .init())
         )
         self.transport = StdioTransport()
@@ -1210,7 +1216,7 @@ class WordMCPServer {
             ),
             Tool(
                 name: "export_markdown",
-                description: "匯出文件為 Markdown 格式",
+                description: "匯出文件為 Markdown 格式（委託 macdoc CLI 轉換）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1220,10 +1226,22 @@ class WordMCPServer {
                         ]),
                         "path": .object([
                             "type": .string("string"),
-                            "description": .string("匯出路徑")
+                            "description": .string("Markdown 匯出路徑（省略則回傳內容）")
+                        ]),
+                        "marker": .object([
+                            "type": .string("boolean"),
+                            "description": .string("使用 Marker 格式輸出（MD + JSON + images）")
+                        ]),
+                        "include_frontmatter": .object([
+                            "type": .string("boolean"),
+                            "description": .string("包含文件屬性作為 YAML frontmatter（預設 false）")
+                        ]),
+                        "hard_line_breaks": .object([
+                            "type": .string("boolean"),
+                            "description": .string("將軟換行轉為硬換行（預設 false）")
                         ])
                     ]),
-                    "required": .array([.string("doc_id"), .string("path")])
+                    "required": .array([.string("doc_id")])
                 ])
             ),
 
@@ -5360,18 +5378,70 @@ class WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let path = args["path"]?.stringValue else {
-            throw WordError.missingParameter("path")
-        }
         guard let doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
 
-        let converter = WordConverter()
-        let markdown = try converter.convertToString(document: doc)
-        try markdown.write(toFile: path, atomically: true, encoding: .utf8)
+        // 1. 寫暫存 .docx（讓 macdoc 讀取）
+        let tempDocx = FileManager.default.temporaryDirectory
+            .appendingPathComponent("che-word-mcp-\(UUID().uuidString).docx")
+        try DocxWriter.write(doc, to: tempDocx)
+        defer { try? FileManager.default.removeItem(at: tempDocx) }
 
-        return "Exported Markdown to: \(path)"
+        // 2. 組合 macdoc 命令
+        var arguments = ["word", tempDocx.path]
+
+        let outputPath = args["path"]?.stringValue
+        let isMarker = args["marker"]?.boolValue == true
+
+        if isMarker {
+            arguments.append("--marker")
+            guard let outPath = outputPath else {
+                throw WordError.missingParameter("path (required for marker mode)")
+            }
+            arguments += ["-o", outPath]
+        } else if let outPath = outputPath {
+            arguments += ["-o", outPath]
+        }
+
+        if args["include_frontmatter"]?.boolValue == true {
+            arguments.append("--frontmatter")
+        }
+        if args["hard_line_breaks"]?.boolValue == true {
+            arguments.append("--hard-breaks")
+        }
+
+        // 3. 執行 macdoc CLI
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: macdocPath)
+        process.arguments = arguments
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        try process.run()
+        process.waitUntilExit()
+
+        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+
+        guard process.terminationStatus == 0 else {
+            let errorMsg = String(data: stderrData, encoding: .utf8) ?? "Unknown error"
+            throw WordError.unknownError("macdoc failed: \(errorMsg)")
+        }
+
+        // 4. 回傳結果
+        let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
+
+        if isMarker {
+            return "Exported Marker format to: \(outputPath!)"
+        } else if let outPath = outputPath {
+            return "Exported Markdown to: \(outPath)"
+        } else {
+            return stdout
+        }
     }
 
     // MARK: - Hyperlink and Bookmark Operations

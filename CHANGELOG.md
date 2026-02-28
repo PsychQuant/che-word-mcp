@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.0] - 2026-02-28
+
+### Changed
+- `export_markdown` now delegates to `macdoc` CLI instead of embedding `word-to-md-swift` library
+  - Removes API mirroring burden (ConversionOptions changes no longer require MCP updates)
+  - CLI uses streaming O(1) memory for large documents
+  - Simplified parameters: `doc_id`, `path`, `marker`, `include_frontmatter`, `hard_line_breaks`
+  - Removed `fidelity`, `figures_directory`, `metadata_output`, `use_html_extensions` (handled by macdoc)
+  - Supports `MACDOC_PATH` environment variable for custom binary location
+
+### Removed
+- `word-to-md-swift` dependency (replaced by macdoc CLI delegation)
+- `doc-converter-swift` transitive dependency
+
+## [1.10.0] - 2026-02-28
+
+### Changed
+- Upgrade `export_markdown` with Tier 1-3 fidelity support:
+  - `fidelity` parameter: `markdown` (default), `markdown_with_figures`, `marker`
+  - `figures_directory`: image extraction for Tier 2+
+  - `metadata_output`: lossless YAML sidecar for Tier 3
+  - `include_frontmatter`, `use_html_extensions`, `hard_line_breaks` options
+- Update MCP Swift SDK 0.10.2 → 0.11.0 (tool annotations, HTTP transport)
+- Update `ooxml-swift` 0.2.0 → 0.3.0 (Equatable conformance, 179 tests)
+- Update `word-to-md-swift` 0.1.0 → 0.2.0 (FigureExtractor, MetadataCollector, Tier 2/3)
+- Update `doc-converter-swift` 0.1.0 → 0.2.0 (FidelityTier, extended ConversionOptions)
+
 ## [1.9.0] - 2026-02-28
 
 ### Changed

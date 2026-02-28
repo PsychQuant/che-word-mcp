@@ -6,7 +6,7 @@
 che-word-mcp/
 ├── Sources/
 │   └── CheWordMCP/
-│       └── Server.swift          # MCP Server 主程式（101 tools）
+│       └── Server.swift          # MCP Server 主程式（146 tools）
 ├── mcpb/                         # MCPB 打包目錄
 │   ├── manifest.json             # MCPB 設定檔
 │   ├── server/
@@ -70,4 +70,5 @@ gh release upload v1.x.0 mcpb/che-word-mcp.mcpb
 ## 相關專案
 
 - **ooxml-swift**: https://github.com/kiki830621/ooxml-swift（核心 OOXML 庫）
+- **macdoc**: /Users/che/Developer/macdoc（Word→MD 轉換 CLI，export_markdown 委託目標）
 - **che-claude-plugins**: 包含此專案的 plugin 定義

@@ -17,6 +17,7 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 
 | Version | Date | Changes |
 |---------|------|---------|
+| v1.11.0 | 2026-02-28 | `export_markdown` delegates to `macdoc` CLI; removed `word-to-md-swift` dependency |
 | v1.9.0 | 2026-02-28 | `export_markdown` upgraded to use `word-to-md-swift` for high-quality output (145 total) |
 | v1.8.0 | 2026-02-03 | Remove hard diff limit, add `max_results` & `heading_styles` params to `compare_documents` |
 | v1.7.0 | 2026-02-03 | Add `compare_documents` tool for server-side document diff (105 total) |
