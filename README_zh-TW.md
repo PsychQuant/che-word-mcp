@@ -17,7 +17,7 @@
 
 | 版本 | 日期 | 變更 |
 |------|------|------|
-| v1.12.0 | 2026-02-28 | `export_markdown` 支援 `source_path` 直接轉換 .docx |
+| v1.12.0 | 2026-02-28 | `export_markdown` 改用 `source_path`，移除 `doc_id`，加入 lock file 檢查 |
 | v1.11.1 | 2026-02-28 | 修復 `export_markdown` stdout 模式（pipe fsync 問題）|
 | v1.11.0 | 2026-02-28 | `export_markdown` 改為委託 `macdoc` CLI；移除 `word-to-md-swift` 依賴 |
 | v1.9.0 | 2026-02-28 | `export_markdown` 改用 `word-to-md-swift` 大幅提升 Markdown 輸出品質（共 145 個工具）|

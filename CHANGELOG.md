@@ -7,10 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.12.0] - 2026-02-28
 
-### Added
-- `export_markdown` now accepts `source_path` for direct .docx → Markdown conversion
-  - No need to call `open_document` first for simple conversion
-  - `doc_id` still supported for converting in-memory (edited) documents
+### Changed
+- `export_markdown` now uses `source_path` for direct .docx → Markdown conversion
+  - No need to call `open_document` first — pass the file path directly
+  - Removed `doc_id` parameter (was used for in-memory documents)
+  - Added Word lock file (`~$`) detection — refuses conversion if file is open in Microsoft Word
 
 ## [1.11.1] - 2026-02-28
 

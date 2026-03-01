@@ -1216,17 +1216,13 @@ class WordMCPServer {
             ),
             Tool(
                 name: "export_markdown",
-                description: "匯出文件為 Markdown 格式（委託 macdoc CLI 轉換）。可用 source_path 直接轉換 .docx 檔案，或用 doc_id 轉換已開啟的文件。",
+                description: "將 .docx 檔案轉換為 Markdown（委託 macdoc CLI）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "source_path": .object([
                             "type": .string("string"),
-                            "description": .string("來源 .docx 檔案路徑（直接轉換，不需先 open_document）")
-                        ]),
-                        "doc_id": .object([
-                            "type": .string("string"),
-                            "description": .string("已開啟文件的識別碼（與 source_path 擇一）")
+                            "description": .string("來源 .docx 檔案路徑")
                         ]),
                         "path": .object([
                             "type": .string("string"),
@@ -1245,7 +1241,7 @@ class WordMCPServer {
                             "description": .string("將軟換行轉為硬換行（預設 false）")
                         ])
                     ]),
-                    "required": .array([])
+                    "required": .array([.string("source_path")])
                 ])
             ),
 
@@ -5379,33 +5375,23 @@ class WordMCPServer {
     }
 
     private func exportMarkdown(args: [String: Value]) async throws -> String {
-        // 決定輸入來源：source_path 直接讀檔，doc_id 從記憶體序列化
-        let inputDocxPath: String
-        var tempDocxToClean: URL? = nil
-
-        if let sourcePath = args["source_path"]?.stringValue {
-            // 直接模式：macdoc 讀原始 .docx
-            guard FileManager.default.fileExists(atPath: sourcePath) else {
-                throw WordError.fileNotFound(sourcePath)
-            }
-            inputDocxPath = sourcePath
-        } else if let docId = args["doc_id"]?.stringValue {
-            // 記憶體模式：先序列化到暫存檔
-            guard let doc = openDocuments[docId] else {
-                throw WordError.documentNotFound(docId)
-            }
-            let tempDocx = FileManager.default.temporaryDirectory
-                .appendingPathComponent("che-word-mcp-\(UUID().uuidString).docx")
-            try DocxWriter.write(doc, to: tempDocx)
-            inputDocxPath = tempDocx.path
-            tempDocxToClean = tempDocx
-        } else {
-            throw WordError.missingParameter("source_path or doc_id")
+        guard let sourcePath = args["source_path"]?.stringValue else {
+            throw WordError.missingParameter("source_path")
         }
-        defer { if let t = tempDocxToClean { try? FileManager.default.removeItem(at: t) } }
+        guard FileManager.default.fileExists(atPath: sourcePath) else {
+            throw WordError.fileNotFound(sourcePath)
+        }
+
+        // 檢查 Word lock file（~$filename.docx 表示檔案正在被 Word 開啟）
+        let sourceURL = URL(fileURLWithPath: sourcePath)
+        let lockFile = sourceURL.deletingLastPathComponent()
+            .appendingPathComponent("~$" + sourceURL.lastPathComponent)
+        if FileManager.default.fileExists(atPath: lockFile.path) {
+            throw WordError.invalidFormat("File is open in Microsoft Word. Please save and close it first: \(sourceURL.lastPathComponent)")
+        }
 
         // 組合 macdoc 命令（一律使用 -o 避免 pipe fsync 問題）
-        var arguments = ["word", inputDocxPath]
+        var arguments = ["word", sourcePath]
 
         let outputPath = args["path"]?.stringValue
         let isMarker = args["marker"]?.boolValue == true
