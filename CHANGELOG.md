@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.0] - 2026-03-01
+
+### Changed
+- `export_markdown` switched from macdoc CLI delegation to embedded `word-to-md-swift` library
+  - No external binary dependency (`~/bin/macdoc` no longer required)
+  - Restored `doc_id` parameter: convert in-memory documents without saving to disk first
+  - `source_path` still supported: direct .docx → Markdown conversion
+  - Removed `marker` parameter (use macdoc CLI directly for Marker format)
+  - Binary size impact: +1MB (32MB → 33MB)
+
+### Added
+- `word-to-md-swift` v0.2.0 as direct dependency (with `doc-converter-swift`, `markdown-swift`)
+
+### Removed
+- `MACDOC_PATH` environment variable support (no longer needed)
+- macdoc CLI Process() delegation code
+
 ## [1.13.0] - 2026-03-01
 
 ### Changed
