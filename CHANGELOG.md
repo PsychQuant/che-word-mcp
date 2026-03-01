@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.0] - 2026-03-01
+
+### Changed
+- Upgrade `ooxml-swift` 0.4.0 → 0.5.0 (parallel `parseBody` with multi-core)
+  - Large documents parsed in parallel using `DispatchQueue.concurrentPerform`
+  - 976K docx: ~1.8s → **~0.64s** (2.8x speedup, 47x vs original XPath)
+  - Small documents (<200 elements) unaffected (serial path)
+
 ## [1.12.1] - 2026-03-01
 
 ### Changed
