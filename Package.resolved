@@ -1,0 +1,122 @@
+{
+  "pins" : [
+    {
+      "identity" : "doc-converter-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/kiki830621/doc-converter-swift.git",
+      "state" : {
+        "revision" : "f25d82dec62e3484720b500aae64290639366ba8",
+        "version" : "0.3.0"
+      }
+    },
+    {
+      "identity" : "eventsource",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/mattt/eventsource.git",
+      "state" : {
+        "revision" : "bd64824505da71a1a403adb221f6e25413c0bc7f",
+        "version" : "1.4.0"
+      }
+    },
+    {
+      "identity" : "markdown-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/kiki830621/markdown-swift.git",
+      "state" : {
+        "revision" : "1995a4dde95afa95408c6ebb8dab36cc0c2f8c32",
+        "version" : "0.1.0"
+      }
+    },
+    {
+      "identity" : "ooxml-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/kiki830621/ooxml-swift.git",
+      "state" : {
+        "revision" : "a1411ab519277839ae3a4b4228f1e74175ed7926",
+        "version" : "0.5.1"
+      }
+    },
+    {
+      "identity" : "swift-async-algorithms",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-async-algorithms.git",
+      "state" : {
+        "revision" : "2971dd5d9f6e0515664b01044826bcea16e59fac",
+        "version" : "1.1.2"
+      }
+    },
+    {
+      "identity" : "swift-atomics",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-atomics.git",
+      "state" : {
+        "revision" : "b601256eab081c0f92f059e12818ac1d4f178ff7",
+        "version" : "1.3.0"
+      }
+    },
+    {
+      "identity" : "swift-collections",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-collections.git",
+      "state" : {
+        "revision" : "7b847a3b7008b2dc2f47ca3110d8c782fb2e5c7e",
+        "version" : "1.3.0"
+      }
+    },
+    {
+      "identity" : "swift-log",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-log.git",
+      "state" : {
+        "revision" : "bbd81b6725ae874c69e9b8c8804d462356b55523",
+        "version" : "1.10.1"
+      }
+    },
+    {
+      "identity" : "swift-nio",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-nio.git",
+      "state" : {
+        "revision" : "e932d3c4d8f77433c8f7093b5ebcbf91463948a0",
+        "version" : "2.95.0"
+      }
+    },
+    {
+      "identity" : "swift-sdk",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/modelcontextprotocol/swift-sdk.git",
+      "state" : {
+        "revision" : "6112a3995a992d159ad0e82c2d62a008ce932666",
+        "version" : "0.11.0"
+      }
+    },
+    {
+      "identity" : "swift-system",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-system.git",
+      "state" : {
+        "revision" : "7c6ad0fc39d0763e0b699210e4124afd5041c5df",
+        "version" : "1.6.4"
+      }
+    },
+    {
+      "identity" : "word-to-md-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/kiki830621/word-to-md-swift.git",
+      "state" : {
+        "revision" : "fffb1b2d9f1b86825649929cb0723da9debf7144",
+        "version" : "0.3.0"
+      }
+    },
+    {
+      "identity" : "zipfoundation",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/weichsel/ZIPFoundation.git",
+      "state" : {
+        "revision" : "22787ffb59de99e5dc1fbfe80b19c97a904ad48d",
+        "version" : "0.9.20"
+      }
+    }
+  ],
+  "version" : 2
+}

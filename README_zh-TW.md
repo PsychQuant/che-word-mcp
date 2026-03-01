@@ -17,6 +17,7 @@
 
 | 版本 | 日期 | 變更 |
 |------|------|------|
+| v1.15.0 | 2026-03-01 | Practical Mode：EMF→PNG 自動轉換 + heading heuristic（無 Word 標題樣式時統計推斷）|
 | v1.14.0 | 2026-03-01 | 嵌入 `word-to-md-swift` library：不需外部 macdoc binary，恢復 `doc_id` 支援 |
 | v1.13.0 | 2026-03-01 | 升級 ooxml-swift 至 v0.5.0：多核心平行解析（大型文件 ~0.64s）|
 | v1.12.1 | 2026-03-01 | 升級 ooxml-swift 至 v0.4.0：大型文件效能修復（>30s → ~2.3s）|
