@@ -17,6 +17,7 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 
 | Version | Date | Changes |
 |---------|------|---------|
+| v1.12.1 | 2026-03-01 | Upgrade ooxml-swift to v0.4.0: large document performance fix (>30s → ~2.3s) |
 | v1.12.0 | 2026-02-28 | `export_markdown` uses `source_path` only, removes `doc_id`, adds lock file check |
 | v1.11.1 | 2026-02-28 | Fix `export_markdown` stdout mode (pipe fsync issue) |
 | v1.11.0 | 2026-02-28 | `export_markdown` delegates to `macdoc` CLI; removed `word-to-md-swift` dependency |

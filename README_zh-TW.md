@@ -17,6 +17,7 @@
 
 | 版本 | 日期 | 變更 |
 |------|------|------|
+| v1.12.1 | 2026-03-01 | 升級 ooxml-swift 至 v0.4.0：大型文件效能修復（>30s → ~2.3s）|
 | v1.12.0 | 2026-02-28 | `export_markdown` 改用 `source_path`，移除 `doc_id`，加入 lock file 檢查 |
 | v1.11.1 | 2026-02-28 | 修復 `export_markdown` stdout 模式（pipe fsync 問題）|
 | v1.11.0 | 2026-02-28 | `export_markdown` 改為委託 `macdoc` CLI；移除 `word-to-md-swift` 依賴 |
