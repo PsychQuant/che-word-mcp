@@ -1,6 +1,8 @@
 import Foundation
 import MCP
 import OOXMLSwift
+import WordToMDSwift
+import DocConverterSwift
 
 /// Word MCP Server - Swift OOXML Word 文件處理
 class WordMCPServer {
@@ -10,18 +12,13 @@ class WordMCPServer {
     /// 目前開啟的文件 (doc_id -> WordDocument)
     private var openDocuments: [String: WordDocument] = [:]
 
-    /// macdoc CLI 路徑（優先環境變數，fallback ~/bin/macdoc）
-    private let macdocPath: String = {
-        if let envPath = ProcessInfo.processInfo.environment["MACDOC_PATH"] {
-            return envPath
-        }
-        return NSHomeDirectory() + "/bin/macdoc"
-    }()
+    /// Word → Markdown 轉換器（嵌入 word-to-md-swift library）
+    private let wordConverter = WordConverter()
 
     init() async {
         self.server = Server(
             name: "che-word-mcp",
-            version: "1.12.0",
+            version: "1.14.0",
             capabilities: .init(tools: .init())
         )
         self.transport = StdioTransport()
@@ -1216,21 +1213,25 @@ class WordMCPServer {
             ),
             Tool(
                 name: "export_markdown",
-                description: "將 .docx 檔案轉換為 Markdown（委託 macdoc CLI）",
+                description: "匯出文件為 Markdown 格式（預設含圖片提取）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼（與 source_path 擇一）")
+                        ]),
                         "source_path": .object([
                             "type": .string("string"),
-                            "description": .string("來源 .docx 檔案路徑")
+                            "description": .string("來源 .docx 檔案路徑（與 doc_id 擇一）")
                         ]),
                         "path": .object([
                             "type": .string("string"),
-                            "description": .string("Markdown 匯出路徑（省略則回傳內容）")
+                            "description": .string("Markdown 匯出路徑")
                         ]),
-                        "marker": .object([
-                            "type": .string("boolean"),
-                            "description": .string("使用 Marker 格式輸出（MD + JSON + images）")
+                        "figures_directory": .object([
+                            "type": .string("string"),
+                            "description": .string("圖片輸出目錄（預設為 path 同層的 figures/）")
                         ]),
                         "include_frontmatter": .object([
                             "type": .string("boolean"),
@@ -1240,8 +1241,7 @@ class WordMCPServer {
                             "type": .string("boolean"),
                             "description": .string("將軟換行轉為硬換行（預設 false）")
                         ])
-                    ]),
-                    "required": .array([.string("source_path")])
+                    ])
                 ])
             ),
 
@@ -5375,80 +5375,64 @@ class WordMCPServer {
     }
 
     private func exportMarkdown(args: [String: Value]) async throws -> String {
-        guard let sourcePath = args["source_path"]?.stringValue else {
-            throw WordError.missingParameter("source_path")
-        }
-        guard FileManager.default.fileExists(atPath: sourcePath) else {
-            throw WordError.fileNotFound(sourcePath)
-        }
+        let docId = args["doc_id"]?.stringValue
+        let sourcePath = args["source_path"]?.stringValue
 
-        // 檢查 Word lock file（~$filename.docx 表示檔案正在被 Word 開啟）
-        let sourceURL = URL(fileURLWithPath: sourcePath)
-        let lockFile = sourceURL.deletingLastPathComponent()
-            .appendingPathComponent("~$" + sourceURL.lastPathComponent)
-        if FileManager.default.fileExists(atPath: lockFile.path) {
-            throw WordError.invalidFormat("File is open in Microsoft Word. Please save and close it first: \(sourceURL.lastPathComponent)")
+        guard let outputPath = args["path"]?.stringValue else {
+            throw WordError.missingParameter("path")
         }
 
-        // 組合 macdoc 命令（一律使用 -o 避免 pipe fsync 問題）
-        var arguments = ["word", sourcePath]
-
-        let outputPath = args["path"]?.stringValue
-        let isMarker = args["marker"]?.boolValue == true
-
-        // 無 output path 時，用暫存 .md 再讀回內容
-        let tempMd: URL?
-        if isMarker {
-            arguments.append("--marker")
-            guard let outPath = outputPath else {
-                throw WordError.missingParameter("path (required for marker mode)")
+        // 取得 WordDocument：doc_id 或 source_path 擇一
+        let document: WordDocument
+        if let docId = docId {
+            guard let doc = openDocuments[docId] else {
+                throw WordError.documentNotFound(docId)
             }
-            arguments += ["-o", outPath]
-            tempMd = nil
-        } else if let outPath = outputPath {
-            arguments += ["-o", outPath]
-            tempMd = nil
+            document = doc
+        } else if let sourcePath = sourcePath {
+            guard FileManager.default.fileExists(atPath: sourcePath) else {
+                throw WordError.fileNotFound(sourcePath)
+            }
+            // 檢查 Word lock file（~$filename.docx 表示檔案正在被 Word 開啟）
+            let sourceURL = URL(fileURLWithPath: sourcePath)
+            let lockFile = sourceURL.deletingLastPathComponent()
+                .appendingPathComponent("~$" + sourceURL.lastPathComponent)
+            if FileManager.default.fileExists(atPath: lockFile.path) {
+                throw WordError.invalidFormat("File is open in Microsoft Word. Please save and close it first: \(sourceURL.lastPathComponent)")
+            }
+            document = try DocxReader.read(from: sourceURL)
         } else {
-            let t = FileManager.default.temporaryDirectory
-                .appendingPathComponent("che-word-mcp-\(UUID().uuidString).md")
-            arguments += ["-o", t.path]
-            tempMd = t
+            throw WordError.missingParameter("doc_id or source_path (at least one required)")
         }
 
-        if args["include_frontmatter"]?.boolValue == true {
-            arguments.append("--frontmatter")
-        }
-        if args["hard_line_breaks"]?.boolValue == true {
-            arguments.append("--hard-breaks")
-        }
-
-        // 3. 執行 macdoc CLI
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: macdocPath)
-        process.arguments = arguments
-
-        let stderrPipe = Pipe()
-        process.standardError = stderrPipe
-
-        try process.run()
-        process.waitUntilExit()
-
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-
-        guard process.terminationStatus == 0 else {
-            let errorMsg = String(data: stderrData, encoding: .utf8) ?? "Unknown error"
-            throw WordError.unknownError("macdoc failed: \(errorMsg)")
-        }
-
-        // 4. 回傳結果
-        if isMarker {
-            return "Exported Marker format to: \(outputPath!)"
-        } else if let outPath = outputPath {
-            return "Exported Markdown to: \(outPath)"
+        // 圖片輸出目錄：預設與 .md 同層的 figures/
+        let figuresDir: URL
+        if let customFigDir = args["figures_directory"]?.stringValue {
+            figuresDir = URL(fileURLWithPath: customFigDir)
         } else {
-            defer { try? FileManager.default.removeItem(at: tempMd!) }
-            return try String(contentsOf: tempMd!, encoding: .utf8)
+            figuresDir = URL(fileURLWithPath: outputPath)
+                .deletingLastPathComponent()
+                .appendingPathComponent("figures")
         }
+
+        // 建立轉換選項（預設 Tier 2：Markdown + 圖片提取）
+        let options = ConversionOptions(
+            includeFrontmatter: args["include_frontmatter"]?.boolValue ?? false,
+            hardLineBreaks: args["hard_line_breaks"]?.boolValue ?? false,
+            fidelity: .markdownWithFigures,
+            figuresDirectory: figuresDir
+        )
+
+        // 轉換為 Markdown
+        let markdown = try wordConverter.convertToString(document: document, options: options)
+
+        // 寫入檔案
+        try markdown.write(toFile: outputPath, atomically: true, encoding: .utf8)
+        let figCount = (try? FileManager.default.contentsOfDirectory(atPath: figuresDir.path))?.count ?? 0
+        if figCount > 0 {
+            return "Exported Markdown to: \(outputPath) (\(figCount) figures in \(figuresDir.path))"
+        }
+        return "Exported Markdown to: \(outputPath)"
     }
 
     // MARK: - Hyperlink and Bookmark Operations
