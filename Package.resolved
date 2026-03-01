@@ -104,8 +104,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/kiki830621/word-to-md-swift.git",
       "state" : {
-        "revision" : "fffb1b2d9f1b86825649929cb0723da9debf7144",
-        "version" : "0.3.0"
+        "revision" : "4826e8540368194237c07a3ffc891f1e872362d2",
+        "version" : "0.3.1"
       }
     },
     {
