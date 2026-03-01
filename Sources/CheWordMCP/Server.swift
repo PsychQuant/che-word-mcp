@@ -147,16 +147,16 @@ class WordMCPServer {
             // 內容操作
             Tool(
                 name: "get_text",
-                description: "取得文件的純文字內容",
+                description: "取得 .docx 檔案的純文字內容（Direct Mode, Tier 1）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "doc_id": .object([
+                        "source_path": .object([
                             "type": .string("string"),
-                            "description": .string("文件識別碼")
+                            "description": .string("來源 .docx 檔案路徑")
                         ])
                     ]),
-                    "required": .array([.string("doc_id")])
+                    "required": .array([.string("source_path")])
                 ])
             ),
             Tool(
@@ -1213,17 +1213,13 @@ class WordMCPServer {
             ),
             Tool(
                 name: "export_markdown",
-                description: "匯出文件為 Markdown 格式（預設含圖片提取）",
+                description: "將 .docx 轉為 Markdown 並提取圖片（Direct Mode, Tier 2）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "doc_id": .object([
-                            "type": .string("string"),
-                            "description": .string("文件識別碼（與 source_path 擇一）")
-                        ]),
                         "source_path": .object([
                             "type": .string("string"),
-                            "description": .string("來源 .docx 檔案路徑（與 doc_id 擇一）")
+                            "description": .string("來源 .docx 檔案路徑")
                         ]),
                         "path": .object([
                             "type": .string("string"),
@@ -1241,7 +1237,8 @@ class WordMCPServer {
                             "type": .string("boolean"),
                             "description": .string("將軟換行轉為硬換行（預設 false）")
                         ])
-                    ])
+                    ]),
+                    "required": .array([.string("source_path"), .string("path")])
                 ])
             ),
 
@@ -2249,19 +2246,19 @@ class WordMCPServer {
                 ])
             ),
 
-            // 9.2 get_document_text - get_text 的增強版別名
+            // 9.2 get_document_text - get_text 的別名
             Tool(
                 name: "get_document_text",
-                description: "取得文件的完整純文字內容（get_text 的別名，更直覺的命名）",
+                description: "取得 .docx 檔案的完整純文字內容（get_text 的別名，Direct Mode, Tier 1）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "doc_id": .object([
+                        "source_path": .object([
                             "type": .string("string"),
-                            "description": .string("文件識別碼")
+                            "description": .string("來源 .docx 檔案路徑")
                         ])
                     ]),
-                    "required": .array([.string("doc_id")])
+                    "required": .array([.string("source_path")])
                 ])
             ),
 
@@ -4240,14 +4237,20 @@ class WordMCPServer {
     // MARK: - Content Operations
 
     private func getText(args: [String: Value]) async throws -> String {
-        guard let docId = args["doc_id"]?.stringValue else {
-            throw WordError.missingParameter("doc_id")
+        guard let sourcePath = args["source_path"]?.stringValue else {
+            throw WordError.missingParameter("source_path")
         }
-        guard let doc = openDocuments[docId] else {
-            throw WordError.documentNotFound(docId)
+        guard FileManager.default.fileExists(atPath: sourcePath) else {
+            throw WordError.fileNotFound(sourcePath)
         }
-
-        return doc.getText()
+        let sourceURL = URL(fileURLWithPath: sourcePath)
+        let lockFile = sourceURL.deletingLastPathComponent()
+            .appendingPathComponent("~$" + sourceURL.lastPathComponent)
+        if FileManager.default.fileExists(atPath: lockFile.path) {
+            throw WordError.invalidFormat("File is open in Microsoft Word. Please save and close it first: \(sourceURL.lastPathComponent)")
+        }
+        let document = try DocxReader.read(from: sourceURL)
+        return document.getText()
     }
 
     private func getParagraphs(args: [String: Value]) async throws -> String {
@@ -5375,35 +5378,25 @@ class WordMCPServer {
     }
 
     private func exportMarkdown(args: [String: Value]) async throws -> String {
-        let docId = args["doc_id"]?.stringValue
-        let sourcePath = args["source_path"]?.stringValue
-
+        guard let sourcePath = args["source_path"]?.stringValue else {
+            throw WordError.missingParameter("source_path")
+        }
         guard let outputPath = args["path"]?.stringValue else {
             throw WordError.missingParameter("path")
         }
-
-        // 取得 WordDocument：doc_id 或 source_path 擇一
-        let document: WordDocument
-        if let docId = docId {
-            guard let doc = openDocuments[docId] else {
-                throw WordError.documentNotFound(docId)
-            }
-            document = doc
-        } else if let sourcePath = sourcePath {
-            guard FileManager.default.fileExists(atPath: sourcePath) else {
-                throw WordError.fileNotFound(sourcePath)
-            }
-            // 檢查 Word lock file（~$filename.docx 表示檔案正在被 Word 開啟）
-            let sourceURL = URL(fileURLWithPath: sourcePath)
-            let lockFile = sourceURL.deletingLastPathComponent()
-                .appendingPathComponent("~$" + sourceURL.lastPathComponent)
-            if FileManager.default.fileExists(atPath: lockFile.path) {
-                throw WordError.invalidFormat("File is open in Microsoft Word. Please save and close it first: \(sourceURL.lastPathComponent)")
-            }
-            document = try DocxReader.read(from: sourceURL)
-        } else {
-            throw WordError.missingParameter("doc_id or source_path (at least one required)")
+        guard FileManager.default.fileExists(atPath: sourcePath) else {
+            throw WordError.fileNotFound(sourcePath)
         }
+
+        // 檢查 Word lock file
+        let sourceURL = URL(fileURLWithPath: sourcePath)
+        let lockFile = sourceURL.deletingLastPathComponent()
+            .appendingPathComponent("~$" + sourceURL.lastPathComponent)
+        if FileManager.default.fileExists(atPath: lockFile.path) {
+            throw WordError.invalidFormat("File is open in Microsoft Word. Please save and close it first: \(sourceURL.lastPathComponent)")
+        }
+
+        let document = try DocxReader.read(from: sourceURL)
 
         // 圖片輸出目錄：預設與 .md 同層的 figures/
         let figuresDir: URL
