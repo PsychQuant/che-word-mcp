@@ -17,6 +17,7 @@
 
 | 版本 | 日期 | 變更 |
 |------|------|------|
+| v1.15.2 | 2026-03-07 | 改善 `list_all_formatted_text` tool description，讓 LLM 更準確傳遞必要參數 |
 | v1.15.1 | 2026-03-01 | 修復 heading heuristic style fallback（從 style 繼承鏈解析 fontSize）|
 | v1.15.0 | 2026-03-01 | Practical Mode：EMF→PNG 自動轉換 + heading heuristic（無 Word 標題樣式時統計推斷）|
 | v1.14.0 | 2026-03-01 | 嵌入 `word-to-md-swift` library：不需外部 macdoc binary，恢復 `doc_id` 支援 |

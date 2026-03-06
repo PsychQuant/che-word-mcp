@@ -18,7 +18,7 @@ class WordMCPServer {
     init() async {
         self.server = Server(
             name: "che-word-mcp",
-            version: "1.15.1",
+            version: "1.15.2",
             capabilities: .init(tools: .init())
         )
         self.transport = StdioTransport()
@@ -2553,7 +2553,7 @@ class WordMCPServer {
             // 9.17 list_all_formatted_text - 列出特定格式的所有文字
             Tool(
                 name: "list_all_formatted_text",
-                description: "列出所有具有特定格式的文字（如所有斜體、所有粗體、特定顏色文字）",
+                description: "列出所有具有特定格式的文字。必須指定 format_type: italic, bold, underline, color, highlight, strikethrough",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([

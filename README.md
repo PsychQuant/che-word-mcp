@@ -17,6 +17,7 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 
 | Version | Date | Changes |
 |---------|------|---------|
+| v1.15.2 | 2026-03-07 | Improve `list_all_formatted_text` tool description for better LLM parameter handling |
 | v1.15.1 | 2026-03-01 | Fix heading heuristic style fallback (resolve fontSize from style inheritance chain) |
 | v1.15.0 | 2026-03-01 | Practical Mode: EMF→PNG auto-conversion + heading heuristic for style-less documents |
 | v1.14.0 | 2026-03-01 | Embed `word-to-md-swift` library: no external macdoc binary needed, restore `doc_id` support |
