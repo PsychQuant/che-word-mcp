@@ -15,10 +15,65 @@ class WordMCPServer {
     /// Word → Markdown 轉換器（嵌入 word-to-md-swift library）
     private let wordConverter = WordConverter()
 
+    // MARK: - Server Instructions
+
+    private static let serverInstructions = """
+    # che-word-mcp — Word Document MCP Server
+
+    Swift-native OOXML server for .docx manipulation. 146 tools.
+
+    ## Two Modes of Operation
+
+    | Mode | Parameter | Use When | Tools |
+    |------|-----------|----------|-------|
+    | **Direct Mode** | `source_path` | Quick read-only access, no state needed | 18 tools |
+    | **Session Mode** | `doc_id` | Full read/write with open→edit→save lifecycle | All 146 tools |
+
+    ### Direct Mode (source_path)
+    Pass `source_path` with the .docx file path. No need to call `open_document` first.
+    Best for quick inspection: listing images, reading text, searching, checking properties.
+
+    ```
+    list_images: { "source_path": "/path/to/file.docx" }
+    search_text: { "source_path": "/path/to/file.docx", "query": "keyword" }
+    ```
+
+    ### Session Mode (doc_id)
+    Call `open_document` first, then use `doc_id` for subsequent operations. Required for any edits.
+
+    ```
+    open_document: { "path": "/path/to/file.docx", "doc_id": "mydoc" }
+    insert_paragraph: { "doc_id": "mydoc", "text": "Hello" }
+    save_document: { "doc_id": "mydoc", "path": "/path/to/output.docx" }
+    close_document: { "doc_id": "mydoc" }
+    ```
+
+    ## Direct Mode Tools (source_path supported)
+
+    **Read content**: `get_text`, `get_document_text`, `get_paragraphs`, `get_document_info`, `search_text`
+    **List elements**: `list_images`, `list_styles`, `get_tables`, `list_comments`, `list_hyperlinks`, `list_bookmarks`, `list_footnotes`, `list_endnotes`, `get_revisions`
+    **Properties**: `get_document_properties`, `get_section_properties`, `get_word_count_by_section`
+    **Export**: `export_markdown`
+
+    ## Common Workflows
+
+    **Read-only inspection** (Direct Mode):
+    1. `get_document_text` or `get_paragraphs` → read content
+    2. `list_images` → check embedded images
+    3. `search_text` → find specific content
+
+    **Edit document** (Session Mode):
+    1. `open_document` → get doc_id
+    2. Edit: `insert_paragraph`, `replace_text`, `format_text`, etc.
+    3. `save_document` → write to disk
+    4. `close_document` → release memory
+    """
+
     init() async {
         self.server = Server(
             name: "che-word-mcp",
-            version: "1.15.2",
+            version: "1.16.0",
+            instructions: Self.serverInstructions,
             capabilities: .init(tools: .init())
         )
         self.transport = StdioTransport()
@@ -91,7 +146,7 @@ class WordMCPServer {
             ),
             Tool(
                 name: "save_document",
-                description: "儲存 Word 文件 (.docx)",
+                description: "儲存 Word 文件 (.docx)（需先 open_document）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -131,16 +186,19 @@ class WordMCPServer {
             ),
             Tool(
                 name: "get_document_info",
-                description: "取得文件資訊（段落數、字數等）",
+                description: "取得文件資訊（段落數、字數等）（支援 Direct Mode）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "doc_id": .object([
                             "type": .string("string"),
-                            "description": .string("文件識別碼")
+                            "description": .string("文件識別碼（Session Mode）")
+                        ]),
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("檔案路徑（Direct Mode，免開啟）")
                         ])
-                    ]),
-                    "required": .array([.string("doc_id")])
+                    ])
                 ])
             ),
 
@@ -161,21 +219,24 @@ class WordMCPServer {
             ),
             Tool(
                 name: "get_paragraphs",
-                description: "取得所有段落（含格式資訊）",
+                description: "取得所有段落（含格式資訊）（支援 Direct Mode）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "doc_id": .object([
                             "type": .string("string"),
-                            "description": .string("文件識別碼")
+                            "description": .string("文件識別碼（Session Mode）")
+                        ]),
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("檔案路徑（Direct Mode，免開啟）")
                         ])
-                    ]),
-                    "required": .array([.string("doc_id")])
+                    ])
                 ])
             ),
             Tool(
                 name: "insert_paragraph",
-                description: "插入新段落",
+                description: "插入新段落（需先 open_document）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -241,7 +302,7 @@ class WordMCPServer {
             ),
             Tool(
                 name: "replace_text",
-                description: "搜尋並取代文字",
+                description: "搜尋並取代文字（需先 open_document）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -269,7 +330,7 @@ class WordMCPServer {
             // 格式化
             Tool(
                 name: "format_text",
-                description: "格式化指定段落的文字（粗體、斜體、顏色等）",
+                description: "格式化指定段落的文字（粗體、斜體、顏色等）（需先 open_document）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -399,16 +460,19 @@ class WordMCPServer {
             ),
             Tool(
                 name: "get_tables",
-                description: "取得文件中所有表格的資訊",
+                description: "取得文件中所有表格的資訊（支援 Direct Mode）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "doc_id": .object([
                             "type": .string("string"),
-                            "description": .string("文件識別碼")
+                            "description": .string("文件識別碼（Session Mode）")
+                        ]),
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("檔案路徑（Direct Mode，免開啟）")
                         ])
-                    ]),
-                    "required": .array([.string("doc_id")])
+                    ])
                 ])
             ),
             Tool(
@@ -543,16 +607,19 @@ class WordMCPServer {
             // 樣式管理
             Tool(
                 name: "list_styles",
-                description: "列出文件中所有可用的樣式",
+                description: "列出文件中所有可用的樣式（支援 Direct Mode）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "doc_id": .object([
                             "type": .string("string"),
-                            "description": .string("文件識別碼")
+                            "description": .string("文件識別碼（Session Mode）")
+                        ]),
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("檔案路徑（Direct Mode，免開啟）")
                         ])
-                    ]),
-                    "required": .array([.string("doc_id")])
+                    ])
                 ])
             ),
             Tool(
@@ -981,7 +1048,7 @@ class WordMCPServer {
             // 圖片
             Tool(
                 name: "insert_image",
-                description: "插入圖片到文件中",
+                description: "插入圖片到文件中（需先 open_document）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1023,7 +1090,7 @@ class WordMCPServer {
             ),
             Tool(
                 name: "insert_image_from_path",
-                description: "從檔案路徑插入圖片（推薦用於大型圖片，避免 base64 傳輸）",
+                description: "從檔案路徑插入圖片（推薦用於大型圖片，避免 base64 傳輸）（需先 open_document）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1105,21 +1172,24 @@ class WordMCPServer {
             ),
             Tool(
                 name: "list_images",
-                description: "列出文件中所有圖片",
+                description: "列出文件中所有圖片（支援 Direct Mode）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "doc_id": .object([
                             "type": .string("string"),
-                            "description": .string("文件識別碼")
+                            "description": .string("文件識別碼（Session Mode）")
+                        ]),
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("檔案路徑（Direct Mode，免開啟）")
                         ])
-                    ]),
-                    "required": .array([.string("doc_id")])
+                    ])
                 ])
             ),
             Tool(
                 name: "export_image",
-                description: "匯出單一圖片到檔案",
+                description: "匯出單一圖片到檔案（需先 open_document）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1141,7 +1211,7 @@ class WordMCPServer {
             ),
             Tool(
                 name: "export_all_images",
-                description: "匯出所有圖片到目錄",
+                description: "匯出所有圖片到目錄（需先 open_document）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1195,7 +1265,7 @@ class WordMCPServer {
             // 匯出
             Tool(
                 name: "export_text",
-                description: "匯出文件為純文字",
+                description: "匯出文件為純文字（需先 open_document）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1457,16 +1527,19 @@ class WordMCPServer {
             ),
             Tool(
                 name: "list_comments",
-                description: "列出文件中所有註解",
+                description: "列出文件中所有註解（支援 Direct Mode）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "doc_id": .object([
                             "type": .string("string"),
-                            "description": .string("文件識別碼")
+                            "description": .string("文件識別碼（Session Mode）")
+                        ]),
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("檔案路徑（Direct Mode，免開啟）")
                         ])
-                    ]),
-                    "required": .array([.string("doc_id")])
+                    ])
                 ])
             ),
             Tool(
@@ -2265,13 +2338,17 @@ class WordMCPServer {
             // 9.3 search_text - 搜尋文字並返回位置
             Tool(
                 name: "search_text",
-                description: "在文件中搜尋指定文字，返回所有符合的位置",
+                description: "在文件中搜尋指定文字，返回所有符合的位置（支援 Direct Mode）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "doc_id": .object([
                             "type": .string("string"),
-                            "description": .string("文件識別碼")
+                            "description": .string("文件識別碼（Session Mode）")
+                        ]),
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("檔案路徑（Direct Mode，免開啟）")
                         ]),
                         "query": .object([
                             "type": .string("string"),
@@ -2282,87 +2359,102 @@ class WordMCPServer {
                             "description": .string("是否區分大小寫（預設 false）")
                         ])
                     ]),
-                    "required": .array([.string("doc_id"), .string("query")])
+                    "required": .array([.string("query")])
                 ])
             ),
 
             // 9.4 list_hyperlinks - 列出所有超連結
             Tool(
                 name: "list_hyperlinks",
-                description: "列出文件中所有的超連結",
+                description: "列出文件中所有的超連結（支援 Direct Mode）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "doc_id": .object([
                             "type": .string("string"),
-                            "description": .string("文件識別碼")
+                            "description": .string("文件識別碼（Session Mode）")
+                        ]),
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("檔案路徑（Direct Mode，免開啟）")
                         ])
-                    ]),
-                    "required": .array([.string("doc_id")])
+                    ])
                 ])
             ),
 
             // 9.5 list_bookmarks - 列出所有書籤
             Tool(
                 name: "list_bookmarks",
-                description: "列出文件中所有的書籤",
+                description: "列出文件中所有的書籤（支援 Direct Mode）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "doc_id": .object([
                             "type": .string("string"),
-                            "description": .string("文件識別碼")
+                            "description": .string("文件識別碼（Session Mode）")
+                        ]),
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("檔案路徑（Direct Mode，免開啟）")
                         ])
-                    ]),
-                    "required": .array([.string("doc_id")])
+                    ])
                 ])
             ),
 
             // 9.6 list_footnotes - 列出所有腳註
             Tool(
                 name: "list_footnotes",
-                description: "列出文件中所有的腳註",
+                description: "列出文件中所有的腳註（支援 Direct Mode）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "doc_id": .object([
                             "type": .string("string"),
-                            "description": .string("文件識別碼")
+                            "description": .string("文件識別碼（Session Mode）")
+                        ]),
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("檔案路徑（Direct Mode，免開啟）")
                         ])
-                    ]),
-                    "required": .array([.string("doc_id")])
+                    ])
                 ])
             ),
 
             // 9.7 list_endnotes - 列出所有尾註
             Tool(
                 name: "list_endnotes",
-                description: "列出文件中所有的尾註",
+                description: "列出文件中所有的尾註（支援 Direct Mode）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "doc_id": .object([
                             "type": .string("string"),
-                            "description": .string("文件識別碼")
+                            "description": .string("文件識別碼（Session Mode）")
+                        ]),
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("檔案路徑（Direct Mode，免開啟）")
                         ])
-                    ]),
-                    "required": .array([.string("doc_id")])
+                    ])
                 ])
             ),
 
             // 9.8 get_revisions - 取得所有修訂記錄
             Tool(
                 name: "get_revisions",
-                description: "取得文件中所有的修訂追蹤記錄",
+                description: "取得文件中所有的修訂追蹤記錄（支援 Direct Mode）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "doc_id": .object([
                             "type": .string("string"),
-                            "description": .string("文件識別碼")
+                            "description": .string("文件識別碼（Session Mode）")
+                        ]),
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("檔案路徑（Direct Mode，免開啟）")
                         ])
-                    ]),
-                    "required": .array([.string("doc_id")])
+                    ])
                 ])
             ),
 
@@ -2509,16 +2601,19 @@ class WordMCPServer {
             // 9.15 get_document_properties - 取得文件屬性
             Tool(
                 name: "get_document_properties",
-                description: "取得文件屬性（標題、作者、建立日期等）",
+                description: "取得文件屬性（標題、作者、建立日期等）（支援 Direct Mode）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "doc_id": .object([
                             "type": .string("string"),
-                            "description": .string("文件識別碼")
+                            "description": .string("文件識別碼（Session Mode）")
+                        ]),
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("檔案路徑（Direct Mode，免開啟）")
                         ])
-                    ]),
-                    "required": .array([.string("doc_id")])
+                    ])
                 ])
             ),
 
@@ -2585,13 +2680,17 @@ class WordMCPServer {
             // 9.18 get_word_count_by_section - 按區段統計字數
             Tool(
                 name: "get_word_count_by_section",
-                description: "按區段統計字數，可自訂分隔標記（如 References）並排除特定區段",
+                description: "按區段統計字數，可自訂分隔標記（如 References）並排除特定區段（支援 Direct Mode）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "doc_id": .object([
                             "type": .string("string"),
-                            "description": .string("文件識別碼")
+                            "description": .string("文件識別碼（Session Mode）")
+                        ]),
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("檔案路徑（Direct Mode，免開啟）")
                         ]),
                         "section_markers": .object([
                             "type": .string("array"),
@@ -2601,8 +2700,7 @@ class WordMCPServer {
                             "type": .string("array"),
                             "description": .string("不計入總字數的區段名稱（如 [\"References\", \"Appendix\"]）")
                         ])
-                    ]),
-                    "required": .array([.string("doc_id")])
+                    ])
                 ])
             ),
             Tool(
@@ -3518,16 +3616,19 @@ class WordMCPServer {
             // 13.8 get_section_properties - 取得節屬性
             Tool(
                 name: "get_section_properties",
-                description: "取得文件的節屬性（頁面設定等）",
+                description: "取得文件的節屬性（頁面設定等）（支援 Direct Mode）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "doc_id": .object([
                             "type": .string("string"),
-                            "description": .string("文件識別碼")
+                            "description": .string("文件識別碼（Session Mode）")
+                        ]),
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("檔案路徑（Direct Mode，免開啟）")
                         ])
-                    ]),
-                    "required": .array([.string("doc_id")])
+                    ])
                 ])
             ),
 
@@ -4153,6 +4254,35 @@ class WordMCPServer {
         }
     }
 
+    // MARK: - Dual-Mode Document Resolution
+
+    /// Resolve document from either source_path (Direct Mode) or doc_id (Session Mode)
+    /// - Returns: (document, isTemporary) - isTemporary=true means opened just for this call
+    private func resolveDocument(args: [String: Value]) async throws -> (WordDocument, Bool) {
+        if let sourcePath = args["source_path"]?.stringValue {
+            // Direct Mode - open temporarily, read-only
+            guard FileManager.default.fileExists(atPath: sourcePath) else {
+                throw WordError.fileNotFound(sourcePath)
+            }
+            let sourceURL = URL(fileURLWithPath: sourcePath)
+            let lockFile = sourceURL.deletingLastPathComponent()
+                .appendingPathComponent("~$" + sourceURL.lastPathComponent)
+            if FileManager.default.fileExists(atPath: lockFile.path) {
+                throw WordError.invalidFormat("File is open in Microsoft Word. Please save and close it first: \(sourceURL.lastPathComponent)")
+            }
+            let document = try DocxReader.read(from: sourceURL)
+            return (document, true)
+        } else if let docId = args["doc_id"]?.stringValue {
+            // Session Mode - use already-opened document
+            guard let doc = openDocuments[docId] else {
+                throw WordError.documentNotFound(docId)
+            }
+            return (doc, false)
+        } else {
+            throw WordError.missingParameter("source_path or doc_id")
+        }
+    }
+
     // MARK: - Document Management
 
     private func createDocument(args: [String: Value]) async throws -> String {
@@ -4217,16 +4347,12 @@ class WordMCPServer {
     }
 
     private func getDocumentInfo(args: [String: Value]) async throws -> String {
-        guard let docId = args["doc_id"]?.stringValue else {
-            throw WordError.missingParameter("doc_id")
-        }
-        guard let doc = openDocuments[docId] else {
-            throw WordError.documentNotFound(docId)
-        }
+        let (doc, _) = try await resolveDocument(args: args)
 
         let info = doc.getInfo()
+        let label = args["doc_id"]?.stringValue ?? args["source_path"]?.stringValue ?? "unknown"
         return """
-        Document Info (\(docId)):
+        Document Info (\(label)):
         - Paragraphs: \(info.paragraphCount)
         - Characters: \(info.characterCount)
         - Words: \(info.wordCount)
@@ -4254,12 +4380,7 @@ class WordMCPServer {
     }
 
     private func getParagraphs(args: [String: Value]) async throws -> String {
-        guard let docId = args["doc_id"]?.stringValue else {
-            throw WordError.missingParameter("doc_id")
-        }
-        guard let doc = openDocuments[docId] else {
-            throw WordError.documentNotFound(docId)
-        }
+        let (doc, _) = try await resolveDocument(args: args)
 
         let paragraphs = doc.getParagraphs()
         if paragraphs.isEmpty {
@@ -4488,12 +4609,7 @@ class WordMCPServer {
     }
 
     private func getTables(args: [String: Value]) async throws -> String {
-        guard let docId = args["doc_id"]?.stringValue else {
-            throw WordError.missingParameter("doc_id")
-        }
-        guard let doc = openDocuments[docId] else {
-            throw WordError.documentNotFound(docId)
-        }
+        let (doc, _) = try await resolveDocument(args: args)
 
         let tables = doc.getTables()
         if tables.isEmpty {
@@ -4658,12 +4774,7 @@ class WordMCPServer {
     // MARK: - Style Management
 
     private func listStyles(args: [String: Value]) async throws -> String {
-        guard let docId = args["doc_id"]?.stringValue else {
-            throw WordError.missingParameter("doc_id")
-        }
-        guard let doc = openDocuments[docId] else {
-            throw WordError.documentNotFound(docId)
-        }
+        let (doc, _) = try await resolveDocument(args: args)
 
         let styles = doc.getStyles()
         if styles.isEmpty {
@@ -5238,12 +5349,7 @@ class WordMCPServer {
     }
 
     private func listImages(args: [String: Value]) async throws -> String {
-        guard let docId = args["doc_id"]?.stringValue else {
-            throw WordError.missingParameter("doc_id")
-        }
-        guard let doc = openDocuments[docId] else {
-            throw WordError.documentNotFound(docId)
-        }
+        let (doc, _) = try await resolveDocument(args: args)
 
         let images = doc.getImages()
 
@@ -5628,12 +5734,7 @@ class WordMCPServer {
     }
 
     private func listComments(args: [String: Value]) async throws -> String {
-        guard let docId = args["doc_id"]?.stringValue else {
-            throw WordError.missingParameter("doc_id")
-        }
-        guard let doc = openDocuments[docId] else {
-            throw WordError.documentNotFound(docId)
-        }
+        let (doc, _) = try await resolveDocument(args: args)
 
         let comments = doc.getComments()
         if comments.isEmpty {
@@ -6536,15 +6637,10 @@ class WordMCPServer {
 
     // 9.3 search_text - 搜尋文字
     private func searchText(args: [String: Value]) async throws -> String {
-        guard let docId = args["doc_id"]?.stringValue else {
-            throw WordError.missingParameter("doc_id")
-        }
         guard let query = args["query"]?.stringValue else {
             throw WordError.missingParameter("query")
         }
-        guard let doc = openDocuments[docId] else {
-            throw WordError.documentNotFound(docId)
-        }
+        let (doc, _) = try await resolveDocument(args: args)
 
         let caseSensitive = args["case_sensitive"]?.boolValue ?? false
 
@@ -6579,12 +6675,7 @@ class WordMCPServer {
 
     // 9.4 list_hyperlinks - 列出所有超連結
     private func listHyperlinks(args: [String: Value]) async throws -> String {
-        guard let docId = args["doc_id"]?.stringValue else {
-            throw WordError.missingParameter("doc_id")
-        }
-        guard let doc = openDocuments[docId] else {
-            throw WordError.documentNotFound(docId)
-        }
+        let (doc, _) = try await resolveDocument(args: args)
 
         let hyperlinks = doc.getHyperlinks()
         if hyperlinks.isEmpty {
@@ -6602,12 +6693,7 @@ class WordMCPServer {
 
     // 9.5 list_bookmarks - 列出所有書籤
     private func listBookmarks(args: [String: Value]) async throws -> String {
-        guard let docId = args["doc_id"]?.stringValue else {
-            throw WordError.missingParameter("doc_id")
-        }
-        guard let doc = openDocuments[docId] else {
-            throw WordError.documentNotFound(docId)
-        }
+        let (doc, _) = try await resolveDocument(args: args)
 
         let bookmarks = doc.getBookmarks()
         if bookmarks.isEmpty {
@@ -6623,12 +6709,7 @@ class WordMCPServer {
 
     // 9.6 list_footnotes - 列出所有腳註
     private func listFootnotes(args: [String: Value]) async throws -> String {
-        guard let docId = args["doc_id"]?.stringValue else {
-            throw WordError.missingParameter("doc_id")
-        }
-        guard let doc = openDocuments[docId] else {
-            throw WordError.documentNotFound(docId)
-        }
+        let (doc, _) = try await resolveDocument(args: args)
 
         let footnotes = doc.getFootnotes()
         if footnotes.isEmpty {
@@ -6645,12 +6726,7 @@ class WordMCPServer {
 
     // 9.7 list_endnotes - 列出所有尾註
     private func listEndnotes(args: [String: Value]) async throws -> String {
-        guard let docId = args["doc_id"]?.stringValue else {
-            throw WordError.missingParameter("doc_id")
-        }
-        guard let doc = openDocuments[docId] else {
-            throw WordError.documentNotFound(docId)
-        }
+        let (doc, _) = try await resolveDocument(args: args)
 
         let endnotes = doc.getEndnotes()
         if endnotes.isEmpty {
@@ -6667,12 +6743,7 @@ class WordMCPServer {
 
     // 9.8 get_revisions - 取得所有修訂記錄
     private func getRevisions(args: [String: Value]) async throws -> String {
-        guard let docId = args["doc_id"]?.stringValue else {
-            throw WordError.missingParameter("doc_id")
-        }
-        guard let doc = openDocuments[docId] else {
-            throw WordError.documentNotFound(docId)
-        }
+        let (doc, _) = try await resolveDocument(args: args)
 
         let revisions = doc.getRevisions()
         if revisions.isEmpty {
@@ -6762,12 +6833,7 @@ class WordMCPServer {
 
     // 9.12 get_document_properties - 取得文件屬性
     private func getDocumentProperties(args: [String: Value]) async throws -> String {
-        guard let docId = args["doc_id"]?.stringValue else {
-            throw WordError.missingParameter("doc_id")
-        }
-        guard let doc = openDocuments[docId] else {
-            throw WordError.documentNotFound(docId)
-        }
+        let (doc, _) = try await resolveDocument(args: args)
 
         let props = doc.properties
 
@@ -7175,12 +7241,7 @@ class WordMCPServer {
 
     // 9.18 get_word_count_by_section - 按區段統計字數
     private func getWordCountBySection(args: [String: Value]) async throws -> String {
-        guard let docId = args["doc_id"]?.stringValue else {
-            throw WordError.missingParameter("doc_id")
-        }
-        guard let doc = openDocuments[docId] else {
-            throw WordError.documentNotFound(docId)
-        }
+        let (doc, _) = try await resolveDocument(args: args)
 
         // 解析區段標記
         var sectionMarkers: [String] = []
@@ -8791,12 +8852,7 @@ class WordMCPServer {
 
     /// 取得節屬性
     private func getSectionProperties(args: [String: Value]) async throws -> String {
-        guard let docId = args["doc_id"]?.stringValue else {
-            throw WordError.missingParameter("doc_id")
-        }
-        guard let doc = openDocuments[docId] else {
-            throw WordError.documentNotFound(docId)
-        }
+        let (doc, _) = try await resolveDocument(args: args)
 
         let props = doc.sectionProperties
         var result = "Section Properties:\n"

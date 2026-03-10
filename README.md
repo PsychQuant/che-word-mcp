@@ -9,7 +9,8 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 - **Pure Swift Implementation**: No Node.js, Python, or external runtime required
 - **Direct OOXML Manipulation**: Works directly with XML, no Microsoft Word installation needed
 - **Single Binary**: Just one executable file
-- **145 MCP Tools**: Comprehensive document manipulation capabilities
+- **146 MCP Tools**: Comprehensive document manipulation capabilities
+- **Dual-Mode Access**: Direct Mode (read-only, one step) and Session Mode (full lifecycle)
 - **Complete OOXML Support**: Full support for tables, styles, images, headers/footers, comments, footnotes, and more
 - **Cross-platform**: Works on macOS (and potentially other platforms supporting Swift)
 
@@ -17,6 +18,7 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 
 | Version | Date | Changes |
 |---------|------|---------|
+| v1.16.0 | 2026-03-10 | Dual-Mode: 15 read-only tools now support `source_path` (Direct Mode); MCP server instructions added |
 | v1.15.2 | 2026-03-07 | Improve `list_all_formatted_text` tool description for better LLM parameter handling |
 | v1.15.1 | 2026-03-01 | Fix heading heuristic style fallback (resolve fontSize from style inheritance chain) |
 | v1.15.0 | 2026-03-01 | Practical Mode: EMF→PNG auto-conversion + heading heuristic for style-less documents |
@@ -84,58 +86,76 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 }
 ```
 
+## Two Modes of Operation
+
+### Direct Mode (`source_path`) — Read-only, no state
+
+Pass a file path directly. No need to call `open_document` first. Best for quick inspection.
+
+```
+# Just pass source_path — one step
+list_images: { "source_path": "/path/to/file.docx" }
+search_text: { "source_path": "/path/to/file.docx", "query": "keyword" }
+get_document_info: { "source_path": "/path/to/file.docx" }
+```
+
+**18 tools support Direct Mode:**
+
+| Category | Tools |
+|----------|-------|
+| Read content | `get_text`, `get_document_text`, `get_paragraphs`, `get_document_info`, `search_text` |
+| List elements | `list_images`, `list_styles`, `get_tables`, `list_comments`, `list_hyperlinks`, `list_bookmarks`, `list_footnotes`, `list_endnotes`, `get_revisions` |
+| Properties | `get_document_properties`, `get_section_properties`, `get_word_count_by_section` |
+| Export | `export_markdown` |
+
+### Session Mode (`doc_id`) — Full read/write lifecycle
+
+Call `open_document` first, then use `doc_id` for all subsequent operations. Required for editing.
+
+```
+open_document: { "path": "/path/to/file.docx", "doc_id": "mydoc" }
+insert_paragraph: { "doc_id": "mydoc", "text": "Hello World" }
+save_document: { "doc_id": "mydoc", "path": "/path/to/output.docx" }
+close_document: { "doc_id": "mydoc" }
+```
+
+> **Dual-mode tools** accept both `source_path` and `doc_id`. If you already have a document open, use `doc_id` to avoid re-reading from disk.
+
 ## Usage with AI Agents
 
 ### Just ask the agent
 
-The simplest approach - just tell your agent to use it:
-
 ```
-Use che-word-mcp to create a new Word document with title "Report" and save it to ~/Documents/report.docx
+Use che-word-mcp to read all images from ~/Documents/report.docx
 ```
 
-The agent will automatically use the MCP tools if che-word-mcp is configured.
+The agent will automatically use Direct Mode (no need to open/close).
 
 ### AGENTS.md / CLAUDE.md
-
-For more consistent results, add to your project or global instructions file:
 
 ```markdown
 ## Word Document Manipulation
 
 Use `che-word-mcp` for reading and writing Microsoft Word (.docx) files.
 
-Core workflow:
-1. `open_document` - Open an existing .docx file
-2. `get_text` / `get_paragraphs` - Read document content
-3. `insert_paragraph` / `format_text` - Modify content
-4. `save_document` - Save changes
+**Read-only** (Direct Mode — one step):
+- `get_document_text` / `get_paragraphs` — read content
+- `list_images` / `search_text` — inspect elements
+- `export_markdown` — convert to Markdown
 
-Creating new documents:
-1. `create_document` - Create new document
-2. Add content with `insert_paragraph`, `insert_table`, etc.
-3. `save_document` - Save to .docx file
-
-Export options:
-- `export_text` - Export as plain text
-- `export_markdown` - Export as Markdown
+**Edit** (Session Mode — open→edit→save):
+1. `open_document` → get doc_id
+2. `insert_paragraph` / `replace_text` / `format_text` — modify
+3. `save_document` → write to disk
+4. `close_document` → release memory
 ```
 
 ### Claude Code Skill
 
-For Claude Code, a skill provides richer context:
-
 ```bash
-# Download the skill
 mkdir -p .claude/skills/che-word-mcp
 curl -o .claude/skills/che-word-mcp/SKILL.md \
   https://raw.githubusercontent.com/kiki830621/che-word-mcp/main/skills/che-word-mcp/SKILL.md
-```
-
-Or copy from the repository:
-
-```bash
-cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 ```
 
 ## Available Tools (83 Total)
@@ -385,7 +405,7 @@ document.docx (ZIP)
 | Requires Word | Yes | No | No | **No** |
 | Runtime | Node.js | Python | Node.js | **None** |
 | Single Binary | No | No | No | **Yes** |
-| Tools Count | ~10 | N/A | N/A | **145** |
+| Tools Count | ~10 | N/A | N/A | **146** |
 | Images | Limited | Yes | Yes | **Yes** |
 | Comments | No | Limited | Limited | **Yes** |
 | Track Changes | No | No | No | **Yes** |
