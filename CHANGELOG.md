@@ -246,7 +246,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCPB package for easy distribution
 
 ### Changed
-- Refactored to use [ooxml-swift](https://github.com/kiki830621/ooxml-swift) as external dependency
+- Refactored to use [ooxml-swift](https://github.com/PsychQuant/ooxml-swift) as external dependency
 - Updated MCP SDK to 0.10.2
 
 ### Document Management
