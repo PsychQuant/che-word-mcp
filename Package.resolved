@@ -32,8 +32,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/kiki830621/ooxml-swift.git",
       "state" : {
-        "revision" : "a1411ab519277839ae3a4b4228f1e74175ed7926",
-        "version" : "0.5.1"
+        "revision" : "f10e80432c46796062470064c277f971539f175d",
+        "version" : "0.5.3"
       }
     },
     {

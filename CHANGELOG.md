@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.0] - 2026-03-10
+
+### Added
+- **Dual-Mode Access** — 15 read-only tools now support both `source_path` (Direct Mode) and `doc_id` (Session Mode): `get_document_info`, `get_paragraphs`, `list_images`, `list_styles`, `get_tables`, `list_comments`, `list_hyperlinks`, `list_bookmarks`, `list_footnotes`, `list_endnotes`, `get_revisions`, `get_document_properties`, `search_text`, `get_word_count_by_section`, `get_section_properties`
+- **MCP Server Instructions** — Server now returns structured instructions during `initialize` handshake, helping AI agents understand Direct Mode vs Session Mode usage patterns
+- **`resolveDocument` helper** — Internal helper for dual-mode document resolution with lock file detection
+
+### Improved
+- Session-only tools (`insert_paragraph`, `save_document`, etc.) now include `（需先 open_document）` in description
+- Dual-mode tools include `（支援 Direct Mode）` in description
+
 ## [1.15.2] - 2026-03-07
 
 ### Improved
