@@ -17,6 +17,14 @@ let package = Package(
                 .product(name: "OOXMLSwift", package: "ooxml-swift"),
                 .product(name: "WordToMDSwift", package: "word-to-md-swift"),
             ]
+        ),
+        .testTarget(
+            name: "CheWordMCPTests",
+            dependencies: [
+                "CheWordMCP",
+                .product(name: "MCP", package: "swift-sdk"),
+                .product(name: "OOXMLSwift", package: "ooxml-swift"),
+            ]
         )
     ]
 )

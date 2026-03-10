@@ -18,6 +18,7 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 
 | Version | Date | Changes |
 |---------|------|---------|
+| v1.17.0 | 2026-03-11 | Session state management: dirty tracking, autosave, `finalize_document`, `get_document_session_state`, shutdown flush (contributed by [@ildunari](https://github.com/ildunari)) |
 | v1.16.0 | 2026-03-10 | Dual-Mode: 15 read-only tools now support `source_path` (Direct Mode); MCP server instructions added |
 | v1.15.2 | 2026-03-07 | Improve `list_all_formatted_text` tool description for better LLM parameter handling |
 | v1.15.1 | 2026-03-01 | Fix heading heuristic style fallback (resolve fontSize from style inheritance chain) |
