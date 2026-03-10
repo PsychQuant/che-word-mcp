@@ -7,10 +7,10 @@
     "name": "Che Cheng"
   },
   "license": "MIT",
-  "homepage": "https://github.com/kiki830621/che-word-mcp",
+  "homepage": "https://github.com/PsychQuant/che-word-mcp",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kiki830621/che-word-mcp"
+    "url": "https://github.com/PsychQuant/che-word-mcp"
   },
   "server": {
     "type": "binary",

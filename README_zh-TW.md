@@ -44,7 +44,7 @@
 ### 從原始碼編譯
 
 ```bash
-git clone https://github.com/kiki830621/che-word-mcp.git
+git clone https://github.com/PsychQuant/che-word-mcp.git
 cd che-word-mcp
 swift build -c release
 ```
@@ -116,7 +116,7 @@ claude mcp add che-word-mcp /path/to/che-word-mcp/.build/release/CheWordMCP
 # 下載 skill
 mkdir -p .claude/skills/che-word-mcp
 curl -o .claude/skills/che-word-mcp/SKILL.md \
-  https://raw.githubusercontent.com/kiki830621/che-word-mcp/main/skills/che-word-mcp/SKILL.md
+  https://raw.githubusercontent.com/PsychQuant/che-word-mcp/main/skills/che-word-mcp/SKILL.md
 ```
 
 或從專案複製：
@@ -360,8 +360,8 @@ document.docx (ZIP)
 ### 依賴套件
 
 - [MCP Swift SDK](https://github.com/modelcontextprotocol/swift-sdk) (v0.10.2+) - Model Context Protocol 實作
-- [ooxml-swift](https://github.com/kiki830621/ooxml-swift) (v0.2.0+) - OOXML 解析
-- [word-to-md-swift](https://github.com/kiki830621/word-to-md-swift) (v0.1.0+) - Word 轉 Markdown
+- [ooxml-swift](https://github.com/PsychQuant/ooxml-swift) (v0.2.0+) - OOXML 解析
+- [word-to-md-swift](https://github.com/PsychQuant/word-to-md-swift) (v0.1.0+) - Word 轉 Markdown
 
 ## 與其他方案比較
 
@@ -413,9 +413,9 @@ MIT License
 
 ## 作者
 
-鄭澈 ([@kiki830621](https://github.com/kiki830621))
+鄭澈 ([@kiki830621](https://github.com/PsychQuant))
 
 ## 相關專案
 
-- [che-apple-mail-mcp](https://github.com/kiki830621/che-apple-mail-mcp) - Apple Mail MCP 伺服器
-- [che-ical-mcp](https://github.com/kiki830621/che-ical-mcp) - macOS 行事曆 MCP 伺服器
+- [che-apple-mail-mcp](https://github.com/PsychQuant/che-apple-mail-mcp) - Apple Mail MCP 伺服器
+- [che-ical-mcp](https://github.com/PsychQuant/che-ical-mcp) - macOS 行事曆 MCP 伺服器

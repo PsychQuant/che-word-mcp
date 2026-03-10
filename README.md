@@ -40,14 +40,14 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 
 ### Option 1: Download from Release (Recommended)
 
-Download the latest release from [GitHub Releases](https://github.com/kiki830621/che-word-mcp/releases):
+Download the latest release from [GitHub Releases](https://github.com/PsychQuant/che-word-mcp/releases):
 
 - **CheWordMCP** - Universal Binary (arm64 + x86_64)
 - **che-word-mcp.mcpb** - MCPB package
 
 ```bash
 # Download and install
-curl -L https://github.com/kiki830621/che-word-mcp/releases/latest/download/CheWordMCP -o ~/bin/CheWordMCP
+curl -L https://github.com/PsychQuant/che-word-mcp/releases/latest/download/CheWordMCP -o ~/bin/CheWordMCP
 chmod +x ~/bin/CheWordMCP
 ```
 
@@ -59,7 +59,7 @@ chmod +x ~/bin/CheWordMCP
 - Swift 5.9+
 
 ```bash
-git clone https://github.com/kiki830621/che-word-mcp.git
+git clone https://github.com/PsychQuant/che-word-mcp.git
 cd che-word-mcp
 swift build -c release
 ```
@@ -155,7 +155,7 @@ Use `che-word-mcp` for reading and writing Microsoft Word (.docx) files.
 ```bash
 mkdir -p .claude/skills/che-word-mcp
 curl -o .claude/skills/che-word-mcp/SKILL.md \
-  https://raw.githubusercontent.com/kiki830621/che-word-mcp/main/skills/che-word-mcp/SKILL.md
+  https://raw.githubusercontent.com/PsychQuant/che-word-mcp/main/skills/che-word-mcp/SKILL.md
 ```
 
 ## Available Tools (83 Total)
@@ -393,8 +393,8 @@ document.docx (ZIP)
 ### Dependencies
 
 - [MCP Swift SDK](https://github.com/modelcontextprotocol/swift-sdk) (v0.10.2+) - Model Context Protocol implementation
-- [ooxml-swift](https://github.com/kiki830621/ooxml-swift) (v0.2.0+) - OOXML parsing
-- [word-to-md-swift](https://github.com/kiki830621/word-to-md-swift) (v0.1.0+) - Word to Markdown conversion
+- [ooxml-swift](https://github.com/PsychQuant/ooxml-swift) (v0.2.0+) - OOXML parsing
+- [word-to-md-swift](https://github.com/PsychQuant/word-to-md-swift) (v0.1.0+) - Word to Markdown conversion
 
 ## Comparison with Other Solutions
 
@@ -446,9 +446,9 @@ MIT License
 
 ## Author
 
-Che Cheng ([@kiki830621](https://github.com/kiki830621))
+Che Cheng ([@kiki830621](https://github.com/PsychQuant))
 
 ## Related Projects
 
-- [che-apple-mail-mcp](https://github.com/kiki830621/che-apple-mail-mcp) - Apple Mail MCP server
-- [che-ical-mcp](https://github.com/kiki830621/che-ical-mcp) - macOS Calendar MCP server
+- [che-apple-mail-mcp](https://github.com/PsychQuant/che-apple-mail-mcp) - Apple Mail MCP server
+- [che-ical-mcp](https://github.com/PsychQuant/che-ical-mcp) - macOS Calendar MCP server
