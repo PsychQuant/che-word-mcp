@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.0] - 2026-03-11
+
+### Added
+- **Session State Management** — Track dirty state, autosave, and track changes enforcement per document (contributed by [@ildunari](https://github.com/ildunari))
+- **`finalize_document`** — Save and close in one guarded step, reusing original path when available
+- **`get_document_session_state`** — Inspect session state (dirty, autosave, track changes, save/close readiness)
+- **`autosave` parameter** — `open_document` and `create_document` now accept `autosave: true` for auto-persist after each edit
+- **Shutdown flush** — Server auto-saves dirty documents with known paths on shutdown
+- **Duplicate docId guard** — `create_document` and `open_document` reject reusing an already-open docId
+- **Track changes by default** — Documents opened/created automatically enable track changes
+- **Unit tests** — 12 tests covering session state, dirty tracking, autosave, finalize, and shutdown flush
+
+### Changed
+- `save_document` — `path` is now optional; reuses original opened path when omitted
+- `close_document` — Blocks closing documents with unsaved changes (use `save_document` first or `finalize_document`)
+- Total tool count: 146 → 148
+
 ## [1.16.0] - 2026-03-10
 
 ### Added
