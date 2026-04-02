@@ -5,7 +5,7 @@ let package = Package(
     name: "CheWordMCP",
     platforms: [.macOS(.v13)],
     dependencies: [
-        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.11.0"),
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.0"),
         .package(url: "https://github.com/PsychQuant/ooxml-swift.git", from: "0.5.2"),
         .package(url: "https://github.com/PsychQuant/word-to-md-swift.git", from: "0.3.0"),
     ],

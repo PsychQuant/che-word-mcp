@@ -6890,21 +6890,45 @@ class WordMCPServer {
 
         let caseSensitive = args["case_sensitive"]?.boolValue ?? false
 
-        // 搜尋每個段落中的文字
-        let paragraphs = doc.getParagraphs()
-        var results: [(paragraphIndex: Int, startPosition: Int, text: String)] = []
+        struct SearchResult {
+            let location: String
+            let startPosition: Int
+            let text: String
+        }
 
-        for (index, para) in paragraphs.enumerated() {
+        var results: [SearchResult] = []
+
+        func searchInParagraph(_ para: Paragraph, location: String) {
             let paraText = para.getText()
-            let searchText = caseSensitive ? paraText : paraText.lowercased()
-            let searchQuery = caseSensitive ? query : query.lowercased()
+            let haystack = caseSensitive ? paraText : paraText.lowercased()
+            let needle = caseSensitive ? query : query.lowercased()
 
-            var searchStart = searchText.startIndex
-            while let range = searchText.range(of: searchQuery, range: searchStart..<searchText.endIndex) {
-                let position = searchText.distance(from: searchText.startIndex, to: range.lowerBound)
+            var searchStart = haystack.startIndex
+            while let range = haystack.range(of: needle, range: searchStart..<haystack.endIndex) {
+                let position = haystack.distance(from: haystack.startIndex, to: range.lowerBound)
                 let matchedText = String(paraText[range])
-                results.append((index, position, matchedText))
+                results.append(SearchResult(location: location, startPosition: position, text: matchedText))
                 searchStart = range.upperBound
+            }
+        }
+
+        // 搜尋頂層段落和表格內的段落
+        var paraIndex = 0
+        var tableIndex = 0
+        for child in doc.body.children {
+            switch child {
+            case .paragraph(let para):
+                searchInParagraph(para, location: "Paragraph \(paraIndex)")
+                paraIndex += 1
+            case .table(let table):
+                for (rowIdx, row) in table.rows.enumerated() {
+                    for (cellIdx, cell) in row.cells.enumerated() {
+                        for para in cell.paragraphs {
+                            searchInParagraph(para, location: "Table \(tableIndex), row \(rowIdx), col \(cellIdx)")
+                        }
+                    }
+                }
+                tableIndex += 1
             }
         }
 
@@ -6914,7 +6938,7 @@ class WordMCPServer {
 
         var output = "Found \(results.count) match(es) for '\(query)':\n"
         for result in results {
-            output += "- Paragraph \(result.paragraphIndex), position \(result.startPosition): \"\(result.text)\"\n"
+            output += "- \(result.location), position \(result.startPosition): \"\(result.text)\"\n"
         }
         return output
     }
