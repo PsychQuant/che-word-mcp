@@ -2614,7 +2614,7 @@ class WordMCPServer {
             // 9.8 get_revisions - 取得所有修訂記錄
             Tool(
                 name: "get_revisions",
-                description: "取得文件中所有的修訂追蹤記錄（支援 Direct Mode）",
+                description: "取得文件中所有的修訂追蹤記錄。預設長文字（>500 字元）做頭尾摘要，傳 full_text: true 取得完整內容（支援 Direct Mode）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -2625,6 +2625,10 @@ class WordMCPServer {
                         "source_path": .object([
                             "type": .string("string"),
                             "description": .string("檔案路徑（Direct Mode，免開啟）")
+                        ]),
+                        "full_text": .object([
+                            "type": .string("boolean"),
+                            "description": .string("回傳完整修訂文字（預設 false，長文字做頭尾摘要）")
                         ])
                     ])
                 ])
@@ -7014,6 +7018,8 @@ class WordMCPServer {
     // 9.8 get_revisions - 取得所有修訂記錄
     private func getRevisions(args: [String: Value]) async throws -> String {
         let (doc, _) = try await resolveDocument(args: args)
+        let fullText = args["full_text"]?.boolValue ?? false
+        let maxLen = fullText ? Int.max : 500
 
         let revisions = doc.getRevisions()
         if revisions.isEmpty {
@@ -7027,10 +7033,10 @@ class WordMCPServer {
             let author = revision.author
             output += "[\(revision.id)] \(typeStr) by \(author) at paragraph \(revision.paragraphIndex)\n"
             if let original = revision.originalText {
-                output += "    Original: \(original.prefix(30))...\n"
+                output += "    Original: \(truncateText(original, maxLength: maxLen))\n"
             }
             if let newText = revision.newText {
-                output += "    New: \(newText.prefix(30))...\n"
+                output += "    New: \(truncateText(newText, maxLength: maxLen))\n"
             }
         }
         return output

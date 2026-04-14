@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.0] - 2026-04-14
+
+### Fixed
+- **`get_revisions` — hardcoded `prefix(30)` truncation** — Original and new revision text was truncated to the first 30 characters with `...` appended, regardless of actual length. Long insertions (e.g., entire rewritten paragraphs in Word track changes) were unreadable from the tool output; short revisions (e.g., adding an `s` suffix) had misleading `...` appended. The underlying OOXML parser always captured the full run text — the truncation was purely a display-layer bug present since v1.2.0. Fixed by routing through the existing `truncateText()` helper with a 500-character default. ([#1](https://github.com/PsychQuant/che-word-mcp/issues/1))
+
+### Added
+- **`get_revisions` — `full_text` parameter** — Opt-in flag to disable truncation entirely. When `full_text: true`, revision text is returned verbatim regardless of length. Default remains `false` (500-character head/tail summary) to protect LLM context from runaway insertions. ([#1](https://github.com/PsychQuant/che-word-mcp/issues/1))
+
+### Changed
+- **`get_revisions` — output format** — Short revisions (≤ 500 chars) now return the full text with no `...` appended. Long revisions return `<first 30 chars> [...] <last 30 chars>` via `truncateText()`, matching the format used elsewhere in the codebase (heading/compare diff output). This is a breaking change for callers that depended on the literal `prefix(30)...` output.
+
 ## [1.17.0] - 2026-03-11
 
 ### Added
