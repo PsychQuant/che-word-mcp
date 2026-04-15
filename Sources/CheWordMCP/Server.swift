@@ -2923,6 +2923,84 @@ class WordMCPServer {
                 ])
             ),
 
+            // ==================== manuscript-review-markdown-export change ====================
+
+            Tool(
+                name: "export_revision_summary_markdown",
+                description: "把單一 .docx 的修訂與註解整理成 markdown 報告（heading + stats + 表格）。預設按 author 分組。支援 Direct Mode（傳 source_path）。",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼（Session Mode）")]),
+                        "source_path": .object(["type": .string("string"), "description": .string("檔案路徑（Direct Mode）")]),
+                        "include_revisions": .object(["type": .string("boolean"), "description": .string("是否包含 Revisions 區段（預設 true）")]),
+                        "include_comments": .object(["type": .string("boolean"), "description": .string("是否包含 Comments 區段（預設 true）")]),
+                        "group_by": .object([
+                            "type": .string("string"),
+                            "description": .string("Revisions 表格分組策略（預設 author；可選 author / type / section / none）"),
+                            "enum": .array([.string("author"), .string("type"), .string("section"), .string("none")])
+                        ]),
+                        "summarize": .object(["type": .string("boolean"), "description": .string("是否對長文字做頭尾摘要（預設 false）")])
+                    ])
+                ])
+            ),
+
+            Tool(
+                name: "compare_documents_markdown",
+                description: "比對多份 .docx 並輸出 markdown 變更時間軸（versions table + 相鄰版本 pairwise diff）。要求至少 2 份文件，按陣列順序視為 v1 → v2 → v3。",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "documents": .object([
+                            "type": .string("array"),
+                            "description": .string("有序的文件清單，每筆為 { path, label }；至少 2 筆"),
+                            "items": .object([
+                                "type": .string("object"),
+                                "properties": .object([
+                                    "path": .object(["type": .string("string")]),
+                                    "label": .object(["type": .string("string")])
+                                ]),
+                                "required": .array([.string("path"), .string("label")])
+                            ])
+                        ]),
+                        "include_summary_table": .object(["type": .string("boolean"), "description": .string("是否包含 Versions table（預設 true）")]),
+                        "include_per_pair_diff": .object(["type": .string("boolean"), "description": .string("是否包含 pairwise diff 區段（預設 true）")]),
+                        "diff_format": .object([
+                            "type": .string("string"),
+                            "description": .string("Pairwise diff 格式（預設 narrative；可選 narrative / table / raw）"),
+                            "enum": .array([.string("narrative"), .string("table"), .string("raw")])
+                        ]),
+                        "summarize": .object(["type": .string("boolean"), "description": .string("是否對長文字做頭尾摘要（預設 false）")])
+                    ]),
+                    "required": .array([.string("documents")])
+                ])
+            ),
+
+            Tool(
+                name: "export_comment_threads_markdown",
+                description: "把單一 .docx 的註解依 parent / reply 結構分組輸出 markdown。支援 author alias 規範化、Old: 模式偵測、三種輸出格式（table / threaded / narrative）。",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼（Session Mode）")]),
+                        "source_path": .object(["type": .string("string"), "description": .string("檔案路徑（Direct Mode）")]),
+                        "author_aliases": .object([
+                            "type": .string("object"),
+                            "description": .string("作者別名對應表（raw author -> canonical name）。例：{\"kllay's PC\": \"Lay\"}"),
+                            "additionalProperties": .object(["type": .string("string")])
+                        ]),
+                        "detect_old_pattern": .object(["type": .string("boolean"), "description": .string("是否偵測 'Old: <quoted>\\n<new>' 非正式回覆 pattern（預設 false）")]),
+                        "format": .object([
+                            "type": .string("string"),
+                            "description": .string("輸出格式（預設 table；可選 table / threaded / narrative）"),
+                            "enum": .array([.string("table"), .string("threaded"), .string("narrative")])
+                        ]),
+                        "include_resolved": .object(["type": .string("boolean"), "description": .string("是否包含已解決的 thread（預設 true）")]),
+                        "summarize": .object(["type": .string("boolean"), "description": .string("是否對長文字做頭尾摘要（預設 false）")])
+                    ])
+                ])
+            ),
+
             // ==================== Phase 1: 進階排版功能 ====================
 
             // 10.1 set_columns - 多欄排版
@@ -4344,6 +4422,14 @@ class WordMCPServer {
             return try await getWordCountBySection(args: args)
         case "compare_documents":
             return try await compareDocuments(args: args)
+
+        // manuscript-review-markdown-export change
+        case "export_revision_summary_markdown":
+            return try await exportRevisionSummaryMarkdown(args: args)
+        case "compare_documents_markdown":
+            return try await compareDocumentsMarkdown(args: args)
+        case "export_comment_threads_markdown":
+            return try await exportCommentThreadsMarkdown(args: args)
 
         // Phase 1: 進階排版功能
         case "set_columns":
@@ -8105,6 +8191,160 @@ class WordMCPServer {
             docIdA: docIdA, docIdB: docIdB,
             infoA: infoA, infoB: infoB,
             entries: entries, mode: mode, contextLines: contextLines, maxResults: maxResults,
+            summarize: summarize
+        )
+    }
+
+    // MARK: - manuscript-review-markdown-export change
+
+    private func exportRevisionSummaryMarkdown(args: [String: Value]) async throws -> String {
+        if args["full_text"] != nil {
+            throw WordError.invalidParameter(
+                "full_text",
+                "removed in this release; use 'summarize' (inverted default — pass summarize: true to enable elision; omit for complete text)"
+            )
+        }
+        let (doc, _) = try await resolveDocument(args: args)
+        let fileName: String = {
+            if let p = args["source_path"]?.stringValue { return URL(fileURLWithPath: p).lastPathComponent }
+            if let id = args["doc_id"]?.stringValue { return id }
+            return "document"
+        }()
+        let summarize = args["summarize"]?.boolValue ?? false
+        let includeRevisions = args["include_revisions"]?.boolValue ?? true
+        let includeComments = args["include_comments"]?.boolValue ?? true
+        let groupBy: RevisionGroupBy = {
+            guard let s = args["group_by"]?.stringValue, let g = RevisionGroupBy(rawValue: s) else { return .author }
+            return g
+        }()
+
+        return formatRevisionSummaryMarkdown(
+            fileName: fileName,
+            revisions: doc.getRevisions(),
+            comments: doc.getComments(),
+            includeRevisions: includeRevisions,
+            includeComments: includeComments,
+            groupBy: groupBy,
+            summarize: summarize
+        )
+    }
+
+    private func compareDocumentsMarkdown(args: [String: Value]) async throws -> String {
+        if args["full_text"] != nil {
+            throw WordError.invalidParameter(
+                "full_text",
+                "removed in this release; use 'summarize' (inverted default — pass summarize: true to enable elision; omit for complete text)"
+            )
+        }
+        guard let docsArray = args["documents"]?.arrayValue else {
+            throw WordError.missingParameter("documents")
+        }
+        let documents: [DocumentRef] = try docsArray.map { entry in
+            guard
+                let obj = entry.objectValue,
+                let path = obj["path"]?.stringValue,
+                let label = obj["label"]?.stringValue
+            else {
+                throw WordError.invalidParameter("documents", "each entry must be {path: String, label: String}")
+            }
+            return DocumentRef(path: path, label: label)
+        }
+        guard documents.count >= 2 else {
+            throw WordError.invalidParameter("documents", "at least 2 documents required for a timeline; got \(documents.count)")
+        }
+        let includeSummary = args["include_summary_table"]?.boolValue ?? true
+        let includePerPairDiff = args["include_per_pair_diff"]?.boolValue ?? true
+        let summarize = args["summarize"]?.boolValue ?? false
+        let format: DiffFormat = {
+            guard let s = args["diff_format"]?.stringValue, let f = DiffFormat(rawValue: s) else { return .narrative }
+            return f
+        }()
+
+        // Bulk-open: load every doc transiently, gather stats, run pairwise diffs, then release.
+        var openedDocs: [(label: String, doc: WordDocument)] = []
+        for ref in documents {
+            guard FileManager.default.fileExists(atPath: ref.path) else {
+                throw WordError.fileNotFound(ref.path)
+            }
+            let url = URL(fileURLWithPath: ref.path)
+            let document = try DocxReader.read(from: url)
+            openedDocs.append((label: ref.label, doc: document))
+        }
+
+        let stats: [DocStats] = openedDocs.map { entry in
+            let info = entry.doc.getInfo()
+            return DocStats(
+                label: entry.label,
+                revisionCount: entry.doc.getRevisions().count,
+                commentCount: entry.doc.getComments().count,
+                wordCount: info.wordCount
+            )
+        }
+
+        var pairwiseDiffs: [(fromLabel: String, toLabel: String, diff: String)] = []
+        if includePerPairDiff {
+            for i in 0..<(openedDocs.count - 1) {
+                let from = openedDocs[i]
+                let to = openedDocs[i + 1]
+                let snapA = snapshotParagraphs(from.doc)
+                let snapB = snapshotParagraphs(to.doc)
+                let dp = computeLCS(snapA, snapB)
+                let entries = buildDiffEntries(snapA, snapB, dp, mode: "text")
+                let infoA = (paragraphs: snapA.count, words: snapA.reduce(0) { $0 + countWords($1.text) })
+                let infoB = (paragraphs: snapB.count, words: snapB.reduce(0) { $0 + countWords($1.text) })
+                let diffText = formatComparisonResult(
+                    docIdA: from.label, docIdB: to.label,
+                    infoA: infoA, infoB: infoB,
+                    entries: entries, mode: "text", contextLines: 0, maxResults: 0,
+                    summarize: summarize
+                )
+                pairwiseDiffs.append((from.label, to.label, diffText))
+            }
+        }
+
+        return formatCompareDocumentsMarkdown(
+            documents: documents,
+            docStats: stats,
+            pairwiseDiffs: pairwiseDiffs,
+            includeSummaryTable: includeSummary,
+            includePerPairDiff: includePerPairDiff,
+            diffFormat: format
+        )
+    }
+
+    private func exportCommentThreadsMarkdown(args: [String: Value]) async throws -> String {
+        if args["full_text"] != nil {
+            throw WordError.invalidParameter(
+                "full_text",
+                "removed in this release; use 'summarize' (inverted default — pass summarize: true to enable elision; omit for complete text)"
+            )
+        }
+        let (doc, _) = try await resolveDocument(args: args)
+        let summarize = args["summarize"]?.boolValue ?? false
+        let detect = args["detect_old_pattern"]?.boolValue ?? false
+        let includeResolved = args["include_resolved"]?.boolValue ?? true
+        let format: CommentThreadFormat = {
+            guard let s = args["format"]?.stringValue, let f = CommentThreadFormat(rawValue: s) else { return .table }
+            return f
+        }()
+
+        let aliasMap: [String: String] = {
+            guard let obj = args["author_aliases"]?.objectValue else { return [:] }
+            var dict: [String: String] = [:]
+            for (key, value) in obj {
+                if let s = value.stringValue { dict[key] = s }
+            }
+            return dict
+        }()
+        let aliases = AuthorAliasMap(aliasMap)
+
+        let threads = buildCommentThreads(comments: doc.getCommentsFull(), aliases: aliases)
+
+        return formatCommentThreadsMarkdown(
+            threads: threads,
+            format: format,
+            includeResolved: includeResolved,
+            detectOldPatternFlag: detect,
             summarize: summarize
         )
     }
