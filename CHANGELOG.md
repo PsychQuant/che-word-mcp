@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added (manuscript-review-markdown-export change in PsychQuant/macdoc)
+
+- **New tools** — `export_revision_summary_markdown`, `compare_documents_markdown`, `export_comment_threads_markdown` (per-doc summary, multi-doc cumulative timeline, comment threading with author alias normalization). Closes [PsychQuant/che-word-mcp#2](https://github.com/PsychQuant/che-word-mcp/issues/2) [#3](https://github.com/PsychQuant/che-word-mcp/issues/3) [#4](https://github.com/PsychQuant/che-word-mcp/issues/4).
+- **`AuthorAliasMap` helper** — shared canonicalization map used by the new comment-threading and timeline tools (e.g., `kllay's PC` → `Lay`).
+- **ooxml-swift `WordDocument.getCommentsFull()`** — additive API returning the complete `Comment` struct including `parentId` for reply threading. Existing `getComments()` tuple API unchanged.
+
+### Changed (BREAKING)
+
+- **`get_revisions` and `compare_documents`** — `full_text: Bool = false` parameter REMOVED, replaced by `summarize: Bool = false` with INVERTED default. Default behavior now returns complete text with no upper bound. Pass `summarize: true` to elide individual entries longer than 5000 chars (head 30 + ` [...] ` + tail 30). Closes [PsychQuant/che-word-mcp#5](https://github.com/PsychQuant/che-word-mcp/issues/5).
+  - **Migration**: callers passing `full_text: true` should remove the argument (default is now complete). Callers passing `full_text: false` should replace with `summarize: true`. The MCP server rejects `full_text` with an `invalidParameter` error pointing to the new parameter name.
+  - **Rationale**: silent data loss via default truncation is harder to debug than context-window overflow. LLM callers can re-invoke with `summarize: true` if they hit context limits.
+  - **Policy applies to**: all current and future che-word-mcp tools that return potentially long text. The `truncateText` internal helper now centrally enforces the 5000-char threshold.
+
+### Notes
+
+- This entry tracks Spectra change [`manuscript-review-markdown-export`](https://github.com/PsychQuant/macdoc/tree/main/openspec/changes/manuscript-review-markdown-export) in PsychQuant/macdoc, which advances umbrella tracking issue [PsychQuant/macdoc#75](https://github.com/PsychQuant/macdoc/issues/75).
+
 ## [1.18.0] - 2026-04-14
 
 ### Fixed

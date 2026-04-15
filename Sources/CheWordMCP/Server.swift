@@ -2,7 +2,7 @@ import Foundation
 import MCP
 import OOXMLSwift
 import WordToMDSwift
-import DocConverterSwift
+import CommonConverterSwift
 
 /// Word MCP Server - Swift OOXML Word 文件處理
 class WordMCPServer {
@@ -2614,7 +2614,7 @@ class WordMCPServer {
             // 9.8 get_revisions - 取得所有修訂記錄
             Tool(
                 name: "get_revisions",
-                description: "取得文件中所有的修訂追蹤記錄。預設長文字（>500 字元）做頭尾摘要，傳 full_text: true 取得完整內容（支援 Direct Mode）",
+                description: "取得文件中所有的修訂追蹤記錄。預設回傳完整修訂文字。若需縮減 context，傳 summarize: true 對超過 5000 字元的單筆條目做頭尾摘要。支援 Direct Mode（傳 source_path）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -2626,9 +2626,9 @@ class WordMCPServer {
                             "type": .string("string"),
                             "description": .string("檔案路徑（Direct Mode，免開啟）")
                         ]),
-                        "full_text": .object([
+                        "summarize": .object([
                             "type": .string("boolean"),
-                            "description": .string("回傳完整修訂文字（預設 false，長文字做頭尾摘要）")
+                            "description": .string("是否對長文字做頭尾摘要（預設 false 回傳完整文字；true 時超過 5000 字元的單筆條目顯示為 head30 [...] tail30）")
                         ])
                     ])
                 ])
@@ -2913,6 +2913,10 @@ class WordMCPServer {
                             "type": .string("array"),
                             "description": .string("自定義 heading 樣式名稱（用於 structure mode，如 [\"EC8\", \"ECtitle\"]）"),
                             "items": .object(["type": .string("string")])
+                        ]),
+                        "summarize": .object([
+                            "type": .string("boolean"),
+                            "description": .string("是否對長文字做頭尾摘要（預設 false 回傳完整文字；true 時超過 5000 字元的單筆條目顯示為 head30 [...] tail30）")
                         ])
                     ]),
                     "required": .array([.string("doc_id_a"), .string("doc_id_b")])
@@ -7017,9 +7021,17 @@ class WordMCPServer {
 
     // 9.8 get_revisions - 取得所有修訂記錄
     private func getRevisions(args: [String: Value]) async throws -> String {
+        // Reject deprecated full_text parameter (replaced by summarize, inverted default).
+        // Spec: word-mcp-markdown-export — Requirement: full_text parameter is removed.
+        if args["full_text"] != nil {
+            throw WordError.invalidParameter(
+                "full_text",
+                "removed in this release; use 'summarize' (inverted default — pass summarize: true to enable elision; omit for complete text)"
+            )
+        }
+
         let (doc, _) = try await resolveDocument(args: args)
-        let fullText = args["full_text"]?.boolValue ?? false
-        let maxLen = fullText ? Int.max : 500
+        let summarize = args["summarize"]?.boolValue ?? false
 
         let revisions = doc.getRevisions()
         if revisions.isEmpty {
@@ -7033,10 +7045,10 @@ class WordMCPServer {
             let author = revision.author
             output += "[\(revision.id)] \(typeStr) by \(author) at paragraph \(revision.paragraphIndex)\n"
             if let original = revision.originalText {
-                output += "    Original: \(truncateText(original, maxLength: maxLen))\n"
+                output += "    Original: \(truncateText(original, summarize: summarize))\n"
             }
             if let newText = revision.newText {
-                output += "    New: \(truncateText(newText, maxLength: maxLen))\n"
+                output += "    New: \(truncateText(newText, summarize: summarize))\n"
             }
         }
         return output
@@ -7846,8 +7858,19 @@ class WordMCPServer {
         return entries
     }
 
-    private func truncateText(_ text: String, maxLength: Int = 500, contextChars: Int = 30) -> String {
-        guard text.count > maxLength else { return text }
+    /// Apply the unified truncation policy.
+    ///
+    /// Per `manuscript-review-markdown-export` design — Decision: Truncation Policy is
+    /// Default-Complete and Decision: Elision Threshold is 5000 chars per entry.
+    ///
+    /// - When `summarize == false` (default), returns `text` unchanged. No upper bound.
+    /// - When `summarize == true`, returns `text` unchanged if its length is `<= threshold`,
+    ///   otherwise emits `<first 30 chars> [...] <last 30 chars>`.
+    ///
+    /// All MCP tools that return potentially long text route their per-entry text through
+    /// this helper, threading the caller's `summarize` argument from tool input.
+    private func truncateText(_ text: String, summarize: Bool = false, threshold: Int = 5000, contextChars: Int = 30) -> String {
+        guard summarize, text.count > threshold else { return text }
         let start = text.prefix(contextChars)
         let end = text.suffix(contextChars)
         return "\(start) [...] \(end)"
@@ -7857,7 +7880,8 @@ class WordMCPServer {
         docIdA: String, docIdB: String,
         snapshotsA: [ParagraphSnapshot], snapshotsB: [ParagraphSnapshot],
         infoA: (paragraphs: Int, words: Int), infoB: (paragraphs: Int, words: Int),
-        customHeadingStyles: [String]? = nil
+        customHeadingStyles: [String]? = nil,
+        summarize: Bool = false
     ) -> String {
         var output = """
         === Document Comparison (Structure) ===
@@ -7900,7 +7924,7 @@ class WordMCPServer {
             if isMatch {
                 let indent = headingIndent(s.style ?? "")
                 let marker = isHeuristic ? " (?)" : ""
-                output += "\(indent)[\(s.index)] (\(s.style ?? ""))\(marker) \(truncateText(s.text, maxLength: 80))\n"
+                output += "\(indent)[\(s.index)] (\(s.style ?? ""))\(marker) \(truncateText(s.text, summarize: summarize))\n"
             }
         }
         output += "\n--- Heading Outline: Compare (\(docIdB)) ---\n"
@@ -7909,7 +7933,7 @@ class WordMCPServer {
             if isMatch {
                 let indent = headingIndent(s.style ?? "")
                 let marker = isHeuristic ? " (?)" : ""
-                output += "\(indent)[\(s.index)] (\(s.style ?? ""))\(marker) \(truncateText(s.text, maxLength: 80))\n"
+                output += "\(indent)[\(s.index)] (\(s.style ?? ""))\(marker) \(truncateText(s.text, summarize: summarize))\n"
             }
         }
         return output
@@ -7918,7 +7942,8 @@ class WordMCPServer {
     private func formatComparisonResult(
         docIdA: String, docIdB: String,
         infoA: (paragraphs: Int, words: Int), infoB: (paragraphs: Int, words: Int),
-        entries: [DiffEntry], mode: String, contextLines: Int, maxResults: Int = 0
+        entries: [DiffEntry], mode: String, contextLines: Int, maxResults: Int = 0,
+        summarize: Bool = false
     ) -> String {
         let unchanged = entries.filter { $0.type == .unchanged }.count
         let modified = entries.filter { $0.type == .modified }.count
@@ -7974,7 +7999,7 @@ class WordMCPServer {
                     lookBack -= 1
                 }
                 for ctx in contextEntries {
-                    output += "\n  . A[\(ctx.indexA ?? 0)] \(truncateText(ctx.textA ?? "", maxLength: 80))"
+                    output += "\n  . A[\(ctx.indexA ?? 0)] \(truncateText(ctx.textA ?? "", summarize: summarize))"
                 }
             }
 
@@ -7982,22 +8007,22 @@ class WordMCPServer {
             switch entry.type {
             case .modified:
                 output += "\n[MODIFIED] A[\(entry.indexA!)] → B[\(entry.indexB!)] (\(style))"
-                output += "\n  - \(truncateText(entry.textA ?? "", maxLength: 200))"
-                output += "\n  + \(truncateText(entry.textB ?? "", maxLength: 200))"
+                output += "\n  - \(truncateText(entry.textA ?? "", summarize: summarize))"
+                output += "\n  + \(truncateText(entry.textB ?? "", summarize: summarize))"
             case .deleted:
                 output += "\n[DELETED] A[\(entry.indexA!)] (\(style))"
-                output += "\n  \(truncateText(entry.textA ?? "", maxLength: 200))"
+                output += "\n  \(truncateText(entry.textA ?? "", summarize: summarize))"
             case .added:
                 output += "\n[ADDED] B[\(entry.indexB!)] (\(style))"
-                output += "\n  \(truncateText(entry.textB ?? "", maxLength: 200))"
+                output += "\n  \(truncateText(entry.textB ?? "", summarize: summarize))"
             case .formatOnly:
                 output += "\n[FORMAT_ONLY] A[\(entry.indexA!)] → B[\(entry.indexB!)] (\(style))"
-                output += "\n  Text: \(truncateText(entry.textA ?? "", maxLength: 120))"
+                output += "\n  Text: \(truncateText(entry.textA ?? "", summarize: summarize))"
                 // Show formatting diff
                 let fmtA = entry.formattedA ?? ""
                 let fmtB = entry.formattedB ?? ""
-                output += "\n  Base fmt: \(truncateText(fmtA, maxLength: 200))"
-                output += "\n  Comp fmt: \(truncateText(fmtB, maxLength: 200))"
+                output += "\n  Base fmt: \(truncateText(fmtA, summarize: summarize))"
+                output += "\n  Comp fmt: \(truncateText(fmtB, summarize: summarize))"
             case .unchanged:
                 break
             }
@@ -8007,6 +8032,15 @@ class WordMCPServer {
     }
 
     private func compareDocuments(args: [String: Value]) async throws -> String {
+        // Reject deprecated full_text parameter (replaced by summarize).
+        // Spec: word-mcp-markdown-export — Requirement: full_text parameter is removed.
+        if args["full_text"] != nil {
+            throw WordError.invalidParameter(
+                "full_text",
+                "removed in this release; use 'summarize' (inverted default — pass summarize: true to enable elision; omit for complete text)"
+            )
+        }
+
         guard let docIdA = args["doc_id_a"]?.stringValue else {
             throw WordError.missingParameter("doc_id_a")
         }
@@ -8026,6 +8060,7 @@ class WordMCPServer {
         let mode = args["mode"]?.stringValue ?? "text"
         let contextLines = min(max(args["context_lines"]?.intValue ?? 0, 0), 3)
         let maxResults = max(args["max_results"]?.intValue ?? 0, 0)
+        let summarize = args["summarize"]?.boolValue ?? false
 
         // Parse custom heading styles for structure mode
         let customHeadingStyles: [String]? = {
@@ -8058,7 +8093,8 @@ class WordMCPServer {
                 docIdA: docIdA, docIdB: docIdB,
                 snapshotsA: snapshotsA, snapshotsB: snapshotsB,
                 infoA: infoA, infoB: infoB,
-                customHeadingStyles: customHeadingStyles
+                customHeadingStyles: customHeadingStyles,
+                summarize: summarize
             )
         }
 
@@ -8068,7 +8104,8 @@ class WordMCPServer {
         return formatComparisonResult(
             docIdA: docIdA, docIdB: docIdB,
             infoA: infoA, infoB: infoB,
-            entries: entries, mode: mode, contextLines: contextLines, maxResults: maxResults
+            entries: entries, mode: mode, contextLines: contextLines, maxResults: maxResults,
+            summarize: summarize
         )
     }
 
