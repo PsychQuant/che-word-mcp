@@ -49,30 +49,15 @@
 | v1.1.0 | 2026-01-16 | 修復 MCPB manifest.json 格式 |
 | v1.0.0 | 2026-01-16 | 初始版本，83 個工具 |
 
-## 安裝
+## 快速安裝
 
-### 系統需求
+### Claude Desktop
 
-- macOS 13.0+ (Ventura 或更新版本)
-- Swift 5.9+
+#### Option A：MCPB 一鍵安裝（推薦）
 
-### 從原始碼編譯
+從 [Releases](https://github.com/PsychQuant/che-word-mcp/releases) 下載最新 `.mcpb` 檔，雙擊安裝。
 
-```bash
-git clone https://github.com/PsychQuant/che-word-mcp.git
-cd che-word-mcp
-swift build -c release
-```
-
-執行檔位於 `.build/release/CheWordMCP`
-
-### 加入 Claude Code
-
-```bash
-claude mcp add che-word-mcp /path/to/che-word-mcp/.build/release/CheWordMCP
-```
-
-### 加入 Claude Desktop
+#### Option B：手動設定
 
 編輯 `~/Library/Application Support/Claude/claude_desktop_config.json`：
 
@@ -80,10 +65,69 @@ claude mcp add che-word-mcp /path/to/che-word-mcp/.build/release/CheWordMCP
 {
   "mcpServers": {
     "che-word-mcp": {
-      "command": "/path/to/che-word-mcp/.build/release/CheWordMCP"
+      "command": "/usr/local/bin/CheWordMCP"
     }
   }
 }
+```
+
+### Claude Code (CLI)
+
+#### Option A：安裝為 Plugin（推薦）
+
+Plugin 內建 **version-aware wrapper**，首次使用會自動從 GitHub Release 下載 binary（plugin 升級時也會自動重抓新版 binary），不需要自己跑 `swift build`。
+
+兩步驟——註冊 marketplace 一次，然後安裝 plugin：
+
+```bash
+# 1. 註冊 marketplace（僅需一次）
+claude plugin marketplace add PsychQuant/psychquant-claude-plugins
+
+# 2. 安裝 plugin
+claude plugin install che-word-mcp@psychquant-claude-plugins
+```
+
+> **已在 Claude Code 裡？** 等效的 slash command `/plugin marketplace add PsychQuant/psychquant-claude-plugins` 和 `/plugin install che-word-mcp@psychquant-claude-plugins` 效果相同。
+
+> **說明：** Plugin 包了一層 wrapper 自動下載 binary。如果 `~/bin/CheWordMCP` 不存在（或 sidecar `~/bin/.CheWordMCP.version` 比 plugin 釘選版本舊），下次觸發 MCP 時會自動從 GitHub Releases 重新下載。
+
+#### Option B：獨立 MCP 安裝
+
+只要 MCP server、不需要 plugin 的 slash commands / skills / hooks：
+
+```bash
+# 若 ~/bin 不存在先建
+mkdir -p ~/bin
+
+# 下載最新 release binary
+curl -L https://github.com/PsychQuant/che-word-mcp/releases/latest/download/CheWordMCP -o ~/bin/CheWordMCP
+chmod +x ~/bin/CheWordMCP
+
+# 註冊到 Claude Code
+# --scope user    : 所有專案都可用（存在 ~/.claude.json）
+# --transport stdio: 本地 binary 透過 stdin/stdout 互動
+# --              : 分隔 claude options 和實際命令
+claude mcp add --scope user --transport stdio che-word-mcp -- ~/bin/CheWordMCP
+```
+
+> **💡 提示：** 把 binary 放在本地路徑如 `~/bin/`，避免放到 Dropbox / iCloud / OneDrive 等雲端同步資料夾——同步操作可能造成 MCP 連線中斷。
+
+### 從原始碼編譯（選擇性）
+
+追 main branch 或想貢獻 patch 時才需要。
+
+#### 系統需求
+
+- macOS 13.0+ (Ventura 或更新版本)
+- Swift 5.9+
+
+```bash
+git clone https://github.com/PsychQuant/che-word-mcp.git
+cd che-word-mcp
+swift build -c release
+
+# 安裝
+cp .build/release/CheWordMCP ~/bin/
 ```
 
 ## AI Agent 使用方式

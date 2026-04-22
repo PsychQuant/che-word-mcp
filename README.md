@@ -49,22 +49,72 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 | v1.1.0 | 2026-01-16 | Fix MCPB manifest.json format for Claude Desktop |
 | v1.0.0 | 2026-01-16 | Initial release with 83 tools, refactored to use ooxml-swift |
 
-## Installation
+## Quick Start
 
-### Option 1: Download from Release (Recommended)
+### For Claude Desktop
 
-Download the latest release from [GitHub Releases](https://github.com/PsychQuant/che-word-mcp/releases):
+#### Option A: MCPB One-Click Install (Recommended)
 
-- **CheWordMCP** - Universal Binary (arm64 + x86_64)
-- **che-word-mcp.mcpb** - MCPB package
+Download the latest `.mcpb` file from [Releases](https://github.com/PsychQuant/che-word-mcp/releases) and double-click to install.
 
-```bash
-# Download and install
-curl -L https://github.com/PsychQuant/che-word-mcp/releases/latest/download/CheWordMCP -o ~/bin/CheWordMCP
-chmod +x ~/bin/CheWordMCP
+#### Option B: Manual Configuration
+
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "che-word-mcp": {
+      "command": "/usr/local/bin/CheWordMCP"
+    }
+  }
+}
 ```
 
-### Option 2: Build from Source
+### For Claude Code (CLI)
+
+#### Option A: Install as Plugin (Recommended)
+
+The plugin bundles a version-aware wrapper that **auto-downloads the binary** on first use (and re-downloads whenever the plugin itself is updated — no `swift build` needed).
+
+Two steps — register the marketplace once, then install the plugin:
+
+```bash
+# 1. Register the marketplace (one-time)
+claude plugin marketplace add PsychQuant/psychquant-claude-plugins
+
+# 2. Install the plugin
+claude plugin install che-word-mcp@psychquant-claude-plugins
+```
+
+> **Inside Claude Code?** The slash-command equivalents `/plugin marketplace add PsychQuant/psychquant-claude-plugins` and `/plugin install che-word-mcp@psychquant-claude-plugins` work the same way.
+
+> **Note:** The plugin wraps the MCP binary with auto-download. If the binary is missing from `~/bin/CheWordMCP` (or the sidecar `~/bin/.CheWordMCP.version` is older than the plugin's pinned version), it will be downloaded from GitHub Releases on next invocation.
+
+#### Option B: Install as standalone MCP
+
+If you only need the MCP server without plugin features (slash commands, skills, SessionStart hooks):
+
+```bash
+# Create ~/bin if needed
+mkdir -p ~/bin
+
+# Download the latest release
+curl -L https://github.com/PsychQuant/che-word-mcp/releases/latest/download/CheWordMCP -o ~/bin/CheWordMCP
+chmod +x ~/bin/CheWordMCP
+
+# Register with Claude Code
+# --scope user    : available across all projects (stored in ~/.claude.json)
+# --transport stdio: local binary execution via stdin/stdout
+# --              : separator between claude options and the command
+claude mcp add --scope user --transport stdio che-word-mcp -- ~/bin/CheWordMCP
+```
+
+> **💡 Tip:** Install the binary into a local directory like `~/bin/`. Avoid cloud-synced folders (Dropbox, iCloud, OneDrive) — their sync operations can break MCP connections.
+
+### Build from Source (Optional)
+
+Use this only if you want to track `main` or contribute patches.
 
 #### Prerequisites
 
@@ -75,28 +125,9 @@ chmod +x ~/bin/CheWordMCP
 git clone https://github.com/PsychQuant/che-word-mcp.git
 cd che-word-mcp
 swift build -c release
-```
 
-The binary will be located at `.build/release/CheWordMCP`
-
-### Add to Claude Code
-
-```bash
-claude mcp add che-word-mcp /path/to/che-word-mcp/.build/release/CheWordMCP
-```
-
-### Add to Claude Desktop
-
-Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "che-word-mcp": {
-      "command": "/path/to/che-word-mcp/.build/release/CheWordMCP"
-    }
-  }
-}
+# Install
+cp .build/release/CheWordMCP ~/bin/
 ```
 
 ## Two Modes of Operation
