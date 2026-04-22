@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-04-22
+
+### Added — text-anchor compound tool
+
+Closes [#14](https://github.com/PsychQuant/che-word-mcp/issues/14). Eliminates the `search_text + insert_*` 2-call pattern by adding text-anchor parameters to insertion tools. A workflow that previously required 84 RPCs (Gao document: 12 images + 11 tables + 19 equations, each 2 calls for search + insert) can now be done in 42.
+
+- **`insert_caption`** now accepts 5 anchor types (up from 3): `paragraph_index` | `after_image_id` | `after_table_index` | `after_text` | `before_text`. `text_instance: integer` (1-based, default 1) disambiguates when same phrase appears multiple times.
+
+- **`insert_image_from_path`** now accepts `after_text` / `before_text` / `text_instance` in addition to `index` and `into_table_cell`.
+
+- **Under the hood**: both handlers use new `InsertLocation.afterText(String, instance: Int)` and `.beforeText(...)` cases from ooxml-swift 0.9.0. Match is `substring contains` on flattened run text (cross-run safe, same algorithm as v2.0.0 `TextReplacementEngine`).
+
+### Error handling
+
+- **Text not found** → `Error: text 'X' not found (instance N)` with explicit search text + instance number. Fail fast, no fallback.
+- **Multiple anchors provided** → `Error: exactly one of paragraph_index / after_image_id / after_table_index / after_text / before_text must be provided`.
+
+### Depends on
+
+- ooxml-swift 0.9.0+ (adds `.afterText` / `.beforeText` cases and `InsertLocationError.textNotFound`).
+
+### Not in scope (follow-up)
+
+- Regex / case-insensitive `after_text` matching (v1 is exact substring)
+- Multi-paragraph-span matching
+- `insert_paragraph` text-anchor support (schema exists but that tool isn't part of this bump)
+
 ## [2.2.0] - 2026-04-22
 
 ### Added — batch API tools
