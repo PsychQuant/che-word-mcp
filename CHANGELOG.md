@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-04-22
+
+### Added — session state API
+
+Closes [#12](https://github.com/PsychQuant/che-word-mcp/issues/12), [#13](https://github.com/PsychQuant/che-word-mcp/issues/13), [#15](https://github.com/PsychQuant/che-word-mcp/issues/15) via the `word-mcp-session-lifecycle` Spectra change.
+
+Four new MCP tools + a new `SessionState` module give explicit visibility and control over the in-memory / disk state:
+
+- **`get_session_state`** — snapshot of `{ source_path, disk_hash_hex, disk_mtime_iso8601, is_dirty, track_changes_enabled }`. Superset of `get_document_session_state` (which is preserved for backward compat).
+- **`revert_to_disk`** — re-read source path, discard in-memory edits, reset dirty flag. Destructive-by-design, no force flag needed.
+- **`reload_from_disk`** — cooperative reload that requires `force: true` on a dirty doc. Picks up external editor changes while protecting unsaved work.
+- **`check_disk_drift`** — informational check returning `{ drifted, disk_mtime, stored_mtime, disk_hash_matches }`. Never errors unless `doc_id` missing.
+
+Internals: 2 new parallel maps `documentDiskHash` / `documentDiskMtime` track SHA256 hash + mtime of source file; refreshed on `open_document` and `persistDocumentToDisk`. `SessionState` module (`Sources/CheWordMCP/SessionState.swift`) exposes `computeSHA256`, `readMtime`, `checkDriftStatus` helpers + `SessionStateView` struct. 15 new XCTest cases.
+
+### Changed (BREAKING)
+
+- **`open_document`**: `track_changes` default flipped from implicit-true to explicit-`false`. Callers who want tracked edits must now pass `track_changes: true`. Rationale: majority of scripted workflows (R→Word, batch replace, document caption renumber) want clean edits; track-changes-on-default was a review-workflow artifact. Closes [#13](https://github.com/PsychQuant/che-word-mcp/issues/13).
+- **`close_document`**: new `discard_changes: Bool = false`. When the doc is dirty and `discard_changes` is false/absent, returns an error message containing `E_DIRTY_DOC` listing three recovery paths (`save_document` / `discard_changes: true` / `finalize_document`). Previously the dirty check raised a generic "unsaved changes" error; now the response is machine-parseable and action-oriented. Closes [#12](https://github.com/PsychQuant/che-word-mcp/issues/12).
+
+### Migration
+
+```
+# 2.x — implicit track-changes-on
+open_document(path, doc_id)
+
+# 3.x — pass track_changes: true to preserve 2.x behavior
+open_document(path, doc_id, track_changes: true)
+```
+
+```
+# 2.x — dirty close raised invalidParameter error
+close_document(doc_id)  # → error "unsaved changes"
+
+# 3.x — dirty close returns text response with E_DIRTY_DOC
+close_document(doc_id)  # → "Error: E_DIRTY_DOC ..."
+close_document(doc_id, discard_changes: true)  # → closes without save
+```
+
+### Not in scope (follow-up candidates)
+
+- Multi-session concurrent editing / locking
+- Undo/redo beyond `revert_to_disk`
+- FSEvents-based file watching (drift detection is lazy by design)
+- Diff-display in `check_disk_drift` response (just reports booleans + timestamps)
+- Partial reload (`reload_from_disk` is all-or-nothing)
+
 ## [2.3.0] - 2026-04-22
 
 ### Added — text-anchor compound tool

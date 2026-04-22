@@ -16,6 +16,9 @@ class WordMCPServer {
     private var documentDirtyState: [String: Bool] = [:]
     private var documentAutosave: [String: Bool] = [:]
     private var documentTrackChangesEnforced: [String: Bool] = [:]
+    /// Disk-drift detection (3.0.0 — Refs #12 #13 #15)
+    private var documentDiskHash: [String: Data] = [:]
+    private var documentDiskMtime: [String: Date] = [:]
 
     /// Word → Markdown 轉換器（嵌入 word-to-md-swift library）
     private let wordConverter = WordConverter()
@@ -125,6 +128,8 @@ class WordMCPServer {
         documentDirtyState.removeValue(forKey: docId)
         documentAutosave.removeValue(forKey: docId)
         documentTrackChangesEnforced.removeValue(forKey: docId)
+        documentDiskHash.removeValue(forKey: docId)
+        documentDiskMtime.removeValue(forKey: docId)
     }
 
     private func isDirty(docId: String) -> Bool {
@@ -157,6 +162,29 @@ class WordMCPServer {
         openDocuments[docId] = document
         documentOriginalPaths[docId] = path
         documentDirtyState[docId] = false
+        // Refresh disk-hash + mtime from freshly written file (3.0.0 — Refs #12 #13 #15)
+        if let hash = try? SessionState.computeSHA256(path: path) {
+            documentDiskHash[docId] = hash
+        }
+        if let mtime = try? SessionState.readMtime(path: path) {
+            documentDiskMtime[docId] = mtime
+        }
+    }
+
+    /// Snapshot the session state for response serialization.
+    /// Returns nil if `docId` is unknown.
+    private func sessionStateView(for docId: String) -> SessionStateView? {
+        guard openDocuments[docId] != nil,
+              let sourcePath = documentOriginalPaths[docId] else {
+            return nil
+        }
+        return SessionStateView(
+            sourcePath: sourcePath,
+            diskHash: documentDiskHash[docId],
+            diskMtime: documentDiskMtime[docId],
+            isDirty: isDirty(docId: docId),
+            trackChangesEnabled: documentTrackChangesEnforced[docId] ?? false
+        )
     }
 
     /// 儲存文件到記憶體（標記 dirty），若啟用 autosave 則同時寫入磁碟
@@ -264,7 +292,7 @@ class WordMCPServer {
             ),
             Tool(
                 name: "open_document",
-                description: "開啟現有的 Word 文件 (.docx)，預設啟用追蹤修訂",
+                description: "開啟現有的 Word 文件 (.docx)。BREAKING v3.0.0: track_changes 預設改為 false（之前是 true）；需要追蹤修訂的 caller 必須明確傳 track_changes: true。Refs #13.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -279,6 +307,10 @@ class WordMCPServer {
                         "autosave": .object([
                             "type": .string("boolean"),
                             "description": .string("是否在每次編輯後自動存檔回原始檔案")
+                        ]),
+                        "track_changes": .object([
+                            "type": .string("boolean"),
+                            "description": .string("v3.0.0 新增：是否啟用追蹤修訂（預設 false；之前是 implicit true，見 CHANGELOG 3.0.0 BREAKING）")
                         ])
                     ]),
                     "required": .array([.string("path"), .string("doc_id")])
@@ -304,13 +336,17 @@ class WordMCPServer {
             ),
             Tool(
                 name: "close_document",
-                description: "關閉已開啟的文件（有未存變更時會拒絕關閉）",
+                description: "關閉已開啟的文件。dirty doc 且無 discard_changes: true 時回傳 E_DIRTY_DOC 錯誤並列出三種恢復路徑：save_document / discard_changes: true / finalize_document。Refs #12.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "doc_id": .object([
                             "type": .string("string"),
                             "description": .string("文件識別碼")
+                        ]),
+                        "discard_changes": .object([
+                            "type": .string("boolean"),
+                            "description": .string("v3.0.0 新增：若 true 且 doc is dirty，直接釋放 in-memory state 不寫 disk（預設 false，dirty 時回 E_DIRTY_DOC）")
                         ])
                     ]),
                     "required": .array([.string("doc_id")])
@@ -337,6 +373,66 @@ class WordMCPServer {
             Tool(
                 name: "get_document_session_state",
                 description: "查看開啟文件的 session 狀態（dirty/autosave/track changes 等）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
+            ),
+            Tool(
+                name: "get_session_state",
+                description: "v3.0.0 — 取得完整 SessionState 快照，superset of get_document_session_state：含 source_path / disk_hash_hex / disk_mtime_iso8601 / is_dirty / track_changes_enabled。純查詢、無副作用。Refs #15.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
+            ),
+            Tool(
+                name: "revert_to_disk",
+                description: "v3.0.0 — 丟棄 in-memory 編輯，從 source path 重新讀取。destructive-by-design，不需 force flag。Refs #12 #15.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
+            ),
+            Tool(
+                name: "reload_from_disk",
+                description: "v3.0.0 — 從 source path 重新讀取，預設拒絕 dirty doc（需 force: true 覆蓋）。用於 pick up external editor 的改動同時保護未保存工作。Refs #15.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ]),
+                        "force": .object([
+                            "type": .string("boolean"),
+                            "description": .string("若 true，即使 dirty 也強制 reload（丟棄 in-memory 編輯）。預設 false。")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
+            ),
+            Tool(
+                name: "check_disk_drift",
+                description: "v3.0.0 — 檢查 in-memory 與 disk 的 drift 狀態。永不 error（除了 doc_id 不存在）。回傳 { drifted, disk_mtime, stored_mtime, disk_hash_matches }。Refs #15.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -4280,6 +4376,14 @@ class WordMCPServer {
             return try await finalizeDocument(args: args)
         case "get_document_session_state":
             return try await getDocumentSessionState(args: args)
+        case "get_session_state":
+            return try await getSessionState(args: args)
+        case "revert_to_disk":
+            return try await revertToDisk(args: args)
+        case "reload_from_disk":
+            return try await reloadFromDisk(args: args)
+        case "check_disk_drift":
+            return try await checkDiskDrift(args: args)
         case "list_open_documents":
             return await listOpenDocuments()
         case "get_document_info":
@@ -4682,15 +4786,28 @@ class WordMCPServer {
             throw WordError.documentAlreadyOpen(docId)
         }
         let autosave = args["autosave"]?.boolValue ?? false
+        // BREAKING v3.0.0: track_changes default flipped from on → off (Refs #13)
+        let trackChanges = args["track_changes"]?.boolValue ?? false
 
         let url = URL(fileURLWithPath: path)
         var doc = try DocxReader.read(from: url)
-        if !doc.isTrackChangesEnabled() {
+        if trackChanges && !doc.isTrackChangesEnabled() {
             doc.enableTrackChanges(author: defaultRevisionAuthor)
         }
         initializeSession(docId: docId, document: doc, sourcePath: path, autosave: autosave)
+        // Override trackChangesEnforced default (initializeSession sets true)
+        documentTrackChangesEnforced[docId] = trackChanges
 
-        return "Opened document '\(path)' with id: \(docId). Track changes is enabled by default."
+        // Capture disk-hash + mtime from freshly opened file (3.0.0 — Refs #15)
+        if let hash = try? SessionState.computeSHA256(path: path) {
+            documentDiskHash[docId] = hash
+        }
+        if let mtime = try? SessionState.readMtime(path: path) {
+            documentDiskMtime[docId] = mtime
+        }
+
+        let tcLabel = trackChanges ? "Track changes enabled." : "Track changes disabled (default since v3.0.0; pass track_changes: true to enable)."
+        return "Opened document '\(path)' with id: \(docId). \(tcLabel)"
     }
 
     private func saveDocument(args: [String: Value]) async throws -> String {
@@ -4719,16 +4836,22 @@ class WordMCPServer {
         guard openDocuments[docId] != nil else {
             throw WordError.documentNotFound(docId)
         }
+        // v3.0.0: explicit discard flag (Refs #12)
+        let discardChanges = args["discard_changes"]?.boolValue ?? false
 
-        if isDirty(docId: docId) {
-            throw WordError.invalidParameter(
-                "doc_id",
-                "Document '\(docId)' has unsaved changes. Use save_document or finalize_document first."
-            )
+        if isDirty(docId: docId) && !discardChanges {
+            return """
+            Error: E_DIRTY_DOC — document '\(docId)' has uncommitted changes.
+            Choose one:
+              - call save_document first to persist your edits, then close_document
+              - pass discard_changes: true to release without saving
+              - use finalize_document for save+close in one step
+            """
         }
 
         removeSession(docId: docId)
-        return "Closed document: \(docId)"
+        let suffix = (discardChanges && openDocuments[docId] == nil) ? " (changes discarded)" : ""
+        return "Closed document: \(docId)\(suffix)"
     }
 
     private func finalizeDocument(args: [String: Value]) async throws -> String {
@@ -4774,6 +4897,142 @@ class WordMCPServer {
         - Save without explicit path available: \(saveReady)
         - Close without save allowed: \(closeReady)
         - Finalize without explicit path available: \(finalizeReady)
+        """
+    }
+
+    // MARK: - v3.0.0 Session State API (Refs #12 #13 #15)
+
+    /// ISO8601 formatter for serialized session responses. Lazy static.
+    private static let iso8601Formatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    /// Hex encoding for SHA256 Data.
+    private func hexString(_ data: Data) -> String {
+        return data.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// get_session_state — superset of get_document_session_state
+    private func getSessionState(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let view = sessionStateView(for: docId) else {
+            throw WordError.documentNotFound(docId)
+        }
+        let diskHashHex = view.diskHash.map { hexString($0) } ?? "(none)"
+        let diskMtime = view.diskMtime.map { Self.iso8601Formatter.string(from: $0) } ?? "(none)"
+        return """
+        Session State (\(docId)):
+        - source_path: \(view.sourcePath)
+        - disk_hash_hex: \(diskHashHex)
+        - disk_mtime_iso8601: \(diskMtime)
+        - is_dirty: \(view.isDirty)
+        - track_changes_enabled: \(view.trackChangesEnabled)
+        """
+    }
+
+    /// revert_to_disk — re-read sourcePath, replace in-memory doc, reset dirty. Destructive-by-design.
+    private func revertToDisk(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard openDocuments[docId] != nil else {
+            throw WordError.documentNotFound(docId)
+        }
+        guard let path = documentOriginalPaths[docId], !path.isEmpty else {
+            return "Error: document '\(docId)' has no known source path to revert from"
+        }
+
+        let url = URL(fileURLWithPath: path)
+        let fresh = try DocxReader.read(from: url)
+        openDocuments[docId] = fresh
+        documentDirtyState[docId] = false
+        if let hash = try? SessionState.computeSHA256(path: path) {
+            documentDiskHash[docId] = hash
+        }
+        if let mtime = try? SessionState.readMtime(path: path) {
+            documentDiskMtime[docId] = mtime
+        }
+        return "Reverted '\(docId)' to disk state from \(path). All in-memory edits discarded."
+    }
+
+    /// reload_from_disk — cooperative reload (requires force on dirty).
+    private func reloadFromDisk(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard openDocuments[docId] != nil else {
+            throw WordError.documentNotFound(docId)
+        }
+        let force = args["force"]?.boolValue ?? false
+        if isDirty(docId: docId) && !force {
+            return """
+            Error: document '\(docId)' has uncommitted changes. Your in-memory edits would be lost.
+            Options:
+              - call save_document first to persist your edits, then retry reload_from_disk
+              - pass force: true to discard your edits and reload from disk
+            """
+        }
+        // Same semantics as revert from here.
+        guard let path = documentOriginalPaths[docId], !path.isEmpty else {
+            return "Error: document '\(docId)' has no known source path to reload from"
+        }
+        let url = URL(fileURLWithPath: path)
+        let fresh = try DocxReader.read(from: url)
+        openDocuments[docId] = fresh
+        documentDirtyState[docId] = false
+        if let hash = try? SessionState.computeSHA256(path: path) {
+            documentDiskHash[docId] = hash
+        }
+        if let mtime = try? SessionState.readMtime(path: path) {
+            documentDiskMtime[docId] = mtime
+        }
+        return "Reloaded '\(docId)' from disk at \(path). External edits picked up."
+    }
+
+    /// check_disk_drift — informational status, never errors except for missing doc_id.
+    private func checkDiskDrift(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard openDocuments[docId] != nil else {
+            throw WordError.documentNotFound(docId)
+        }
+        guard let path = documentOriginalPaths[docId], !path.isEmpty else {
+            return """
+            Disk drift for '\(docId)':
+            - drifted: true
+            - reason: no known source path (cannot compare)
+            """
+        }
+        let storedHash = documentDiskHash[docId]
+        let storedMtime = documentDiskMtime[docId]
+        let currentHash: Data?
+        let currentMtime: Date?
+        do {
+            currentHash = try SessionState.computeSHA256(path: path)
+            currentMtime = try SessionState.readMtime(path: path)
+        } catch {
+            return """
+            Disk drift for '\(docId)':
+            - drifted: true
+            - reason: source file unreadable (\(error.localizedDescription))
+            """
+        }
+        let hashMatches = (storedHash != nil) && (storedHash == currentHash)
+        let mtimeMatches = (storedMtime != nil) && (storedMtime == currentMtime)
+        let drifted = !hashMatches || !mtimeMatches
+        let storedMtimeStr = storedMtime.map { Self.iso8601Formatter.string(from: $0) } ?? "(none)"
+        let currentMtimeStr = currentMtime.map { Self.iso8601Formatter.string(from: $0) } ?? "(none)"
+        return """
+        Disk drift for '\(docId)':
+        - drifted: \(drifted)
+        - disk_mtime: \(currentMtimeStr)
+        - stored_mtime: \(storedMtimeStr)
+        - disk_hash_matches: \(hashMatches)
         """
     }
 

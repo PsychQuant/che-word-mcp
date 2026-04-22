@@ -1,8 +1,8 @@
 {
   "manifest_version": "0.3",
   "name": "che-word-mcp",
-  "version": "2.3.0",
-  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v2.3.0: text-anchor compound tool — insert_caption / insert_image_from_path 新增 after_text / before_text + text_instance 參數，一個 RPC 完成 search+insert。依賴 ooxml-swift 0.9.0+。Refs #14.",
+  "version": "3.0.0",
+  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. BREAKING v3.0.0: session state API — 4 new tools (get_session_state / revert_to_disk / reload_from_disk / check_disk_drift) + open_document track_changes default flipped to false + close_document E_DIRTY_DOC error path with discard_changes flag. Closes #12 #13 #15.",
   "author": {
     "name": "Che Cheng"
   },
