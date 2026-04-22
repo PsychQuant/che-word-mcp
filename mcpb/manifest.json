@@ -1,8 +1,8 @@
 {
   "manifest_version": "0.3",
   "name": "che-word-mcp",
-  "version": "1.19.0",
-  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. 151 tools with Dual-Mode access, session state management, document safety checks, and manuscript review markdown export.",
+  "version": "2.0.0",
+  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. BREAKING v2.0.0: 4 core tools rewritten on new ooxml-swift 0.8.0 primitives — real SEQ field captions, cross-run text replacement, Chinese label support, structured OMML equations, auto-aspect images.",
   "author": {
     "name": "Che Cheng"
   },
