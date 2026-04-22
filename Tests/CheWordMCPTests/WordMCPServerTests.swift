@@ -58,8 +58,12 @@ final class WordMCPServerTests: XCTestCase {
             arguments: ["doc_id": .string("doc")]
         )
 
-        XCTAssertEqual(closeResult.isError, true)
-        XCTAssertTrue(resultText(closeResult).contains("unsaved changes"))
+        // v3.0.0: dirty close returns an Error: E_DIRTY_DOC text response (not an MCP-level error)
+        // listing 3 recovery paths. Doc remains dirty and in openDocuments.
+        let text = resultText(closeResult)
+        XCTAssertTrue(text.contains("E_DIRTY_DOC"))
+        XCTAssertTrue(text.contains("discard_changes"))
+        XCTAssertTrue(text.contains("finalize_document"))
         XCTAssertTrue(server.isDocumentDirtyForTesting("doc"))
     }
 
@@ -178,7 +182,9 @@ final class WordMCPServerTests: XCTestCase {
             name: "open_document",
             arguments: [
                 "path": .string(url.path),
-                "doc_id": .string("doc")
+                "doc_id": .string("doc"),
+                // v3.0.0: track_changes default flipped to false; opt-in for this legacy test
+                "track_changes": .bool(true)
             ]
         )
         _ = await server.invokeToolForTesting(
