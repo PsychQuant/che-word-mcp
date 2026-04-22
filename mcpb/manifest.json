@@ -1,8 +1,8 @@
 {
   "manifest_version": "0.3",
   "name": "che-word-mcp",
-  "version": "2.2.0",
-  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v2.2.0: +replace_text_batch / +search_text_batch (sequential per-item, single save, dry_run). Reduces per-replace round-trip for large workflows (e.g., document caption renumber). Refs #18.",
+  "version": "2.3.0",
+  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v2.3.0: text-anchor compound tool — insert_caption / insert_image_from_path 新增 after_text / before_text + text_instance 參數，一個 RPC 完成 search+insert。依賴 ooxml-swift 0.9.0+。Refs #14.",
   "author": {
     "name": "Che Cheng"
   },

@@ -1318,11 +1318,23 @@ class WordMCPServer {
                         ]),
                         "index": .object([
                             "type": .string("integer"),
-                            "description": .string("插入段落索引（body 層級；與 into_table_cell 二擇一）")
+                            "description": .string("插入段落索引（body 層級；與其他 anchor 擇一）")
                         ]),
                         "into_table_cell": .object([
                             "type": .string("object"),
-                            "description": .string("插入到指定表格儲存格。格式：{ table_index: N, row: R, col: C }（與 index 二擇一）")
+                            "description": .string("插入到指定表格儲存格。格式：{ table_index: N, row: R, col: C }（anchor 擇一）")
+                        ]),
+                        "after_text": .object([
+                            "type": .string("string"),
+                            "description": .string("在含此文字的段落**之後**插入圖片。substring match on flattened run text（cross-run safe）。配合 text_instance 指定第幾次出現（預設 1）。（anchor 擇一）")
+                        ]),
+                        "before_text": .object([
+                            "type": .string("string"),
+                            "description": .string("在含此文字的段落**之前**插入圖片。規則同 after_text。（anchor 擇一）")
+                        ]),
+                        "text_instance": .object([
+                            "type": .string("integer"),
+                            "description": .string("after_text / before_text 的第 N 次匹配（1-based，預設 1）")
                         ]),
                         "name": .object([
                             "type": .string("string"),
@@ -3598,15 +3610,27 @@ class WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("插入位置段落索引（三 anchor 擇一；可搭配 position）")
+                            "description": .string("插入位置段落索引（五 anchor 擇一；可搭配 position）")
                         ]),
                         "after_image_id": .object([
                             "type": .string("string"),
-                            "description": .string("鎖定已插入圖片的 rId（insert_image 返回值），在該圖下方插 caption（三 anchor 擇一）")
+                            "description": .string("鎖定已插入圖片的 rId（insert_image 返回值），在該圖下方插 caption（五 anchor 擇一）")
                         ]),
                         "after_table_index": .object([
                             "type": .string("integer"),
-                            "description": .string("鎖定第 N 個 table（0-based），在其下方插 caption（三 anchor 擇一）")
+                            "description": .string("鎖定第 N 個 table（0-based），在其下方插 caption（五 anchor 擇一）")
+                        ]),
+                        "after_text": .object([
+                            "type": .string("string"),
+                            "description": .string("在含此文字的段落**之後**插入 caption。substring match on flattened run text（cross-run safe）。配合 text_instance（預設 1）指定第幾次出現。（五 anchor 擇一）")
+                        ]),
+                        "before_text": .object([
+                            "type": .string("string"),
+                            "description": .string("在含此文字的段落**之前**插入 caption。規則同 after_text。（五 anchor 擇一）")
+                        ]),
+                        "text_instance": .object([
+                            "type": .string("integer"),
+                            "description": .string("after_text / before_text 的第 N 次匹配（1-based，預設 1）")
                         ]),
                         "position": .object([
                             "type": .string("string"),
@@ -5879,8 +5903,9 @@ class WordMCPServer {
         let name = args["name"]?.stringValue ?? "Picture"
         let description = args["description"]?.stringValue ?? ""
 
-        // Resolve anchor: into_table_cell takes priority over index
+        // Resolve anchor: priority is into_table_cell > after_text/before_text > index
         let imageId: String
+        let textInstance = args["text_instance"]?.intValue ?? 1
         if let cellDict = args["into_table_cell"]?.objectValue,
            let tableIdx = cellDict["table_index"]?.intValue,
            let row = cellDict["row"]?.intValue,
@@ -5898,6 +5923,32 @@ class WordMCPServer {
                 return "Error: table index \(i) out of range"
             } catch let InsertLocationError.tableCellOutOfRange(t, r, c) {
                 return "Error: table[\(t)] cell (row: \(r), col: \(c)) out of range"
+            }
+        } else if let afterText = args["after_text"]?.stringValue {
+            do {
+                imageId = try doc.insertImage(
+                    path: path,
+                    widthPx: width,
+                    heightPx: height,
+                    at: .afterText(afterText, instance: textInstance),
+                    name: name,
+                    description: description
+                )
+            } catch let InsertLocationError.textNotFound(text, instance) {
+                return "Error: text '\(text)' not found (instance \(instance))"
+            }
+        } else if let beforeText = args["before_text"]?.stringValue {
+            do {
+                imageId = try doc.insertImage(
+                    path: path,
+                    widthPx: width,
+                    heightPx: height,
+                    at: .beforeText(beforeText, instance: textInstance),
+                    name: name,
+                    description: description
+                )
+            } catch let InsertLocationError.textNotFound(text, instance) {
+                return "Error: text '\(text)' not found (instance \(instance))"
             }
         } else {
             // body-level: use legacy index-based API
@@ -9560,14 +9611,22 @@ class WordMCPServer {
         let includeChapterNumber = args["include_chapter_number"]?.boolValue ?? false
         let position = args["position"]?.stringValue ?? "below"
 
-        // Anchor resolution: exactly one of paragraph_index / after_image_id / after_table_index
+        // Anchor resolution: exactly one of paragraph_index / after_image_id / after_table_index / after_text / before_text
         let paragraphIndexArg = args["paragraph_index"]?.intValue
         let afterImageIdArg = args["after_image_id"]?.stringValue
         let afterTableIndexArg = args["after_table_index"]?.intValue
-        let anchorCount = [paragraphIndexArg != nil, afterImageIdArg != nil, afterTableIndexArg != nil]
-            .filter { $0 }.count
+        let afterTextArg = args["after_text"]?.stringValue
+        let beforeTextArg = args["before_text"]?.stringValue
+        let textInstance = args["text_instance"]?.intValue ?? 1
+        let anchorCount = [
+            paragraphIndexArg != nil,
+            afterImageIdArg != nil,
+            afterTableIndexArg != nil,
+            afterTextArg != nil,
+            beforeTextArg != nil,
+        ].filter { $0 }.count
         guard anchorCount == 1 else {
-            return "Error: exactly one of paragraph_index / after_image_id / after_table_index must be provided (got \(anchorCount))"
+            return "Error: exactly one of paragraph_index / after_image_id / after_table_index / after_text / before_text must be provided (got \(anchorCount))"
         }
 
         // Build caption paragraph: label text + optional chapter STYLEREF + SEQ field + optional caption text
@@ -9603,8 +9662,12 @@ class WordMCPServer {
             location = .paragraphIndex(targetIdx)
         } else if let rId = afterImageIdArg {
             location = .afterImageId(rId)
+        } else if let tableIdx = afterTableIndexArg {
+            location = .afterTableIndex(tableIdx)
+        } else if let afterText = afterTextArg {
+            location = .afterText(afterText, instance: textInstance)
         } else {
-            location = .afterTableIndex(afterTableIndexArg!)
+            location = .beforeText(beforeTextArg!, instance: textInstance)
         }
 
         do {
@@ -9617,6 +9680,8 @@ class WordMCPServer {
             return "Error: image with id '\(rId)' not found"
         } catch let InsertLocationError.tableIndexOutOfRange(i) {
             return "Error: table index \(i) out of range"
+        } catch let InsertLocationError.textNotFound(text, instance) {
+            return "Error: text '\(text)' not found (instance \(instance))"
         }
     }
 
