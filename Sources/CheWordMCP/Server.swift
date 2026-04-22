@@ -10,7 +10,7 @@ class WordMCPServer {
     private let transport: StdioTransport
 
     /// 目前開啟的文件 (doc_id -> WordDocument)
-    private var openDocuments: [String: WordDocument] = [:]
+    internal var openDocuments: [String: WordDocument] = [:]
     /// Session state tracking (contributed by @ildunari)
     private var documentOriginalPaths: [String: String] = [:]
     private var documentDirtyState: [String: Bool] = [:]
@@ -132,7 +132,7 @@ class WordMCPServer {
         documentDiskMtime.removeValue(forKey: docId)
     }
 
-    private func isDirty(docId: String) -> Bool {
+    internal func isDirty(docId: String) -> Bool {
         documentDirtyState[docId] ?? false
     }
 
@@ -188,7 +188,7 @@ class WordMCPServer {
     }
 
     /// 儲存文件到記憶體（標記 dirty），若啟用 autosave 則同時寫入磁碟
-    private func storeDocument(
+    internal func storeDocument(
         _ document: WordDocument,
         for docId: String,
         markDirty: Bool = true
@@ -3741,6 +3741,117 @@ class WordMCPServer {
                 ])
             ),
 
+            // 12.1.1 v3.1.0 Caption CRUD (Refs #17)
+            Tool(
+                name: "list_captions",
+                description: "v3.1.0 — 列出文件所有 caption paragraphs（pStyle=Caption）with SEQ field info。返回 [{index, label, sequence_number, caption_text, paragraph_index}] in document order. Refs #17.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼")])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
+            ),
+            Tool(
+                name: "get_caption",
+                description: "v3.1.0 — 取得單一 caption 詳細資訊 { label, sequence_number, chapter_number?, caption_text, paragraph_index, field_instr_text }。Refs #17.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼")]),
+                        "index": .object(["type": .string("integer"), "description": .string("caption index (0-based，from list_captions)")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("index")])
+                ])
+            ),
+            Tool(
+                name: "update_caption",
+                description: "v3.1.0 — 修改 caption：new_caption_text 只換 SEQ 後的文字；new_label 同時換 label 與 SEQ identifier。必須提供其一。Refs #17.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼")]),
+                        "index": .object(["type": .string("integer"), "description": .string("caption index (0-based)")]),
+                        "new_caption_text": .object(["type": .string("string"), "description": .string("新的 caption 文字（可選）")]),
+                        "new_label": .object(["type": .string("string"), "description": .string("新的 label（Figure/Table/Equation/圖/表/公式，可選）")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("index")])
+                ])
+            ),
+            Tool(
+                name: "delete_caption",
+                description: "v3.1.0 — 刪除 caption paragraph。後續 captions index 會往前位移。Refs #17.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼")]),
+                        "index": .object(["type": .string("integer"), "description": .string("caption index (0-based)")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("index")])
+                ])
+            ),
+            Tool(
+                name: "update_all_fields",
+                description: "v3.1.0 — F9-equivalent：重算全文 SEQ field counters（body + headers + footers + footnotes + endnotes），支援 chapter-reset。非 SEQ fields (IF/DATE/PAGE/REF) 不動。返回 { identifier → final-count } 摘要。Refs #19.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼")])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
+            ),
+            Tool(
+                name: "list_equations",
+                description: "v3.1.0 — 列出文件所有 equations（<m:oMath> runs）。返回 [{index, paragraph_index, display_mode, components}]。Refs #21.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼")])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
+            ),
+            Tool(
+                name: "get_equation",
+                description: "v3.1.0 — 取得單一 equation 詳細資訊 { paragraph_index, display_mode, components (MathComponent JSON tree) }。Refs #21.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼")]),
+                        "index": .object(["type": .string("integer"), "description": .string("equation index (0-based)")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("index")])
+                ])
+            ),
+            Tool(
+                name: "update_equation",
+                description: "v3.1.0 — 取代 target equation 的 components tree。paragraph_index 和 display_mode 預設保留（除非 caller 明確傳 display_mode）。Refs #21.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼")]),
+                        "index": .object(["type": .string("integer"), "description": .string("equation index (0-based)")]),
+                        "components": .object(["type": .string("object"), "description": .string("新的 MathComponent JSON tree，同 insert_equation(components:) 格式")]),
+                        "display_mode": .object(["type": .string("boolean"), "description": .string("是否為獨立區塊（預設保留原值）")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("index"), .string("components")])
+                ])
+            ),
+            Tool(
+                name: "delete_equation",
+                description: "v3.1.0 — 刪除 target equation。若 equation 是該 paragraph 唯一 run，整段 paragraph 被刪除；否則只移除 equation run。Refs #21.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼")]),
+                        "index": .object(["type": .string("integer"), "description": .string("equation index (0-based)")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("index")])
+                ])
+            ),
+
             // 12.2 insert_cross_reference - 插入交互參照
             Tool(
                 name: "insert_cross_reference",
@@ -4678,6 +4789,25 @@ class WordMCPServer {
         // Phase 3: 學術功能
         case "insert_caption":
             return try await insertCaption(args: args)
+        // v3.1.0 Caption CRUD + update_all_fields + Equation CRUD (Refs #17 #19 #21)
+        case "list_captions":
+            return try await listCaptionsHandler(args: args)
+        case "get_caption":
+            return try await getCaptionHandler(args: args)
+        case "update_caption":
+            return try await updateCaptionHandler(args: args)
+        case "delete_caption":
+            return try await deleteCaptionHandler(args: args)
+        case "update_all_fields":
+            return try await updateAllFieldsHandler(args: args)
+        case "list_equations":
+            return try await listEquationsHandler(args: args)
+        case "get_equation":
+            return try await getEquationHandler(args: args)
+        case "update_equation":
+            return try await updateEquationHandler(args: args)
+        case "delete_equation":
+            return try await deleteEquationHandler(args: args)
         case "insert_cross_reference":
             return try await insertCrossReference(args: args)
         case "insert_table_of_figures":

@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2026-04-22
+
+### Added — 9 readback MCP tools (Caption CRUD + update_all_fields + Equation CRUD)
+
+Closes [#17](https://github.com/PsychQuant/che-word-mcp/issues/17), [#19](https://github.com/PsychQuant/che-word-mcp/issues/19), [#21](https://github.com/PsychQuant/che-word-mcp/issues/21) via the `word-mcp-readback-primitives` Spectra change.
+
+Built on new ooxml-swift 0.10.0 primitives (`FieldParser`, `OMMLParser`, `WordDocument.updateAllFields()`) that close the "write-side only" gap from v2.0.0. All 9 tools are thin MCP serialization layers over those parsers.
+
+**Caption CRUD** (#17):
+- `list_captions` — enumerate caption paragraphs with label / sequence_number / caption_text / paragraph_index.
+- `get_caption` — detailed single caption info including optional `chapter_number` from STYLEREF.
+- `update_caption` — modify caption text or label without breaking the SEQ field structure.
+- `delete_caption` — remove caption paragraph (hint user to `update_all_fields` for renumbering).
+
+**F9-equivalent** (#19):
+- `update_all_fields` — recompute SEQ counters across body + headers + footers + footnotes + endnotes. Supports chapter-reset when `pStyle=="Heading N"` matches SEQ `resetLevel`. Non-SEQ fields (IF/DATE/PAGE/REF/etc.) preserved verbatim. Returns per-identifier final counts.
+
+**Equation CRUD** (#21):
+- `list_equations` — enumerate `<m:oMath>` runs with display_mode flag.
+- `get_equation` — detailed single equation info with component summary.
+- `update_equation` — replace target equation's components tree.
+- `delete_equation` — remove equation run or empty paragraph.
+
+### Internal changes
+
+- `Server.swift`: changed `openDocuments` / `isDirty` / `storeDocument` from `private` to `internal` to allow the new `ReadbackTools.swift` extension to reach them. No external API impact.
+- New file `ReadbackTools.swift` (~350 lines) houses the 9 handlers.
+
+### Depends on
+
+- ooxml-swift 0.10.0+
+
+### Not in scope
+
+- Full JSON→MathComponent parser for `update_equation` (minimal round-trip; equivalent to insert_equation's `components:` path). Advanced cases round-trip via `UnknownMath`.
+- IF / DATE / PAGE field evaluation in `update_all_fields` — only SEQ counters recomputed.
+- Integration tests for the 9 handlers — foundation tests (40 XCTest cases covering FieldParser/OMMLParser/updateAllFields) provide the guarantee. MCP-level integration tests deferred.
+
 ## [3.0.0] - 2026-04-22
 
 ### Added — session state API
