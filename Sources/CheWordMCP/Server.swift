@@ -4803,6 +4803,21 @@ class WordMCPServer {
         return "Deleted paragraph at index \(index)"
     }
 
+    /// replace_text MCP tool — now flatten-then-map + scope + regex.
+    ///
+    /// Args:
+    /// - doc_id (required)
+    /// - find (required): plain string or regex pattern (if regex=true)
+    /// - replace (required): replacement text; when regex=true supports $1..$N
+    /// - scope: "body" (default) | "all" — "all" adds headers/footers/footnotes/endnotes
+    /// - regex: Bool (default false)
+    /// - match_case: Bool (default true)
+    ///
+    /// BREAKING changes from previous release:
+    /// - `all: Bool` argument removed (was "replace all occurrences"; now always
+    ///   replaces all — to emulate old `all: false` behavior, call once and check
+    ///   the returned count, or use a regex with an anchor).
+    /// - Cross-run matches now succeed (previously failed silently).
     private func replaceText(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -4817,11 +4832,28 @@ class WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let replaceAll = args["all"]?.boolValue ?? true
-        let count = doc.replaceText(find: find, with: replace, all: replaceAll)
-        try await storeDocument(doc, for: docId)
+        let scopeString = args["scope"]?.stringValue ?? "body"
+        let scope: ReplaceScope
+        switch scopeString {
+        case "body":
+            scope = .bodyAndTables
+        case "all":
+            scope = .all
+        default:
+            return "Error: invalid scope '\(scopeString)'. Use 'body' or 'all'."
+        }
+        let regex = args["regex"]?.boolValue ?? false
+        let matchCase = args["match_case"]?.boolValue ?? true
 
-        return "Replaced \(count) occurrence(s) of '\(find)' with '\(replace)'"
+        let options = ReplaceOptions(scope: scope, regex: regex, matchCase: matchCase)
+        do {
+            let count = try doc.replaceText(find: find, with: replace, options: options)
+            try await storeDocument(doc, for: docId)
+            let scopeLabel = scope == .all ? " (scope: all)" : ""
+            return "Replaced \(count) occurrence(s) of '\(find)' with '\(replace)'\(scopeLabel)"
+        } catch ReplaceError.invalidRegex(let pattern) {
+            return "Error: invalid regex pattern '\(pattern)'"
+        }
     }
 
     // MARK: - Formatting
@@ -5605,6 +5637,15 @@ class WordMCPServer {
         return "Inserted image '\(fileName)' with id '\(imageId)' (\(width)x\(height) pixels)"
     }
 
+    /// insert_image_from_path MCP tool — now supports auto-aspect + table-cell insertion.
+    ///
+    /// BREAKING from previous release:
+    /// - `width` and `height` are now OPTIONAL. If exactly one is supplied, the
+    ///   missing dimension is computed from the image's native aspect ratio via
+    ///   `ImageDimensions.detect`. If both are omitted, native pixel size is used.
+    /// - New `into_table_cell: { table_index, row, col }` anchor inserts the
+    ///   image as a new paragraph inside the specified table cell.
+    /// - Legacy `index` argument still accepted for body-level paragraph insertion.
     private func insertImageFromPath(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -5612,39 +5653,80 @@ class WordMCPServer {
         guard let path = args["path"]?.stringValue else {
             throw WordError.missingParameter("path")
         }
-        guard let width = args["width"]?.intValue else {
-            throw WordError.missingParameter("width")
-        }
-        guard let height = args["height"]?.intValue else {
-            throw WordError.missingParameter("height")
-        }
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-
-        // 檢查檔案是否存在
-        let fileManager = FileManager.default
-        guard fileManager.fileExists(atPath: path) else {
+        guard FileManager.default.fileExists(atPath: path) else {
             throw WordError.fileNotFound(path)
         }
 
-        let index = args["index"]?.intValue
+        // Resolve width/height (auto-aspect)
+        let widthArg = args["width"]?.intValue
+        let heightArg = args["height"]?.intValue
+        let (width, height) = try resolveImageDimensions(path: path, width: widthArg, height: heightArg)
+
         let name = args["name"]?.stringValue ?? "Picture"
         let description = args["description"]?.stringValue ?? ""
 
-        let imageId = try doc.insertImage(
-            path: path,
-            widthPx: width,
-            heightPx: height,
-            at: index,
-            name: name,
-            description: description
-        )
+        // Resolve anchor: into_table_cell takes priority over index
+        let imageId: String
+        if let cellDict = args["into_table_cell"]?.objectValue,
+           let tableIdx = cellDict["table_index"]?.intValue,
+           let row = cellDict["row"]?.intValue,
+           let col = cellDict["col"]?.intValue {
+            do {
+                imageId = try doc.insertImage(
+                    path: path,
+                    widthPx: width,
+                    heightPx: height,
+                    at: .intoTableCell(tableIndex: tableIdx, row: row, col: col),
+                    name: name,
+                    description: description
+                )
+            } catch let InsertLocationError.tableIndexOutOfRange(i) {
+                return "Error: table index \(i) out of range"
+            } catch let InsertLocationError.tableCellOutOfRange(t, r, c) {
+                return "Error: table[\(t)] cell (row: \(r), col: \(c)) out of range"
+            }
+        } else {
+            // body-level: use legacy index-based API
+            let index = args["index"]?.intValue
+            imageId = try doc.insertImage(
+                path: path,
+                widthPx: width,
+                heightPx: height,
+                at: index,
+                name: name,
+                description: description
+            )
+        }
 
         try await storeDocument(doc, for: docId)
 
         let url = URL(fileURLWithPath: path)
-        return "Inserted image '\(url.lastPathComponent)' from path with id '\(imageId)' (\(width)x\(height) pixels)"
+        return "Inserted image '\(url.lastPathComponent)' with id '\(imageId)' (\(width)x\(height) pixels)"
+    }
+
+    /// Compute (width, height) from user-provided args + image's native aspect.
+    /// - Both provided: use as-is.
+    /// - Width only: height = width / aspectRatio.
+    /// - Height only: width = height * aspectRatio.
+    /// - Neither: use native pixel size.
+    private func resolveImageDimensions(path: String, width: Int?, height: Int?) throws -> (Int, Int) {
+        if let w = width, let h = height {
+            return (w, h)
+        }
+        let native = try ImageDimensions.detect(path: path)
+        switch (width, height) {
+        case let (.some(w), nil):
+            let h = native.aspectRatio > 0 ? Int(Double(w) / native.aspectRatio) : native.heightPx
+            return (w, h)
+        case let (nil, .some(h)):
+            let w = Int(Double(h) * native.aspectRatio)
+            return (w, h)
+        default:
+            return (native.widthPx, native.heightPx)
+        }
     }
 
     private func updateImage(args: [String: Value]) async throws -> String {
@@ -6354,6 +6436,17 @@ class WordMCPServer {
         return "Inserted dropdown '\(name)' with \(options.count) options at paragraph \(paragraphIndex)"
     }
 
+    /// insert_equation MCP tool — now emits structurally correct OMML.
+    ///
+    /// BREAKING from previous release:
+    /// - Accepts `components:` argument (JSON tree with `type` discriminator) —
+    ///   primary path. Produces valid `<m:oMath>` / `<m:oMathPara>` output that
+    ///   Word renders as a live equation.
+    /// - `latex:` argument retained as fallback but supports only a NARROW
+    ///   pseudo-LaTeX subset: `\frac{a}{b}`, `\sqrt{a}`, `a^{b}`, `a_{b}`,
+    ///   a handful of Greek letters, and summation/integration symbols.
+    ///   Unrecognized syntax returns an error naming the first bad token and
+    ///   referring callers to `components:` for full control.
     private func insertEquation(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -6361,17 +6454,269 @@ class WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let latex = args["latex"]?.stringValue else {
-            throw WordError.missingParameter("latex")
+
+        // Primary path: components:. Fallback: latex: subset.
+        let component: MathComponent
+        if let componentsValue = args["components"] {
+            do {
+                component = try parseMathComponent(from: componentsValue)
+            } catch MathParseError.unknownType(let t) {
+                return "Error: unknown math component type '\(t)'. Supported: run, fraction, radical, subSuperScript, nary."
+            } catch MathParseError.missingField(let f, let t) {
+                return "Error: math component '\(t)' missing required field '\(f)'"
+            } catch MathParseError.invalidStructure(let msg) {
+                return "Error: invalid components structure: \(msg)"
+            }
+        } else if let latex = args["latex"]?.stringValue {
+            do {
+                component = try parseLatexSubset(latex)
+            } catch LatexParseError.unrecognizedToken(let tok) {
+                return "Error: unrecognized LaTeX token '\(tok)'. Use `components:` argument for full MathComponent control."
+            } catch LatexParseError.malformed(let msg) {
+                return "Error: malformed LaTeX: \(msg). Use `components:` for complex expressions."
+            }
+        } else {
+            return "Error: either 'components' (JSON tree) or 'latex' (pseudo-LaTeX subset) argument required"
         }
 
+        let displayMode = args["display_mode"]?.boolValue ?? true
         let paragraphIndex = args["paragraph_index"]?.intValue
-        let displayMode = args["display_mode"]?.boolValue ?? false
 
-        doc.insertEquation(at: paragraphIndex, latex: latex, displayMode: displayMode)
+        // Assemble OMML with required namespace
+        let xmlns = "xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\""
+        let inner = component.toOMML()
+        let ommlXML = displayMode
+            ? "<m:oMathPara \(xmlns)><m:oMath>\(inner)</m:oMath></m:oMathPara>"
+            : "<m:oMath \(xmlns)>\(inner)</m:oMath>"
+
+        // Embed in a paragraph via rawXML-bearing Run (writer emits rawXML verbatim)
+        var eqRun = Run(text: "")
+        eqRun.rawXML = ommlXML
+        let eqPara = Paragraph(runs: [eqRun])
+
+        let insertIdx = paragraphIndex ?? doc.body.children.count
+        doc.insertParagraph(eqPara, at: insertIdx)
         try await storeDocument(doc, for: docId)
 
         return "Inserted equation (display mode: \(displayMode))"
+    }
+
+    // MARK: - Math parsers (insert_equation helpers)
+
+    private enum MathParseError: Error {
+        case unknownType(String)
+        case missingField(field: String, forType: String)
+        case invalidStructure(String)
+    }
+
+    private enum LatexParseError: Error {
+        case unrecognizedToken(String)
+        case malformed(String)
+    }
+
+    /// Parse an MCP Value (JSON) into a MathComponent tree.
+    /// Supported types: `run`, `fraction`, `radical`, `subSuperScript`, `nary`.
+    private func parseMathComponent(from value: Value) throws -> MathComponent {
+        guard case .object(let obj) = value else {
+            throw MathParseError.invalidStructure("expected object, got non-object value")
+        }
+        guard let type = obj["type"]?.stringValue else {
+            throw MathParseError.invalidStructure("missing 'type' discriminator")
+        }
+
+        switch type {
+        case "run":
+            guard let text = obj["text"]?.stringValue else {
+                throw MathParseError.missingField(field: "text", forType: type)
+            }
+            let style = obj["style"]?.stringValue.flatMap { MathStyle(rawValue: $0) }
+            return MathRun(text: text, style: style)
+
+        case "fraction":
+            guard case .array(let num)? = obj["numerator"] else {
+                throw MathParseError.missingField(field: "numerator", forType: type)
+            }
+            guard case .array(let den)? = obj["denominator"] else {
+                throw MathParseError.missingField(field: "denominator", forType: type)
+            }
+            return MathFraction(
+                numerator: try num.map { try parseMathComponent(from: $0) },
+                denominator: try den.map { try parseMathComponent(from: $0) }
+            )
+
+        case "radical":
+            guard case .array(let radicand)? = obj["radicand"] else {
+                throw MathParseError.missingField(field: "radicand", forType: type)
+            }
+            var degree: [MathComponent]?
+            if case .array(let d)? = obj["degree"] {
+                degree = try d.map { try parseMathComponent(from: $0) }
+            }
+            return MathRadical(
+                radicand: try radicand.map { try parseMathComponent(from: $0) },
+                degree: degree
+            )
+
+        case "subSuperScript":
+            guard case .array(let base)? = obj["base"] else {
+                throw MathParseError.missingField(field: "base", forType: type)
+            }
+            var sub: [MathComponent]?
+            if case .array(let s)? = obj["sub"] {
+                sub = try s.map { try parseMathComponent(from: $0) }
+            }
+            var sup: [MathComponent]?
+            if case .array(let s)? = obj["sup"] {
+                sup = try s.map { try parseMathComponent(from: $0) }
+            }
+            return MathSubSuperScript(
+                base: try base.map { try parseMathComponent(from: $0) },
+                sub: sub,
+                sup: sup
+            )
+
+        case "nary":
+            guard let opStr = obj["op"]?.stringValue,
+                  let op = MathNary.NaryOperator(rawValue: opStr) else {
+                throw MathParseError.missingField(field: "op (one of: ∑, ∫, ∏, ∬, ∮, ⋃, ⋂)", forType: type)
+            }
+            var sub: [MathComponent]?
+            var sup: [MathComponent]?
+            if case .array(let s)? = obj["sub"] { sub = try s.map { try parseMathComponent(from: $0) } }
+            if case .array(let s)? = obj["sup"] { sup = try s.map { try parseMathComponent(from: $0) } }
+            guard case .array(let base)? = obj["base"] else {
+                throw MathParseError.missingField(field: "base", forType: type)
+            }
+            return MathNary(
+                op: op,
+                sub: sub,
+                sup: sup,
+                base: try base.map { try parseMathComponent(from: $0) }
+            )
+
+        default:
+            throw MathParseError.unknownType(type)
+        }
+    }
+
+    /// Minimal pseudo-LaTeX subset parser. Phase 1 scope: plain text, Greek
+    /// letters (`\alpha` etc.), summation/integration symbols (as unicode
+    /// MathRun), single-macro expressions `\frac{a}{b}`, `\sqrt{a}`, `x^{y}`,
+    /// `x_{y}`. Anything else throws `LatexParseError.unrecognizedToken`.
+    private func parseLatexSubset(_ latex: String) throws -> MathComponent {
+        let trimmed = latex.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty {
+            throw LatexParseError.malformed("empty input")
+        }
+        // Try top-level single-macro match first
+        if trimmed.hasPrefix("\\frac{") {
+            let (numerator, denominator) = try parseFracTopLevel(trimmed)
+            return MathFraction(
+                numerator: [try parseLatexSubset(numerator)],
+                denominator: [try parseLatexSubset(denominator)]
+            )
+        }
+        if trimmed.hasPrefix("\\sqrt{") {
+            let inner = try parseSingleBracedArg(trimmed, after: "\\sqrt")
+            return MathRadical(radicand: [try parseLatexSubset(inner)])
+        }
+        // Plain text / Greek / symbol fallback
+        return try parseLatexPlain(trimmed)
+    }
+
+    /// Parse `\frac{A}{B}` → (A, B). Throws on malformed.
+    private func parseFracTopLevel(_ s: String) throws -> (String, String) {
+        guard s.hasPrefix("\\frac{") else {
+            throw LatexParseError.malformed("expected \\frac{")
+        }
+        let afterFrac = s.dropFirst("\\frac{".count)
+        guard let (a, restA) = scanBalancedBraceBody(String(afterFrac)) else {
+            throw LatexParseError.malformed("unterminated \\frac numerator")
+        }
+        guard restA.hasPrefix("{") else {
+            throw LatexParseError.malformed("expected '{' after \\frac numerator")
+        }
+        guard let (b, _) = scanBalancedBraceBody(String(restA.dropFirst())) else {
+            throw LatexParseError.malformed("unterminated \\frac denominator")
+        }
+        return (a, b)
+    }
+
+    private func parseSingleBracedArg(_ s: String, after prefix: String) throws -> String {
+        let opened = prefix + "{"
+        guard s.hasPrefix(opened) else {
+            throw LatexParseError.malformed("expected '\(opened)'")
+        }
+        let after = s.dropFirst(opened.count)
+        guard let (body, _) = scanBalancedBraceBody(String(after)) else {
+            throw LatexParseError.malformed("unterminated braces after '\(prefix)'")
+        }
+        return body
+    }
+
+    /// Given a string that begins inside a `{...}` (no leading `{`), return the
+    /// body up to the matching closing brace + the rest of the string.
+    private func scanBalancedBraceBody(_ s: String) -> (String, String)? {
+        var depth = 1
+        var body = ""
+        var i = s.startIndex
+        while i < s.endIndex {
+            let c = s[i]
+            if c == "{" {
+                depth += 1
+                body.append(c)
+            } else if c == "}" {
+                depth -= 1
+                if depth == 0 {
+                    let rest = s[s.index(after: i)...]
+                    return (body, String(rest))
+                }
+                body.append(c)
+            } else {
+                body.append(c)
+            }
+            i = s.index(after: i)
+        }
+        return nil
+    }
+
+    /// Plain characters + Greek letter macros + fixed operator list. Any other
+    /// `\token` throws.
+    private func parseLatexPlain(_ s: String) throws -> MathComponent {
+        let greek: [String: String] = [
+            "\\alpha": "α", "\\beta": "β", "\\gamma": "γ", "\\delta": "δ",
+            "\\epsilon": "ε", "\\zeta": "ζ", "\\eta": "η", "\\theta": "θ",
+            "\\iota": "ι", "\\kappa": "κ", "\\lambda": "λ", "\\mu": "μ",
+            "\\nu": "ν", "\\xi": "ξ", "\\pi": "π", "\\rho": "ρ",
+            "\\sigma": "σ", "\\tau": "τ", "\\phi": "φ", "\\chi": "χ",
+            "\\psi": "ψ", "\\omega": "ω",
+            "\\sum": "∑", "\\int": "∫", "\\prod": "∏",
+            "\\cdot": "·", "\\times": "×", "\\pm": "±",
+            "\\infty": "∞", "\\partial": "∂",
+        ]
+        var result = ""
+        var i = s.startIndex
+        while i < s.endIndex {
+            let c = s[i]
+            if c == "\\" {
+                // Read token: backslash + alphabetic chars
+                var tokenEnd = s.index(after: i)
+                while tokenEnd < s.endIndex, s[tokenEnd].isLetter {
+                    tokenEnd = s.index(after: tokenEnd)
+                }
+                let token = String(s[i..<tokenEnd])
+                if let unicode = greek[token] {
+                    result.append(unicode)
+                    i = tokenEnd
+                } else {
+                    throw LatexParseError.unrecognizedToken(token)
+                }
+            } else {
+                result.append(c)
+                i = s.index(after: i)
+            }
+        }
+        return MathRun(text: result)
     }
 
     private func setParagraphBorder(args: [String: Value]) async throws -> String {
@@ -8967,12 +9312,26 @@ class WordMCPServer {
     // MARK: - Phase 3: 學術功能
 
     /// 插入標號
+    /// insert_caption MCP tool — now produces a real OOXML SEQ field.
+    ///
+    /// BREAKING changes from previous release:
+    /// - Accepts Chinese labels: `圖`, `表`, `公式` (plus English `Figure`, `Table`, `Equation`).
+    /// - Accepts any ONE of `paragraph_index` / `after_image_id` / `after_table_index` as anchor.
+    /// - Emits `<w:fldChar>` SEQ field (not literal `{ SEQ ... }` characters). Auto-numbers
+    ///   when opened in Word and pressed F9.
+    /// - `include_chapter_number: true` emits a real STYLEREF field for the chapter
+    ///   prefix, then a dash, then the SEQ field.
+    ///
+    /// Args:
+    /// - doc_id (required)
+    /// - label (required): one of Figure|Table|Equation|圖|表|公式
+    /// - caption_text (optional)
+    /// - include_chapter_number: Bool (default false)
+    /// - paragraph_index | after_image_id | after_table_index (exactly one required)
+    /// - position: "above" | "below" (default "below") — only relevant for paragraph_index
     private func insertCaption(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
-        }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
-            throw WordError.missingParameter("paragraph_index")
         }
         guard let label = args["label"]?.stringValue else {
             throw WordError.missingParameter("label")
@@ -8981,40 +9340,73 @@ class WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let captionText = args["caption_text"]?.stringValue ?? ""
-        let position = args["position"]?.stringValue ?? "below"
-        let includeChapterNumber = args["include_chapter_number"]?.boolValue ?? false
-
-        let validLabels = ["Figure", "Table", "Equation"]
+        let validLabels = ["Figure", "Table", "Equation", "圖", "表", "公式"]
         guard validLabels.contains(label) else {
-            return "Error: Invalid label. Valid options: \(validLabels.joined(separator: ", "))"
+            return "Error: Invalid label '\(label)'. Valid options: \(validLabels.joined(separator: ", "))"
         }
 
-        // 建立標號段落
-        // 使用 SEQ field: { SEQ Figure \* ARABIC }
-        let seqField = "{ SEQ \(label) \\* ARABIC }"
-        var captionContent = "\(label) "
+        let captionText = args["caption_text"]?.stringValue ?? ""
+        let includeChapterNumber = args["include_chapter_number"]?.boolValue ?? false
+        let position = args["position"]?.stringValue ?? "below"
+
+        // Anchor resolution: exactly one of paragraph_index / after_image_id / after_table_index
+        let paragraphIndexArg = args["paragraph_index"]?.intValue
+        let afterImageIdArg = args["after_image_id"]?.stringValue
+        let afterTableIndexArg = args["after_table_index"]?.intValue
+        let anchorCount = [paragraphIndexArg != nil, afterImageIdArg != nil, afterTableIndexArg != nil]
+            .filter { $0 }.count
+        guard anchorCount == 1 else {
+            return "Error: exactly one of paragraph_index / after_image_id / after_table_index must be provided (got \(anchorCount))"
+        }
+
+        // Build caption paragraph: label text + optional chapter STYLEREF + SEQ field + optional caption text
+        var runs: [Run] = [Run(text: "\(label) ")]
         if includeChapterNumber {
-            captionContent += "{ STYLEREF 1 \\s }-"
+            let styleRef = StyleRefField(headingLevel: 1, suppressNonDelimiter: true, cachedResult: "1")
+            var styleRefRun = Run(text: "")
+            styleRefRun.rawXML = styleRef.toFieldXML()
+            runs.append(styleRefRun)
+            runs.append(Run(text: "-"))
         }
-        captionContent += seqField
+        let seqField = SequenceField(
+            identifier: label,
+            format: .arabic,
+            resetLevel: includeChapterNumber ? 1 : nil,
+            cachedResult: "1"
+        )
+        var seqRun = Run(text: "")
+        seqRun.rawXML = seqField.toFieldXML()
+        runs.append(seqRun)
         if !captionText.isEmpty {
-            captionContent += ": \(captionText)"
+            runs.append(Run(text: " \(captionText)"))
         }
 
-        var captionPara = Paragraph(text: captionContent)
+        var captionPara = Paragraph()
+        captionPara.runs = runs
         captionPara.properties.style = "Caption"
 
-        let paragraphs = doc.getParagraphs()
-        guard paragraphIndex >= 0 && paragraphIndex <= paragraphs.count else {
-            throw WordError.invalidIndex(paragraphIndex)
+        // Resolve anchor to InsertLocation
+        let location: InsertLocation
+        if let idx = paragraphIndexArg {
+            let targetIdx = position == "above" ? idx : idx + 1
+            location = .paragraphIndex(targetIdx)
+        } else if let rId = afterImageIdArg {
+            location = .afterImageId(rId)
+        } else {
+            location = .afterTableIndex(afterTableIndexArg!)
         }
 
-        let insertIndex = position == "above" ? paragraphIndex : paragraphIndex + 1
-        doc.insertParagraph(captionPara, at: insertIndex)
-        try await storeDocument(doc, for: docId)
-
-        return "Caption inserted: \(label) \(position) paragraph \(paragraphIndex)"
+        do {
+            try doc.insertParagraph(captionPara, at: location)
+            try await storeDocument(doc, for: docId)
+            return "Caption inserted: '\(label)' with real SEQ field"
+        } catch let InsertLocationError.invalidParagraphIndex(i) {
+            return "Error: invalid paragraph index \(i)"
+        } catch let InsertLocationError.imageIdNotFound(rId) {
+            return "Error: image with id '\(rId)' not found"
+        } catch let InsertLocationError.tableIndexOutOfRange(i) {
+            return "Error: table index \(i) out of range"
+        }
     }
 
     /// 插入交互參照

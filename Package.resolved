@@ -19,24 +19,6 @@
       }
     },
     {
-      "identity" : "markdown-swift",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/PsychQuant/markdown-swift.git",
-      "state" : {
-        "revision" : "28a2d76ae7bc293b715a7cb6f4cfb473acfa2712",
-        "version" : "0.2.0"
-      }
-    },
-    {
-      "identity" : "ooxml-swift",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/PsychQuant/ooxml-swift.git",
-      "state" : {
-        "revision" : "b02fe4f53796852761d20ce9c3bc03f0e2155141",
-        "version" : "0.5.7"
-      }
-    },
-    {
       "identity" : "swift-atomics",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-atomics.git",
@@ -88,15 +70,6 @@
       "state" : {
         "revision" : "7c6ad0fc39d0763e0b699210e4124afd5041c5df",
         "version" : "1.6.4"
-      }
-    },
-    {
-      "identity" : "word-to-md-swift",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/PsychQuant/word-to-md-swift.git",
-      "state" : {
-        "revision" : "903e3f4c63dcba477ee38d1fca7dfc9915c3316a",
-        "version" : "0.5.2"
       }
     },
     {
