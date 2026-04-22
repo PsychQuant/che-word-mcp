@@ -9,8 +9,12 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 - **Pure Swift Implementation**: No Node.js, Python, or external runtime required
 - **Direct OOXML Manipulation**: Works directly with XML, no Microsoft Word installation needed
 - **Single Binary**: Just one executable file
-- **146 MCP Tools**: Comprehensive document manipulation capabilities
+- **165 MCP Tools**: Comprehensive document manipulation capabilities
 - **Dual-Mode Access**: Direct Mode (read-only, one step) and Session Mode (full lifecycle)
+- **Text-Anchor Insertion**: Insert captions / images relative to matched text (`after_text` / `before_text`), no pre-search call required
+- **Batch Operations**: `replace_text_batch` / `search_text_batch` collapse N round-trips into one
+- **Session State API**: SHA256 + mtime-based disk drift detection, `revert_to_disk` / `reload_from_disk` / `check_disk_drift`
+- **Structural Readback**: `list_captions` / `list_equations` / `update_all_fields` (F9-equivalent) for manuscript review workflows
 - **Complete OOXML Support**: Full support for tables, styles, images, headers/footers, comments, footnotes, and more
 - **Cross-platform**: Works on macOS (and potentially other platforms supporting Swift)
 
@@ -18,6 +22,14 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 
 | Version | Date | Changes |
 |---------|------|---------|
+| v3.1.0 | 2026-04-22 | 9 readback tools: Caption CRUD (`list_captions` / `get_caption` / `update_caption` / `delete_caption`), `update_all_fields` (F9-equivalent SEQ recount), Equation CRUD (`list_equations` / `get_equation` / `update_equation` / `delete_equation`). Built on new ooxml-swift 0.10.0 `FieldParser` + `OMMLParser`. |
+| v3.0.0 | 2026-04-22 | **BREAKING**: session state API. New tools `get_session_state` / `revert_to_disk` / `reload_from_disk` / `check_disk_drift`. `open_document` track_changes default flipped from true to false. `close_document` dirty-check now returns `E_DIRTY_DOC` text response with recovery options (`save_document` / `discard_changes: true` / `finalize_document`). |
+| v2.3.0 | 2026-04-22 | Text-anchor compound tool — `insert_caption` / `insert_image_from_path` accept `after_text` / `before_text` / `text_instance`. Eliminates the `search_text + insert_*` two-call pattern (~50% RPC reduction for document caption workflows). |
+| v2.2.0 | 2026-04-22 | Batch API — `replace_text_batch` (sequential, single save at end, `dry_run`/`stop_on_first_failure` flags) + `search_text_batch` (aggregated multi-query response, Direct + Session Mode). |
+| v2.1.0 | 2026-04-22 | Expose v2.0.0 params via `inputSchema` — schemas for `insert_caption` / `insert_equation` / `insert_image_from_path` / `replace_text` now advertise new params (Chinese labels, `components`, `into_table_cell`, `scope`, `regex`). |
+| v2.0.0 | 2026-04-22 | **BREAKING**: `word-mcp-insertion-primitives` Spectra change. Real OOXML SEQ fields (was literal text), OMML `MathComponent` AST (was string substitution), auto-aspect image sizing + table-cell target, cross-run-safe `replace_text` with `scope` + regex backreferences. |
+| v1.19.0 | 2026-04-15 | Manuscript review markdown export: `export_revision_summary_markdown` / `compare_documents_markdown` / `export_comment_threads_markdown`. **BREAKING**: `get_revisions` + `compare_documents` `full_text` param replaced by `summarize` (inverted default). |
+| v1.18.0 | 2026-04-14 | Fix `get_revisions` hardcoded 30-char truncation (bug since v1.2.0); add `full_text` opt-in. |
 | v1.17.0 | 2026-03-11 | Session state management: dirty tracking, autosave, `finalize_document`, `get_document_session_state`, shutdown flush (contributed by [@ildunari](https://github.com/ildunari)) |
 | v1.16.0 | 2026-03-10 | Dual-Mode: 15 read-only tools now support `source_path` (Direct Mode); MCP server instructions added |
 | v1.15.2 | 2026-03-07 | Improve `list_all_formatted_text` tool description for better LLM parameter handling |
@@ -159,20 +171,30 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
   https://raw.githubusercontent.com/PsychQuant/che-word-mcp/main/skills/che-word-mcp/SKILL.md
 ```
 
-## Available Tools (83 Total)
+## Available Tools (165 Total)
 
 ### Document Management (6 tools)
 
 | Tool | Description |
 |------|-------------|
 | `create_document` | Create a new Word document |
-| `open_document` | Open an existing .docx file |
+| `open_document` | Open an existing .docx file (track_changes default `false` since v3.0.0) |
 | `save_document` | Save document to .docx file |
-| `close_document` | Close an open document |
+| `close_document` | Close an open document (pass `discard_changes: true` to drop dirty edits) |
+| `finalize_document` | Save and close in one guarded step |
 | `list_open_documents` | List all open documents |
-| `get_document_info` | Get document statistics |
 
-### Content Operations (6 tools)
+### Session State API (5 tools, v3.0.0+)
+
+| Tool | Description |
+|------|-------------|
+| `get_session_state` | Snapshot `{ source_path, disk_hash_hex, disk_mtime_iso8601, is_dirty, track_changes_enabled }` |
+| `get_document_session_state` | Legacy session snapshot (preserved for backward compat) |
+| `revert_to_disk` | Re-read source path, discard in-memory edits (destructive-by-design) |
+| `reload_from_disk` | Cooperative reload; requires `force: true` on dirty doc |
+| `check_disk_drift` | Informational — returns `{ drifted, disk_mtime, stored_mtime, disk_hash_matches }` |
+
+### Content Operations (8 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -181,7 +203,9 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
 | `insert_paragraph` | Insert a new paragraph |
 | `update_paragraph` | Update paragraph content |
 | `delete_paragraph` | Delete a paragraph |
-| `replace_text` | Search and replace text |
+| `replace_text` | Cross-run-safe find & replace with `scope` (body\|all) + `regex` + `$1..$N` backreferences |
+| `replace_text_batch` | **v2.2.0** — sequential N-replacement batch, single save at end, `dry_run` / `stop_on_first_failure` |
+| `search_text_batch` | **v2.2.0** — aggregated multi-query search, works in Direct + Session Mode |
 
 ### Formatting (3 tools)
 
@@ -239,23 +263,47 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
 | `update_footer` | Update footer content |
 | `insert_page_number` | Insert page number field |
 
-### Images (6 tools)
+### Images (7 tools)
 
 | Tool | Description |
 |------|-------------|
 | `insert_image` | Insert inline image (PNG, JPEG) |
+| `insert_image_from_path` | **v2.0.0+** — width/height optional (auto-aspect via `ImageDimensions.detect`), supports `into_table_cell` + `after_text` / `before_text` anchors |
 | `insert_floating_image` | Insert floating image with text wrap |
 | `update_image` | Update image properties |
 | `delete_image` | Delete image |
 | `list_images` | List all images |
 | `set_image_style` | Set image border and effects |
 
-### Export (2 tools)
+### Captions (5 tools)
+
+| Tool | Description |
+|------|-------------|
+| `insert_caption` | **v2.0.0+** — real OOXML SEQ field (not literal text). Accepts English + Chinese labels (`Figure`/`Table`/`Equation`/`圖`/`表`/`公式`), 5-way anchor (`paragraph_index` / `after_image_id` / `after_table_index` / `after_text` / `before_text`), optional `STYLEREF` chapter number prefix |
+| `list_captions` | **v3.1.0** — enumerate caption paragraphs with label / sequence_number / caption_text / paragraph_index |
+| `get_caption` | **v3.1.0** — detailed single caption info including optional `chapter_number` from STYLEREF |
+| `update_caption` | **v3.1.0** — modify caption text or label without breaking the SEQ field structure |
+| `delete_caption` | **v3.1.0** — remove caption paragraph |
+
+### Equations (5 tools)
+
+| Tool | Description |
+|------|-------------|
+| `insert_equation` | **v2.0.0+** — emits structurally correct OMML via `MathComponent` AST (9 types). Primary: `components:` tree; fallback: `latex:` subset (`\frac`, `\sqrt`, `x^{y}`, Greek, ∑/∫/∏) |
+| `list_equations` | **v3.1.0** — enumerate `<m:oMath>` runs with display_mode flag |
+| `get_equation` | **v3.1.0** — detailed single equation info with component summary |
+| `update_equation` | **v3.1.0** — replace target equation's components tree |
+| `delete_equation` | **v3.1.0** — remove equation run or empty paragraph |
+
+### Export (5 tools)
 
 | Tool | Description |
 |------|-------------|
 | `export_text` | Export as plain text |
-| `export_markdown` | Export as Markdown |
+| `export_markdown` | Export as Markdown (uses embedded `word-to-md-swift`) |
+| `export_revision_summary_markdown` | **v1.19.0** — per-document revision timeline for manuscript review |
+| `compare_documents_markdown` | **v1.19.0** — multi-document cumulative revision timeline |
+| `export_comment_threads_markdown` | **v1.19.0** — comment threading with author alias normalization |
 
 ### Hyperlinks & Bookmarks (6 tools)
 
@@ -292,7 +340,7 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
 | `insert_endnote` | Insert endnote |
 | `delete_endnote` | Delete endnote |
 
-### Field Codes (7 tools)
+### Field Codes (8 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -303,6 +351,7 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
 | `insert_merge_field` | Insert mail merge field |
 | `insert_sequence_field` | Insert auto-numbering sequence |
 | `insert_content_control` | Insert SDT content control |
+| `update_all_fields` | **v3.1.0** — F9-equivalent SEQ recount across body + headers + footers + footnotes + endnotes. Supports chapter-reset when `pStyle=="Heading N"` matches SEQ `resetLevel` |
 
 ### Repeating Sections (1 tool)
 
@@ -310,7 +359,7 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
 |------|-------------|
 | `insert_repeating_section` | Insert repeating section (Word 2012+) |
 
-### Advanced Features (9 tools)
+### Advanced Features (8 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -318,11 +367,12 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
 | `insert_text_field` | Insert form text field |
 | `insert_checkbox` | Insert form checkbox |
 | `insert_dropdown` | Insert form dropdown |
-| `insert_equation` | Insert math equation |
 | `set_paragraph_border` | Set paragraph border |
 | `set_paragraph_shading` | Set paragraph background color |
 | `set_character_spacing` | Set character spacing |
 | `set_text_effect` | Set text animation effect |
+
+> **Note**: The counts above cover key tool categories. Total surface is **165 tools** including specialized Document Comparison, Revision Tracking, Content Controls, Field Codes, and Formatting helpers. Run the server and call `tools/list` for the complete, authoritative set.
 
 ## Usage Examples
 
@@ -393,9 +443,10 @@ document.docx (ZIP)
 
 ### Dependencies
 
-- [MCP Swift SDK](https://github.com/modelcontextprotocol/swift-sdk) (v0.10.2+) - Model Context Protocol implementation
-- [ooxml-swift](https://github.com/PsychQuant/ooxml-swift) (v0.2.0+) - OOXML parsing
-- [word-to-md-swift](https://github.com/PsychQuant/word-to-md-swift) (v0.1.0+) - Word to Markdown conversion
+- [MCP Swift SDK](https://github.com/modelcontextprotocol/swift-sdk) (v0.12.0+) — Model Context Protocol implementation
+- [ooxml-swift](https://github.com/PsychQuant/ooxml-swift) (v0.10.0+) — OOXML parsing, `FieldParser`, `OMMLParser`, `updateAllFields()`
+- [markdown-swift](https://github.com/PsychQuant/markdown-swift) (v0.2.0+) — Markdown generation
+- [word-to-md-swift](https://github.com/PsychQuant/word-to-md-swift) (v0.4.0+) — Word to Markdown conversion
 
 ## Comparison with Other Solutions
 
@@ -406,7 +457,7 @@ document.docx (ZIP)
 | Requires Word | Yes | No | No | **No** |
 | Runtime | Node.js | Python | Node.js | **None** |
 | Single Binary | No | No | No | **Yes** |
-| Tools Count | ~10 | N/A | N/A | **146** |
+| Tools Count | ~10 | N/A | N/A | **165** |
 | Images | Limited | Yes | Yes | **Yes** |
 | Comments | No | Limited | Limited | **Yes** |
 | Track Changes | No | No | No | **Yes** |
@@ -447,7 +498,11 @@ MIT License
 
 ## Author
 
-Che Cheng ([@kiki830621](https://github.com/PsychQuant))
+Che Cheng ([@PsychQuant](https://github.com/PsychQuant))
+
+### Contributors
+
+- [@ildunari](https://github.com/ildunari) — session state management (v1.17.0)
 
 ## Related Projects
 

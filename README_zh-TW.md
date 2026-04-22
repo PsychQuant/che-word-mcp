@@ -9,7 +9,12 @@
 - **純 Swift 實作**：不需要 Node.js、Python 或其他執行環境
 - **直接操作 OOXML**：直接處理 XML，不需要安裝 Microsoft Word
 - **單一執行檔**：只有一個 binary 檔案
-- **145 個 MCP 工具**：完整的文件操作功能
+- **165 個 MCP 工具**：完整的文件操作功能
+- **Dual-Mode 存取**：Direct Mode（唯讀、一步完成）與 Session Mode（完整生命週期）
+- **Text-Anchor 插入**：`insert_caption` / `insert_image_from_path` 支援 `after_text` / `before_text`，省去先 search 再 insert 的兩段式流程
+- **批次操作**：`replace_text_batch` / `search_text_batch` 把 N 次 RPC 壓縮成一次
+- **Session State API**：SHA256 + mtime 磁碟 drift 偵測、`revert_to_disk` / `reload_from_disk` / `check_disk_drift`
+- **結構化 Readback**：`list_captions` / `list_equations` / `update_all_fields`（F9 等效），論文審閱工作流必備
 - **完整 OOXML 支援**：完整支援表格、樣式、圖片、頁首/頁尾、註解、腳註等
 - **跨平台**：支援 macOS（以及其他支援 Swift 的平台）
 
@@ -17,6 +22,14 @@
 
 | 版本 | 日期 | 變更 |
 |------|------|------|
+| v3.1.0 | 2026-04-22 | 9 個 readback 工具：Caption CRUD（`list_captions` / `get_caption` / `update_caption` / `delete_caption`）、`update_all_fields`（F9 等效 SEQ 重編號）、Equation CRUD（`list_equations` / `get_equation` / `update_equation` / `delete_equation`）。底層使用新的 ooxml-swift 0.10.0 `FieldParser` + `OMMLParser`。|
+| v3.0.0 | 2026-04-22 | **BREAKING**：session state API。新增 `get_session_state` / `revert_to_disk` / `reload_from_disk` / `check_disk_drift` 工具。`open_document` 的 track_changes 預設從 true 翻成 false。`close_document` 遇 dirty 文件改回傳 `E_DIRTY_DOC` 文字回應，列出三條復原路徑（`save_document` / `discard_changes: true` / `finalize_document`）。|
+| v2.3.0 | 2026-04-22 | Text-anchor 複合工具 — `insert_caption` / `insert_image_from_path` 支援 `after_text` / `before_text` / `text_instance`，省掉 `search_text + insert_*` 的兩段式流程（論文圖表 caption 工作流 RPC 減半）。|
+| v2.2.0 | 2026-04-22 | Batch API — `replace_text_batch`（依序執行、結尾單次儲存、`dry_run` / `stop_on_first_failure`）+ `search_text_batch`（多 query 聚合回應，支援 Direct + Session Mode）。|
+| v2.1.0 | 2026-04-22 | Expose v2.0.0 參數到 `inputSchema` — `insert_caption` / `insert_equation` / `insert_image_from_path` / `replace_text` 的 schema 公開新增的參數（中文標籤、`components`、`into_table_cell`、`scope`、`regex`）。|
+| v2.0.0 | 2026-04-22 | **BREAKING**：`word-mcp-insertion-primitives` Spectra change。真正的 OOXML SEQ 欄位（原本是寫死字串）、OMML `MathComponent` AST（原本字串替換）、圖片自動長寬比 + 表格儲存格目標、跨 run 安全的 `replace_text` 含 `scope` + regex 回溯引用。|
+| v1.19.0 | 2026-04-15 | 論文審閱 Markdown 匯出：`export_revision_summary_markdown` / `compare_documents_markdown` / `export_comment_threads_markdown`。**BREAKING**：`get_revisions` + `compare_documents` 的 `full_text` 參數換成 `summarize`（預設反轉）。|
+| v1.18.0 | 2026-04-14 | 修復 `get_revisions` 硬編 30 字元截斷（v1.2.0 以來的 bug）；新增 `full_text` opt-in。|
 | v1.17.0 | 2026-03-11 | Session 狀態管理：dirty tracking、autosave、`finalize_document`、`get_document_session_state`、shutdown flush（contributed by [@ildunari](https://github.com/ildunari)）|
 | v1.16.0 | 2026-03-10 | Dual-Mode：15 個唯讀工具支援 `source_path`（Direct Mode）；新增 MCP server instructions |
 | v1.15.2 | 2026-03-07 | 改善 `list_all_formatted_text` tool description，讓 LLM 更準確傳遞必要參數 |
@@ -127,20 +140,30 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
 cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 ```
 
-## 可用工具（共 83 個）
+## 可用工具（共 165 個）
 
 ### 文件管理 (6 個)
 
 | 工具 | 說明 |
 |------|------|
 | `create_document` | 建立新的 Word 文件 |
-| `open_document` | 開啟現有的 .docx 檔案 |
+| `open_document` | 開啟現有的 .docx 檔案（v3.0.0 起 track_changes 預設為 `false`）|
 | `save_document` | 儲存文件為 .docx |
-| `close_document` | 關閉已開啟的文件 |
+| `close_document` | 關閉文件（dirty 時需 `discard_changes: true` 才能丟棄變更）|
+| `finalize_document` | 儲存並關閉（一步到位）|
 | `list_open_documents` | 列出所有已開啟的文件 |
-| `get_document_info` | 取得文件統計資訊 |
 
-### 內容操作 (6 個)
+### Session State API (5 個，v3.0.0+)
+
+| 工具 | 說明 |
+|------|------|
+| `get_session_state` | 回傳 `{ source_path, disk_hash_hex, disk_mtime_iso8601, is_dirty, track_changes_enabled }` |
+| `get_document_session_state` | 舊版 session 快照（保留以維持向下相容）|
+| `revert_to_disk` | 重新讀取來源檔案，丟棄記憶體中的編輯（destructive by design）|
+| `reload_from_disk` | 協作式重載；dirty 文件需帶 `force: true` |
+| `check_disk_drift` | 僅回報狀態：`{ drifted, disk_mtime, stored_mtime, disk_hash_matches }` |
+
+### 內容操作 (8 個)
 
 | 工具 | 說明 |
 |------|------|
@@ -149,7 +172,9 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `insert_paragraph` | 插入新段落 |
 | `update_paragraph` | 更新段落內容 |
 | `delete_paragraph` | 刪除段落 |
-| `replace_text` | 搜尋並取代文字 |
+| `replace_text` | 跨 run 安全的搜尋取代，支援 `scope`（body\|all）+ `regex` + `$1..$N` 回溯引用 |
+| `replace_text_batch` | **v2.2.0** — 依序執行 N 次取代、結尾單次儲存、`dry_run` / `stop_on_first_failure` |
+| `search_text_batch` | **v2.2.0** — 多 query 聚合搜尋，支援 Direct + Session Mode |
 
 ### 格式化 (3 個)
 
@@ -207,23 +232,47 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `update_footer` | 更新頁尾內容 |
 | `insert_page_number` | 插入頁碼欄位 |
 
-### 圖片 (6 個)
+### 圖片 (7 個)
 
 | 工具 | 說明 |
 |------|------|
 | `insert_image` | 插入內嵌圖片（PNG、JPEG）|
+| `insert_image_from_path` | **v2.0.0+** — width/height 可省略（`ImageDimensions.detect` 自動長寬比），支援 `into_table_cell` + `after_text` / `before_text` anchor |
 | `insert_floating_image` | 插入浮動圖片（文繞圖）|
 | `update_image` | 更新圖片屬性 |
 | `delete_image` | 刪除圖片 |
 | `list_images` | 列出所有圖片 |
 | `set_image_style` | 設定圖片邊框和效果 |
 
-### 匯出 (2 個)
+### 圖表標題 (5 個)
+
+| 工具 | 說明 |
+|------|------|
+| `insert_caption` | **v2.0.0+** — 輸出真正的 OOXML SEQ 欄位（原本是寫死的字串）。支援中英標籤（`Figure`/`Table`/`Equation`/`圖`/`表`/`公式`）、5 種 anchor（`paragraph_index` / `after_image_id` / `after_table_index` / `after_text` / `before_text`）、可選 `STYLEREF` 章節編號前綴 |
+| `list_captions` | **v3.1.0** — 列出所有 caption 段落，含 label / sequence_number / caption_text / paragraph_index |
+| `get_caption` | **v3.1.0** — 單一 caption 詳細資訊（含 STYLEREF 抽出的 `chapter_number`）|
+| `update_caption` | **v3.1.0** — 修改 caption 文字或 label，不破壞 SEQ 欄位結構 |
+| `delete_caption` | **v3.1.0** — 移除 caption 段落 |
+
+### 公式 (5 個)
+
+| 工具 | 說明 |
+|------|------|
+| `insert_equation` | **v2.0.0+** — 透過 `MathComponent` AST（9 種型別）輸出結構正確的 OMML。主要路徑：`components:` tree；備援：`latex:` 子集（`\frac`、`\sqrt`、`x^{y}`、希臘字母、∑/∫/∏）|
+| `list_equations` | **v3.1.0** — 列出所有 `<m:oMath>` run，含 display_mode 旗標 |
+| `get_equation` | **v3.1.0** — 單一公式詳細資訊，含 component 概要 |
+| `update_equation` | **v3.1.0** — 置換指定公式的 components tree |
+| `delete_equation` | **v3.1.0** — 移除公式 run 或空段落 |
+
+### 匯出 (5 個)
 
 | 工具 | 說明 |
 |------|------|
 | `export_text` | 匯出為純文字 |
-| `export_markdown` | 匯出為 Markdown |
+| `export_markdown` | 匯出為 Markdown（內嵌 `word-to-md-swift`）|
+| `export_revision_summary_markdown` | **v1.19.0** — 單一文件的修訂時間軸（論文審閱）|
+| `compare_documents_markdown` | **v1.19.0** — 多文件累積修訂時間軸 |
+| `export_comment_threads_markdown` | **v1.19.0** — 註解對話串，含 author 別名正規化 |
 
 ### 超連結與書籤 (6 個)
 
@@ -260,7 +309,7 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `insert_endnote` | 插入尾註 |
 | `delete_endnote` | 刪除尾註 |
 
-### 欄位代碼 (7 個)
+### 欄位代碼 (8 個)
 
 | 工具 | 說明 |
 |------|------|
@@ -271,6 +320,7 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `insert_merge_field` | 插入合併列印欄位 |
 | `insert_sequence_field` | 插入自動編號序列 |
 | `insert_content_control` | 插入 SDT 內容控制項 |
+| `update_all_fields` | **v3.1.0** — F9 等效的 SEQ 重編號，涵蓋 body + headers + footers + footnotes + endnotes。當 `pStyle=="Heading N"` 匹配 SEQ `resetLevel` 時支援章節重置 |
 
 ### 重複區段 (1 個)
 
@@ -278,7 +328,7 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 |------|------|
 | `insert_repeating_section` | 插入重複區段（Word 2012+）|
 
-### 進階功能 (9 個)
+### 進階功能 (8 個)
 
 | 工具 | 說明 |
 |------|------|
@@ -286,11 +336,12 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `insert_text_field` | 插入表單文字欄位 |
 | `insert_checkbox` | 插入表單核取方塊 |
 | `insert_dropdown` | 插入表單下拉選單 |
-| `insert_equation` | 插入數學公式 |
 | `set_paragraph_border` | 設定段落邊框 |
 | `set_paragraph_shading` | 設定段落背景色 |
 | `set_character_spacing` | 設定字元間距 |
 | `set_text_effect` | 設定文字動畫效果 |
+
+> **備註**：上述分類涵蓋主要工具。總工具面共 **165 個**，包含 Document Comparison、Revision Tracking、Content Controls、Field Codes、Formatting 等其他專門工具。啟動 server 後呼叫 `tools/list` 可取得完整清單。
 
 ## 使用範例
 
@@ -361,9 +412,10 @@ document.docx (ZIP)
 
 ### 依賴套件
 
-- [MCP Swift SDK](https://github.com/modelcontextprotocol/swift-sdk) (v0.10.2+) - Model Context Protocol 實作
-- [ooxml-swift](https://github.com/PsychQuant/ooxml-swift) (v0.2.0+) - OOXML 解析
-- [word-to-md-swift](https://github.com/PsychQuant/word-to-md-swift) (v0.1.0+) - Word 轉 Markdown
+- [MCP Swift SDK](https://github.com/modelcontextprotocol/swift-sdk) (v0.12.0+) — Model Context Protocol 實作
+- [ooxml-swift](https://github.com/PsychQuant/ooxml-swift) (v0.10.0+) — OOXML 解析、`FieldParser`、`OMMLParser`、`updateAllFields()`
+- [markdown-swift](https://github.com/PsychQuant/markdown-swift) (v0.2.0+) — Markdown 生成
+- [word-to-md-swift](https://github.com/PsychQuant/word-to-md-swift) (v0.4.0+) — Word 轉 Markdown
 
 ## 與其他方案比較
 
@@ -374,7 +426,7 @@ document.docx (ZIP)
 | 需要 Word | 是 | 否 | 否 | **否** |
 | 執行環境 | Node.js | Python | Node.js | **無** |
 | 單一執行檔 | 否 | 否 | 否 | **是** |
-| 工具數量 | ~10 | N/A | N/A | **145** |
+| 工具數量 | ~10 | N/A | N/A | **165** |
 | 圖片支援 | 有限 | 是 | 是 | **是** |
 | 註解 | 否 | 有限 | 有限 | **是** |
 | 追蹤修訂 | 否 | 否 | 否 | **是** |
@@ -415,7 +467,11 @@ MIT License
 
 ## 作者
 
-鄭澈 ([@kiki830621](https://github.com/PsychQuant))
+鄭澈 ([@PsychQuant](https://github.com/PsychQuant))
+
+### Contributors
+
+- [@ildunari](https://github.com/ildunari) — session state management（v1.17.0）
 
 ## 相關專案
 
