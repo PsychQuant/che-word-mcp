@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-04-22
+
+### Fixed — MCP tool schemas expose v2.0.0 params
+
+v2.0.0 rewrote the 4 tool handlers to accept new params (Chinese labels, `after_image_id`, `components`, `into_table_cell`, `scope`, `regex`, etc.) but **did not update the `inputSchema` JSON advertised via `tools/list`**. Result: Claude Code / Claude Desktop clients saw the OLD schema, never sent the new params, and the new handler branches never fired. This release corrects the schemas so v2.0.0 features are actually reachable.
+
+Schema updates:
+
+- **`insert_caption`**: `label` description lists all six valid values (`Figure` / `Table` / `Equation` / `圖` / `表` / `公式`). `paragraph_index` now optional; added `after_image_id: string` + `after_table_index: integer` (three-way anchor choice enforced in handler). Required reduced to `doc_id` + `label`.
+
+- **`insert_equation`**: New `components: object` primary path (described with `type` discriminator + shape of `run` / `fraction` / `radical` / `subSuperScript` / `nary`). `latex` narrowed to subset-only fallback in description. Required reduced to `doc_id` only (must supply one of `components` / `latex`, enforced in handler).
+
+- **`insert_image_from_path`**: `width` + `height` removed from `required` (auto-aspect supported). Added `into_table_cell: object` (shape `{ table_index, row, col }`). Required reduced to `doc_id` + `path`.
+
+- **`replace_text`**: `all` removed from schema. Added `scope: string` (`body` | `all`), `regex: boolean`, `match_case: boolean`. Cross-run matching now described in the tool description.
+
+### Infrastructure
+
+No changes to internal engines — v2.0.0's `TextReplacementEngine`, `MathComponent` AST, `ImageDimensions`, `FieldCode` extensions, `InsertLocation` enum remain identical. This is strictly an MCP schema expose fix.
+
+### Migration from 2.0.0
+
+No code changes required. Clients that pulled v2.0.0 will start receiving the new `inputSchema` after the MCP server is restarted (or the plugin wrapper auto-downloads the v2.1.0 binary via version-aware check, shipped in plugin marketplace 2.0.1+).
+
 ## [2.0.0] - 2026-04-22
 
 ### Changed (BREAKING) — word-mcp-insertion-primitives Spectra change

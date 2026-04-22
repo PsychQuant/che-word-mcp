@@ -474,7 +474,7 @@ class WordMCPServer {
             ),
             Tool(
                 name: "replace_text",
-                description: "搜尋並取代文字（需先 open_document）",
+                description: "搜尋並取代文字。v2.1+ cross-run 匹配自動生效；新增 scope / regex / match_case。BREAKING: all 參數已移除（現在恆為 replace-all）。（需先 open_document）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -484,15 +484,23 @@ class WordMCPServer {
                         ]),
                         "find": .object([
                             "type": .string("string"),
-                            "description": .string("要搜尋的文字")
+                            "description": .string("要搜尋的文字。regex: true 時被視為 NSRegularExpression (ICU) pattern")
                         ]),
                         "replace": .object([
                             "type": .string("string"),
-                            "description": .string("取代後的文字")
+                            "description": .string("取代後的文字。regex: true 時支援 $1..$N capture-group backreferences")
                         ]),
-                        "all": .object([
+                        "scope": .object([
+                            "type": .string("string"),
+                            "description": .string("搜尋範圍：'body'（預設，僅 body + tables）或 'all'（額外搜 headers/footers/footnotes/endnotes）")
+                        ]),
+                        "regex": .object([
                             "type": .string("boolean"),
-                            "description": .string("是否取代所有符合項目（預設 true）")
+                            "description": .string("是否將 find 視為 regex pattern（預設 false）")
+                        ]),
+                        "match_case": .object([
+                            "type": .string("boolean"),
+                            "description": .string("是否區分大小寫（預設 true）")
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("find"), .string("replace")])
@@ -1262,7 +1270,7 @@ class WordMCPServer {
             ),
             Tool(
                 name: "insert_image_from_path",
-                description: "從檔案路徑插入圖片（推薦用於大型圖片，避免 base64 傳輸）（需先 open_document）",
+                description: "從檔案路徑插入圖片。v2.1+ width/height 為可選（auto-aspect：擇一 → 另一邊按原圖比例算；全省略 → 用原始像素）。新增 into_table_cell 插入表格儲存格。支援 PNG / JPEG。（需先 open_document）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1272,19 +1280,23 @@ class WordMCPServer {
                         ]),
                         "path": .object([
                             "type": .string("string"),
-                            "description": .string("圖片檔案的完整路徑")
+                            "description": .string("圖片檔案的完整路徑（PNG / JPEG）")
                         ]),
                         "width": .object([
                             "type": .string("integer"),
-                            "description": .string("圖片寬度（像素）")
+                            "description": .string("圖片寬度（像素，可選；省略時從 height 按原圖比例算或用原始像素）")
                         ]),
                         "height": .object([
                             "type": .string("integer"),
-                            "description": .string("圖片高度（像素）")
+                            "description": .string("圖片高度（像素，可選；規則同 width）")
                         ]),
                         "index": .object([
                             "type": .string("integer"),
-                            "description": .string("插入位置（段落索引，可選）")
+                            "description": .string("插入段落索引（body 層級；與 into_table_cell 二擇一）")
+                        ]),
+                        "into_table_cell": .object([
+                            "type": .string("object"),
+                            "description": .string("插入到指定表格儲存格。格式：{ table_index: N, row: R, col: C }（與 index 二擇一）")
                         ]),
                         "name": .object([
                             "type": .string("string"),
@@ -1295,7 +1307,7 @@ class WordMCPServer {
                             "description": .string("圖片描述（可選，用於無障礙）")
                         ])
                     ]),
-                    "required": .array([.string("doc_id"), .string("path"), .string("width"), .string("height")])
+                    "required": .array([.string("doc_id"), .string("path")])
                 ])
             ),
             Tool(
@@ -1990,7 +2002,7 @@ class WordMCPServer {
             // 7.3 數學公式
             Tool(
                 name: "insert_equation",
-                description: "插入數學公式（支援簡化 LaTeX 語法）",
+                description: "插入數學公式（結構化 OMML）。v2.1+ 推薦用 components: JSON tree；latex: 為 fallback（窄子集：\\frac{}{}, \\sqrt{}, _{}, ^{}, 希臘字母, ∑/∫/∏/·/×/±；不支援的 token 會報錯）。必須提供 components 或 latex 其中之一。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1998,20 +2010,24 @@ class WordMCPServer {
                             "type": .string("string"),
                             "description": .string("文件識別碼")
                         ]),
+                        "components": .object([
+                            "type": .string("object"),
+                            "description": .string("推薦：MathComponent JSON tree。單一 top-level object，type 欄位為 discriminator。支援 type: 'run'（需 text, 可選 style: 'p'|'b'|'i'|'bi'）、'fraction'（需 numerator[] + denominator[]）、'radical'（需 radicand[] + 可選 degree[]）、'subSuperScript'（需 base[] + 可選 sub[] / sup[]）、'nary'（需 op: '∑'|'∫'|'∏'|'∬'|'∮' 等 + base[] + 可選 sub[] / sup[]）。陣列元素也是 MathComponent。")
+                        ]),
                         "latex": .object([
                             "type": .string("string"),
-                            "description": .string("LaTeX 格式的公式")
+                            "description": .string("Fallback: pseudo-LaTeX 字串。僅支援窄子集；未識別 token 會回錯並建議改用 components")
                         ]),
                         "display_mode": .object([
                             "type": .string("boolean"),
-                            "description": .string("是否為獨立區塊（true）或行內（false）")
+                            "description": .string("是否為獨立區塊（true，預設）或行內（false）")
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
                             "description": .string("段落索引（行內模式時指定插入位置）")
                         ])
                     ]),
-                    "required": .array([.string("doc_id"), .string("latex")])
+                    "required": .array([.string("doc_id")])
                 ])
             ),
 
@@ -3516,7 +3532,7 @@ class WordMCPServer {
             // 12.1 insert_caption - 插入圖表標號
             Tool(
                 name: "insert_caption",
-                description: "為圖片或表格插入標號（如「圖 1」、「表 1」）",
+                description: "為圖表/公式插入自動編號 caption（emit 真 SEQ field，Word F9 自動重算）。v2.1+ 支援中文 label（圖/表/公式）+ 三種 anchor（paragraph_index / after_image_id / after_table_index，擇一）。include_chapter_number 會 emit STYLEREF field 產生「圖 2-1」式章節編號。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -3524,28 +3540,36 @@ class WordMCPServer {
                             "type": .string("string"),
                             "description": .string("文件識別碼")
                         ]),
-                        "paragraph_index": .object([
-                            "type": .string("integer"),
-                            "description": .string("插入位置段落索引")
-                        ]),
                         "label": .object([
                             "type": .string("string"),
-                            "description": .string("標號類型：Figure（圖）、Table（表）、Equation（公式）")
+                            "description": .string("標號類型，六選一：Figure / Table / Equation / 圖 / 表 / 公式")
                         ]),
                         "caption_text": .object([
                             "type": .string("string"),
-                            "description": .string("標號說明文字")
+                            "description": .string("標號說明文字（可選）")
+                        ]),
+                        "paragraph_index": .object([
+                            "type": .string("integer"),
+                            "description": .string("插入位置段落索引（三 anchor 擇一；可搭配 position）")
+                        ]),
+                        "after_image_id": .object([
+                            "type": .string("string"),
+                            "description": .string("鎖定已插入圖片的 rId（insert_image 返回值），在該圖下方插 caption（三 anchor 擇一）")
+                        ]),
+                        "after_table_index": .object([
+                            "type": .string("integer"),
+                            "description": .string("鎖定第 N 個 table（0-based），在其下方插 caption（三 anchor 擇一）")
                         ]),
                         "position": .object([
                             "type": .string("string"),
-                            "description": .string("標號位置：above（上方）、below（下方，預設）")
+                            "description": .string("搭配 paragraph_index 使用：above（上方）、below（下方，預設）")
                         ]),
                         "include_chapter_number": .object([
                             "type": .string("boolean"),
-                            "description": .string("是否包含章節編號（如「圖 2-1」）")
+                            "description": .string("是否 emit STYLEREF 章節編號 + \"-\" + SEQ 編號（如「圖 2-1」）")
                         ])
                     ]),
-                    "required": .array([.string("doc_id"), .string("paragraph_index"), .string("label")])
+                    "required": .array([.string("doc_id"), .string("label")])
                 ])
             ),
 
