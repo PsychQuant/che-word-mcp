@@ -1,8 +1,8 @@
 {
   "manifest_version": "0.3",
   "name": "che-word-mcp",
-  "version": "2.1.0",
-  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v2.1.0: MCP tool schemas now expose the new params that were hidden in v2.0.0 — insert_caption accepts Chinese labels + after_image_id/after_table_index, insert_equation accepts components JSON tree, insert_image_from_path width/height optional + into_table_cell, replace_text scope/regex/match_case.",
+  "version": "2.2.0",
+  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v2.2.0: +replace_text_batch / +search_text_batch (sequential per-item, single save, dry_run). Reduces per-replace round-trip for large workflows (e.g., document caption renumber). Refs #18.",
   "author": {
     "name": "Che Cheng"
   },

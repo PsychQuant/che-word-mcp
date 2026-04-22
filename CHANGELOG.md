@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-04-22
+
+### Added — batch API tools
+
+Two new MCP tools to reduce per-call round-trip for bulk operations (e.g., document caption renumber, which previously required 26+ separate `replace_text` calls). Closes [#18](https://github.com/PsychQuant/che-word-mcp/issues/18).
+
+- **`replace_text_batch`** — args `{ doc_id, replacements: [{find, replace, scope?, regex?, match_case?}], stop_on_first_failure?: bool, dry_run?: bool }`. Sequential application (each item sees previous items' results). Single `storeDocument` at end (vs N saves for N `replace_text` calls). `dry_run: true` skips disk write (in-memory doc still mutated; caveat in schema).
+- **`search_text_batch`** — args `{ doc_id | source_path, queries: [string | { query, case_sensitive? }] }`. Loops existing `search_text` handler per query, aggregates results into single response. Works in both Direct Mode and Session Mode.
+
+### Semantics notes
+
+- **Sequential ordering**: documented in `replace_text_batch` schema. Batch `[A→B, B→C]` applied in order results in `C` (not `B`).
+- **Non-atomic**: per-item failures (invalid regex) reported in aggregate response; already-applied items stay applied. Use `stop_on_first_failure: true` to halt.
+- **Per-item options** override: each replacement entry can set its own `scope` / `regex` / `match_case`.
+
+### Not in scope (follow-up issues may address)
+
+- True single-pass `TextReplacementEngine` batch API (current implementation loops `Document.replaceText`, still O(N · docSize))
+- `dry_run` undo of in-memory mutation (current: only skips disk write; caller must `open_document` again to reset)
+
 ## [2.1.0] - 2026-04-22
 
 ### Fixed — MCP tool schemas expose v2.0.0 params

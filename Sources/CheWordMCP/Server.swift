@@ -506,6 +506,32 @@ class WordMCPServer {
                     "required": .array([.string("doc_id"), .string("find"), .string("replace")])
                 ])
             ),
+            Tool(
+                name: "replace_text_batch",
+                description: "批次文字取代（減少 per-call round-trip，單次 save）。Replacements 依陣列順序套用（sequential），後者看到前者結果。per-item scope / regex / match_case 設定。dry_run 略過 disk save（但 in-memory doc 仍被 mutate；需 open_document 還原）。（需先 open_document）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ]),
+                        "replacements": .object([
+                            "type": .string("array"),
+                            "description": .string("取代清單。每項 format: { find: string, replace: string, scope?: 'body'|'all', regex?: bool, match_case?: bool }。item-level 設定 override default。")
+                        ]),
+                        "stop_on_first_failure": .object([
+                            "type": .string("boolean"),
+                            "description": .string("遇到 error（如 regex 無效）立即中止（預設 false；繼續處理剩餘 items）")
+                        ]),
+                        "dry_run": .object([
+                            "type": .string("boolean"),
+                            "description": .string("若 true，套用 replacements 但不 save 到 disk（預設 false）")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("replacements")])
+                ])
+            ),
 
             // 格式化
             Tool(
@@ -2550,6 +2576,28 @@ class WordMCPServer {
                     "required": .array([.string("query")])
                 ])
             ),
+            Tool(
+                name: "search_text_batch",
+                description: "批次文字搜尋（減少 per-call round-trip）。每個 query 產出 { query, matches: [positions] }。Session Mode 需先 open_document；Direct Mode 傳 source_path 免開。",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼（Session Mode）")
+                        ]),
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("檔案路徑（Direct Mode，免開啟）")
+                        ]),
+                        "queries": .object([
+                            "type": .string("array"),
+                            "description": .string("query 陣列。每項可為 plain string 或 { query: string, case_sensitive?: bool } object。")
+                        ])
+                    ]),
+                    "required": .array([.string("queries")])
+                ])
+            ),
 
             // 9.4 list_hyperlinks - 列出所有超連結
             Tool(
@@ -4226,6 +4274,8 @@ class WordMCPServer {
             return try await deleteParagraph(args: args)
         case "replace_text":
             return try await replaceText(args: args)
+        case "replace_text_batch":
+            return try await replaceTextBatch(args: args)
 
         // 格式化
         case "format_text":
@@ -4414,6 +4464,8 @@ class WordMCPServer {
             return try await getDocumentText(args: args)
         case "search_text":
             return try await searchText(args: args)
+        case "search_text_batch":
+            return try await searchTextBatch(args: args)
         case "list_hyperlinks":
             return try await listHyperlinks(args: args)
         case "list_bookmarks":
@@ -4878,6 +4930,141 @@ class WordMCPServer {
         } catch ReplaceError.invalidRegex(let pattern) {
             return "Error: invalid regex pattern '\(pattern)'"
         }
+    }
+
+    /// search_text_batch MCP tool — 批次搜尋多個 query，單一 doc load（Session Mode）或
+    /// 單次檔案 parse（Direct Mode）。對每個 query 呼叫 existing `searchText(args:)`，
+    /// 組合成單一 batch response。
+    private func searchTextBatch(args: [String: Value]) async throws -> String {
+        guard case .array(let queriesValue)? = args["queries"] else {
+            throw WordError.missingParameter("queries (array)")
+        }
+
+        var output = ""
+        for (idx, qValue) in queriesValue.enumerated() {
+            let queryStr: String
+            let caseSensitive: Bool
+            switch qValue {
+            case .string(let s):
+                queryStr = s
+                caseSensitive = false
+            case .object(let obj):
+                guard let q = obj["query"]?.stringValue else {
+                    output += "\n=== [\(idx)] FAIL: missing 'query' field ===\n"
+                    continue
+                }
+                queryStr = q
+                caseSensitive = obj["case_sensitive"]?.boolValue ?? false
+            default:
+                output += "\n=== [\(idx)] FAIL: query must be string or object ===\n"
+                continue
+            }
+
+            // Build per-query args by copying original args (preserves doc_id / source_path)
+            var subArgs = args
+            subArgs["query"] = .string(queryStr)
+            subArgs["case_sensitive"] = .bool(caseSensitive)
+            subArgs.removeValue(forKey: "queries")
+
+            do {
+                let result = try await searchText(args: subArgs)
+                output += "\n=== [\(idx)] query='\(queryStr)' ===\n\(result)\n"
+            } catch {
+                output += "\n=== [\(idx)] query='\(queryStr)' ERROR: \(error) ===\n"
+            }
+        }
+        return output.isEmpty ? "(no queries)" : output
+    }
+
+    /// replace_text_batch MCP tool — 批次 sequential replacement，單次 save（或 dry_run 跳過）。
+    ///
+    /// Semantics:
+    /// - Replacements apply in array order. Each sees results of previous.
+    /// - Non-atomic per-item: individual failures (invalid regex) reported but
+    ///   don't rollback prior successes.
+    /// - `stop_on_first_failure: true` halts on first error; already-applied
+    ///   items stay applied.
+    /// - `dry_run: true` skips disk save; in-memory doc is still mutated
+    ///   (document this caveat in schema).
+    private func replaceTextBatch(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard case .array(let replacementsValue)? = args["replacements"] else {
+            throw WordError.missingParameter("replacements (array)")
+        }
+        guard var doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+        let stopOnFirstFailure = args["stop_on_first_failure"]?.boolValue ?? false
+        let dryRun = args["dry_run"]?.boolValue ?? false
+
+        var results: [[String: Any]] = []
+        var succeeded = 0
+        var failed = 0
+
+        for (idx, itemValue) in replacementsValue.enumerated() {
+            guard case .object(let item) = itemValue else {
+                results.append(["index": idx, "error": "replacement entry must be object"])
+                failed += 1
+                if stopOnFirstFailure { break } else { continue }
+            }
+            guard let find = item["find"]?.stringValue else {
+                results.append(["index": idx, "error": "missing 'find' field"])
+                failed += 1
+                if stopOnFirstFailure { break } else { continue }
+            }
+            guard let replace = item["replace"]?.stringValue else {
+                results.append(["index": idx, "error": "missing 'replace' field", "find": find])
+                failed += 1
+                if stopOnFirstFailure { break } else { continue }
+            }
+
+            // per-item options, fall back to no-op defaults
+            let scopeString = item["scope"]?.stringValue ?? "body"
+            let scope: ReplaceScope = (scopeString == "all") ? .all : .bodyAndTables
+            let regex = item["regex"]?.boolValue ?? false
+            let matchCase = item["match_case"]?.boolValue ?? true
+            let options = ReplaceOptions(scope: scope, regex: regex, matchCase: matchCase)
+
+            do {
+                let count = try doc.replaceText(find: find, with: replace, options: options)
+                results.append(["index": idx, "find": find, "replaced_count": count])
+                succeeded += 1
+            } catch ReplaceError.invalidRegex(let pattern) {
+                results.append(["index": idx, "find": find, "error": "invalid regex: \(pattern)"])
+                failed += 1
+                if stopOnFirstFailure { break }
+            } catch {
+                results.append(["index": idx, "find": find, "error": "\(error)"])
+                failed += 1
+                if stopOnFirstFailure { break }
+            }
+        }
+
+        if !dryRun {
+            try await storeDocument(doc, for: docId)
+        } else {
+            // Update openDocuments even in dry_run so caller can observe the
+            // in-memory effect; skip only the disk write.
+            openDocuments[docId] = doc
+        }
+
+        // Build human-readable summary + JSON-ish detail
+        var summary = "Replace batch: \(succeeded) applied, \(failed) failed"
+        if dryRun { summary += " (dry_run; disk not saved)" }
+        summary += "\n\nDetails:\n"
+        for r in results {
+            let idx = r["index"] ?? "?"
+            if let err = r["error"] as? String {
+                summary += "  [\(idx)] FAIL: \(err)\n"
+            } else {
+                let find = r["find"] as? String ?? ""
+                let count = r["replaced_count"] as? Int ?? 0
+                summary += "  [\(idx)] '\(find)' → \(count) replaced\n"
+            }
+        }
+        return summary
     }
 
     // MARK: - Formatting
