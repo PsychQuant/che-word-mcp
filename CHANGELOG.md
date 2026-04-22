@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-04-22
+
+### Changed (BREAKING) — word-mcp-insertion-primitives Spectra change
+
+Four MCP tools rewritten on new ooxml-swift 0.8.0 primitives. Closes [#6](https://github.com/PsychQuant/che-word-mcp/issues/6) (Phase 1-2), [#7](https://github.com/PsychQuant/che-word-mcp/issues/7) (fully), [#8](https://github.com/PsychQuant/che-word-mcp/issues/8) (Gaps A+D), [#9](https://github.com/PsychQuant/che-word-mcp/issues/9) (Phase 1-3).
+
+- **`insert_caption` — now emits a real OOXML SEQ field**. The previous version wrote literal `{ SEQ Figure \* ARABIC }` characters into the docx; Word rendered those 23 characters verbatim. This release uses `SequenceField` (conforming to `FieldCode`) to emit proper `<w:fldChar>` begin/separate/end XML. Captions auto-number when Word opens the file and the user presses F9.
+  - **New**: accepts Chinese labels `圖`, `表`, `公式` (plus English `Figure`, `Table`, `Equation`).
+  - **New**: accepts exactly one of `paragraph_index` / `after_image_id` / `after_table_index` as the anchor (previously only `paragraph_index`).
+  - **New**: `include_chapter_number: true` now emits a real `STYLEREF` field via `StyleRefField`, followed by `-`, then the `SEQ` field.
+
+- **`insert_equation` — now emits structurally correct OMML**. The previous version passed LaTeX to `MathEquation` which did string substitution. This release introduces a `MathComponent` AST with nine types.
+  - **New primary path**: `components:` argument — a JSON tree with `type` discriminators (`run`, `fraction`, `radical`, `subSuperScript`, `nary`).
+  - **Narrowed `latex:` path**: limited to a documented subset (`\frac{a}{b}`, `\sqrt{a}`, `x^{y}`, `x_{y}`, Greek letters, ∑/∫/∏/·/×/±). Unrecognized tokens return an error naming the first bad token and referring callers to `components:`.
+
+- **`insert_image_from_path` — width/height now optional, table-cell support added**.
+  - **New**: one or both of `width` / `height` may be omitted; missing dimension auto-computed from the image's native pixel aspect ratio via `ImageDimensions.detect` (supports PNG, JPEG).
+  - **New**: `into_table_cell: { table_index, row, col }` argument inserts the image as a paragraph inside the specified cell.
+
+- **`replace_text` — now cross-run safe, with scope and regex options**. Previous per-run `contains(find)` matching failed silently across run boundaries (the document-workflow pain point in #7). New flatten-then-map algorithm.
+  - **New**: cross-run matches succeed. Replacement text inherits the start run's formatting.
+  - **New**: `scope: "body" | "all"` (default `"body"`). `"all"` scans headers, footers, footnotes, endnotes.
+  - **New**: `regex: Bool` (default `false`) with `$1..$N` backreferences.
+  - **Removed**: `all: Bool` argument. Behavior now always "replace all occurrences".
+
+### Depends on
+
+- ooxml-swift 0.8.0+ (was 0.5.6+).
+
 ## [1.19.0] - 2026-04-15
 
 ### Added (manuscript-review-markdown-export change in PsychQuant/macdoc)
