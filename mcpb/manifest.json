@@ -1,8 +1,8 @@
 {
   "manifest_version": "0.3",
   "name": "che-word-mcp",
-  "version": "3.0.0",
-  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. BREAKING v3.0.0: session state API — 4 new tools (get_session_state / revert_to_disk / reload_from_disk / check_disk_drift) + open_document track_changes default flipped to false + close_document E_DIRTY_DOC error path with discard_changes flag. Closes #12 #13 #15.",
+  "version": "3.1.0",
+  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v3.1.0: 9 readback tools — Caption CRUD (list/get/update/delete_caption) + update_all_fields (F9-equivalent SEQ counter recomputation) + Equation CRUD (list/get/update/delete_equation). Built on ooxml-swift 0.10.0 FieldParser + OMMLParser. Closes #17 #19 #21.",
   "author": {
     "name": "Che Cheng"
   },
