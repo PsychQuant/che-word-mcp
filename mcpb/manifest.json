@@ -1,8 +1,8 @@
 {
   "manifest_version": "0.3",
   "name": "che-word-mcp",
-  "version": "3.7.0",
-  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v3.7.0: autosave Design B + insert crash hardening (closes #40 #41) — autosave_every snapshot fires at START of every mutating handler (Design B), default flipped 0→1 for max safety. CHE_WORD_MCP_LOG_LEVEL=debug adds Phase A structured diagnostics. Built on ooxml-swift 0.13.3 (serial DocxReader + allocator-based image rId). v3.6.0: autosave/checkpoint/recover (#37). v3.5.5: keep_bak (#38). v3.5.4: actor (#39). v3.5.3: atomic-rename save (#36).",
+  "version": "3.7.1",
+  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v3.7.1: update_all_fields no longer strips watermarks (closes #42) — ooxml-swift v0.13.4 honest dirty-bit propagation; headers/footers without SEQ stay byte-preserved. v3.7.0: autosave Design B + insert crash hardening (#40 #41). v3.6.0: autosave/checkpoint/recover (#37). v3.5.5: keep_bak (#38). v3.5.4: actor (#39). v3.5.3: atomic-rename save (#36).",
   "author": {
     "name": "Che Cheng"
   },
