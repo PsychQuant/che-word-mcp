@@ -1,8 +1,8 @@
 {
   "manifest_version": "0.3",
   "name": "che-word-mcp",
-  "version": "3.5.2",
-  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v3.5.2: rels overlay merge — Reader-loaded document no-op save_document round-trip preserves theme/webSettings/people/customXml/commentsExtended/commentsIds rels (closes #35). v3.5.1: universal binary (x86_64+arm64). v3.5.0: true byte-preservation via dirty tracking. Closes #23 round-2 + #32 #33 #34 #35. Built on ooxml-swift 0.13.1.",
+  "version": "3.5.3",
+  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v3.5.3: atomic-rename save (closes #36) — DocxWriter.write now writes to <url>.tmp.<UUID> + fsync + replaceItemAt; any throw leaves original byte-preserved. v3.5.2: rels overlay merge (closes #35). v3.5.1: universal binary (x86_64+arm64). v3.5.0: true byte-preservation. Built on ooxml-swift 0.13.2.",
   "author": {
     "name": "Che Cheng"
   },
