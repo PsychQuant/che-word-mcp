@@ -5,6 +5,94 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.0] - 2026-04-23
+
+### Fixed — true byte-preservation via dirty tracking (closes [#23 round-2](https://github.com/PsychQuant/che-word-mcp/issues/23), [#32](https://github.com/PsychQuant/che-word-mcp/issues/32), [#33](https://github.com/PsychQuant/che-word-mcp/issues/33), [#34](https://github.com/PsychQuant/che-word-mcp/issues/34))
+
+v3.3.0 + v3.4.0 closed [#23](https://github.com/PsychQuant/che-word-mcp/issues/23) at the **part-existence** level (preserve unknown parts byte-for-byte through `archiveTempDir` + `ContentTypesOverlay`), but the round-2 incident report showed the writer **still unconditionally re-emitted** every typed-managed part on every save. So a Reader-loaded document lost:
+
+- 13 custom font declarations (`fontTable.xml` collapsed to a hardcoded 3-entry default)
+- 6 distinct headers (all `.default` headers collapsed to `header1.xml` lookup)
+- 4 distinct footers (same `.default` collapse)
+- The verbose three-segment `<w:fldChar>` + `<w:instrText>PAGE</w:instrText>` PAGE field detection (only `<w:fldSimple>` matched)
+- The full `<w15:presenceInfo>` person identity (only the `author` attribute survived; the GUID inside `userId="S::EMAIL::GUID"` was dropped)
+
+after a single no-op `save_document` round-trip even though no typed mutation had occurred.
+
+v3.5.0 fixes the architectural gap by consuming [`ooxml-swift v0.13.0`](https://github.com/PsychQuant/ooxml-swift/releases/tag/v0.13.0) which introduces:
+
+1. `WordDocument.modifiedParts: Set<String>` — every mutating method instruments the corresponding part path; reader clears it as the final step
+2. `Header.originalFileName` / `Footer.originalFileName` — preserves source archive paths so multi-instance same-type files don't collapse
+3. `DocxWriter` overlay-mode skip-when-not-dirty — typed-part writers gated by `modifiedParts.contains(<part path>)`
+
+### Server-side wiring (Task 2.2)
+
+Every Server.swift archive-write helper now joins the dirty-tracking contract:
+
+| Helper | New behavior |
+|---|---|
+| `writeThemeXML` | calls `doc.markPartDirty("word/theme/theme1.xml")` |
+| `writeArchivePart` | calls `doc.markPartDirty(partPath)` |
+| `deleteHeader` / `deleteFooter` | calls `doc.markPartDirty("[Content_Types].xml")` + `"word/_rels/document.xml.rels"` |
+| `setDocumentProperties` | calls `doc.markPartDirty("docProps/core.xml")` (since `properties` is direct field assignment) |
+| `updateNoteImpl` | calls `doc.markPartDirty("word/footnotes.xml" or "word/endnotes.xml")` (typed in-place mutation bypasses public methods) |
+
+Without these, `save_document` overlay mode would skip re-emitting the touched parts.
+
+### `<w15:presenceInfo>` parsing rewrite (closes [#34](https://github.com/PsychQuant/che-word-mcp/issues/34))
+
+`extractPeople` was rewritten from single-attribute regex to a multi-line parser that captures the full `<w15:person>...</w15:person>` block including the nested `<w15:presenceInfo>` child. Extracted fields:
+
+- `userId` triple-segment `S::EMAIL::GUID` decomposition (split on `::` with maxSplits=2)
+- `providerId` (e.g., `AD`, `None`)
+- optional `color`
+
+`list_people` now returns dual-identity JSON entries:
+
+```json
+{
+  "person_id": "<GUID, fallback to author>",
+  "display_name_id": "<author, v3.4.0 legacy id>",
+  "display_name": "<author>",
+  "email": "<from userId middle>",
+  "color": "...",
+  "provider_id": "..."
+}
+```
+
+`update_person` and `delete_person` accept **either** form — try GUID match first, fall back to author. Existing v3.4.0 callers continue to work unchanged.
+
+### Detection helper strengthening (closes [#32](https://github.com/PsychQuant/che-word-mcp/issues/32) + [#33](https://github.com/PsychQuant/che-word-mcp/issues/33))
+
+- `headerHasWatermark` adds `<v:shape ... o:spt="136">` regex co-detection alongside the existing `PowerPlusWaterMarkObject` substring match. Combined with the v0.13.0 `originalFileName` fix this means `list_watermarks` actually reads each header's distinct fileName instead of all looking up `header1.xml`.
+- `footerHasPageNumber` now detects the verbose three-segment `<w:fldChar w:fldCharType="begin"/>` + `<w:instrText>PAGE</w:instrText>` + `<w:fldChar w:fldCharType="end"/>` pattern. Word emits this verbose form when the field caches results, so real-world footers were missed by the pre-v3.5.0 `<w:fldSimple>`-only regex.
+
+### Tests
+
+- 5 `PeoplePresenceInfoTests` — full presenceInfo + GUID/author dual-id update + delete via either identifier
+- +4 multi-instance cases in `HeadersFootersToolsTests` — 3-header fixture proves `list_headers` returns 3 distinct entries, `list_watermarks` correctly identifies only header2, three-segment PAGE field detection works, editing header2 leaves headers 1+3 byte-equal
+- +2 dirty-tracking proofs in `Phase2BCSmokeTests` — `update_web_settings` preserves fontTable byte-equal; `add_person` preserves all other typed parts byte-equal
+
+**Total: 79 tests pass** (was 68; +11 v3.5.0 contract coverage).
+
+### Migration: person_id semantic change
+
+In v3.4.0 `list_people` returned `{"person_id": "<author>"}`. In v3.5.0 `person_id` is the GUID extracted from `<w15:presenceInfo w15:userId="S::email::GUID"/>`, **falling back to author** when the presenceInfo lacks the GUID form.
+
+| Caller intent | v3.4.0 | v3.5.0 |
+|---|---|---|
+| Identify person stably across rename | use `person_id` (= author, broke on rename) | use `person_id` (= GUID, stable) |
+| Identify person by display name | use `person_id` (= author) | use `display_name_id` (= author) — new field |
+| Address person in update/delete | pass `person_id` (= author) | pass either `person_id` (GUID) or `display_name_id` (author) |
+
+`update_person` / `delete_person` accept either form, so existing v3.4.0 callers passing the author string continue to work unchanged. Callers that want GUID-stable addressing should migrate to the new `person_id` field.
+
+The v3.4.0 `person_id` semantic (= author) will be **removed in v4.0.0**. Until then, v3.5.0+ callers should prefer `display_name_id` for the legacy author identifier.
+
+### Underlying architecture
+
+[`ooxml-swift v0.13.0`](https://github.com/PsychQuant/ooxml-swift/releases/tag/v0.13.0) — full architectural details. 388/388 ooxml-swift tests pass.
+
 ## [3.4.0] - 2026-04-23
 
 ### Added — Phase 2B + 2C combined: comment threads + people + notes update + web settings (13 new MCP tools)
