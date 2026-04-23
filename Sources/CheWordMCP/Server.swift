@@ -8370,6 +8370,10 @@ class WordMCPServer {
         }
 
         doc.properties = props
+        // v3.5.0: properties is a public field — direct assignment bypasses
+        // ooxml-swift's instrumented setters, so we mark docProps/core.xml dirty
+        // explicitly. Without this, save_document overlay mode would skip it.
+        doc.markPartDirty("docProps/core.xml")
         try await storeDocument(doc, for: docId)
 
         return "Updated document properties"
@@ -11046,7 +11050,7 @@ class WordMCPServer {
     }
 
     private func writeThemeXML(_ xml: String, docId: String) throws {
-        guard let doc = openDocuments[docId] else {
+        guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
         guard let archiveTempDir = doc.archiveTempDir else {
@@ -11055,6 +11059,11 @@ class WordMCPServer {
         let themeDir = archiveTempDir.appendingPathComponent("word/theme")
         try FileManager.default.createDirectory(at: themeDir, withIntermediateDirectories: true)
         try xml.write(to: themeDir.appendingPathComponent("theme1.xml"), atomically: true, encoding: .utf8)
+        // v3.5.0: ooxml-swift v0.13.0 dirty-tracking contract — overlay-mode
+        // writer skips theme1.xml unless it appears in modifiedParts. Without
+        // this insert, the next save_document would NOT pick up the new theme.
+        doc.markPartDirty("word/theme/theme1.xml")
+        openDocuments[docId] = doc
         documentDirtyState[docId] = true
     }
 
@@ -11264,8 +11273,17 @@ class WordMCPServer {
     }
 
     /// Detect VML watermark shape ID (PowerPlusWaterMarkObject) or sentinel.
+    /// v3.5.0 (#32): tightened to handle multi-instance shape IDs
+    /// (`PowerPlusWaterMarkObject1`-`6` etc.) — pre-v3.5.0 substring match was
+    /// already permissive, but adding `<v:shape` and `o:spt="136"` co-detection
+    /// reduces false positives on non-watermark VML (e.g., logos with the same
+    /// PowerPlus naming legacy).
     private func headerHasWatermark(_ xml: String) -> Bool {
-        return xml.contains("PowerPlusWaterMarkObject") || xml.contains("o:spt=\"136\"")
+        // VML watermark fingerprint: <v:shape ... id="PowerPlusWaterMarkObject<N>" o:spt="136" ...>
+        // Either signal alone is acceptable (some Word versions emit one without the other).
+        if xml.contains("PowerPlusWaterMarkObject") { return true }
+        if xml.range(of: #"<v:shape\b[^>]*\bo:spt="136""#, options: .regularExpression) != nil { return true }
+        return false
     }
 
     /// Extract watermark text (when text-watermark) — returns nil if no/image watermark.
@@ -11279,10 +11297,23 @@ class WordMCPServer {
     }
 
     /// Detect PAGE / NUMPAGES field in footer XML.
+    /// v3.5.0 (#33): adds three-segment `<w:fldChar>` + `<w:instrText>PAGE</w:instrText>`
+    /// + `<w:fldChar>` pattern detection. Pre-v3.5.0 only matched the simpler
+    /// `<w:fldSimple w:instr="PAGE">` form, missing many real-world footers
+    /// (Word emits the verbose three-segment form when the field has cached results).
     private func footerHasPageNumber(_ xml: String) -> Bool {
-        return xml.range(of: #"w:fldSimple\s+w:instr="\s*PAGE"#, options: .regularExpression) != nil
-            || xml.range(of: #"w:instrText[^>]*>\s*PAGE\s"#, options: .regularExpression) != nil
-            || xml.range(of: #"w:fldSimple\s+w:instr="[^"]*PAGE"#, options: .regularExpression) != nil
+        // 1. Inline simple field form: <w:fldSimple w:instr="...PAGE...">
+        if xml.range(of: #"<w:fldSimple\b[^>]*\bw:instr="[^"]*\bPAGE\b"#, options: .regularExpression) != nil {
+            return true
+        }
+        // 2. Verbose three-segment form: requires fldChar begin + instrText with PAGE +
+        // fldChar end somewhere in the same XML. Word emits the segments as separate
+        // <w:r> runs but they share the same paragraph; per-paragraph scoping isn't
+        // necessary — if all three signals appear in the footer, there's a PAGE field.
+        let hasBegin = xml.range(of: #"<w:fldChar\b[^>]*\bw:fldCharType="begin""#, options: .regularExpression) != nil
+        let hasInstr = xml.range(of: #"<w:instrText\b[^>]*>[^<]*\bPAGE\b"#, options: .regularExpression) != nil
+        let hasEnd = xml.range(of: #"<w:fldChar\b[^>]*\bw:fldCharType="end""#, options: .regularExpression) != nil
+        return hasBegin && hasInstr && hasEnd
     }
 
     /// Extract typed field (PAGE / NUMPAGES / REF / STYLEREF / unknown) from footer XML.
@@ -11404,6 +11435,11 @@ class WordMCPServer {
             let url = archiveTempDir.appendingPathComponent("word/\(removed.fileName)")
             try? FileManager.default.removeItem(at: url)
         }
+        // v3.5.0: deleting a header changes Content_Types overrides + rels —
+        // mark both dirty so DocxWriter overlay mode re-emits them. The header
+        // file itself is already gone from disk, so we don't mark word/<fileName>.
+        doc.markPartDirty("[Content_Types].xml")
+        doc.markPartDirty("word/_rels/document.xml.rels")
         openDocuments[docId] = doc
         documentDirtyState[docId] = true
         return "Deleted header \(headerId) (\(removed.fileName))"
@@ -11508,6 +11544,9 @@ class WordMCPServer {
             let url = archiveTempDir.appendingPathComponent("word/\(removed.fileName)")
             try? FileManager.default.removeItem(at: url)
         }
+        // v3.5.0: parallel reasoning to deleteHeader above.
+        doc.markPartDirty("[Content_Types].xml")
+        doc.markPartDirty("word/_rels/document.xml.rels")
         openDocuments[docId] = doc
         documentDirtyState[docId] = true
         return "Deleted footer \(footerId) (\(removed.fileName))"
@@ -11523,7 +11562,7 @@ class WordMCPServer {
     }
 
     private func writeArchivePart(docId: String, partPath: String, content: String) throws {
-        guard let doc = openDocuments[docId] else {
+        guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
         guard let archiveTempDir = doc.archiveTempDir else {
@@ -11533,6 +11572,10 @@ class WordMCPServer {
         let dir = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try content.write(to: url, atomically: true, encoding: .utf8)
+        // v3.5.0: ooxml-swift v0.13.0 dirty-tracking contract — see writeThemeXML.
+        // Without this, save_document overlay mode would skip re-emitting partPath.
+        doc.markPartDirty(partPath)
+        openDocuments[docId] = doc
         documentDirtyState[docId] = true
     }
 
@@ -11624,17 +11667,85 @@ class WordMCPServer {
         return "{\"added_extended\":0,\"added_ids\":0,\"removed_orphans\":0,\"typed_comment_count\":\(typedCommentCount)}"
     }
 
-    /// Parse `<w15:person w15:author="X">` entries from people.xml.
-    private func extractPeople(_ xml: String) -> [(author: String, email: String?)] {
-        let pattern = #"<w15:person\s+[^>]*\bw15:author="([^"]+)""#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+    /// Parsed `<w15:person>` entry with full presenceInfo child.
+    /// v3.5.0: rewrote from single-attribute regex to multi-line parser per #34.
+    /// `person_id` (GUID) is derived from `userId="S::EMAIL::GUID"` triple-segment;
+    /// falls back to `author` when presenceInfo lacks the GUID form.
+    /// `display_name_id` mirrors the legacy `author` for backward compatibility
+    /// with v3.4.0 callers.
+    struct ParsedPerson {
+        let author: String          // = display_name_id (v3.4.0 legacy identifier)
+        let providerId: String?     // e.g., "AD", "None"
+        let userId: String?         // raw `S::email::guid` value
+        let email: String?          // middle segment of userId triple
+        let guid: String?           // last segment of userId triple = person_id
+        let color: String?          // optional color attribute
+        var personId: String { guid ?? author }
+        var displayName: String { author }
+    }
+
+    /// Parse `<w15:person>...</w15:person>` blocks from people.xml, including
+    /// the nested `<w15:presenceInfo>` child element. Multi-line regex with
+    /// `[\s\S]*?` lets us span the open tag → presenceInfo → close tag.
+    private func extractPeople(_ xml: String) -> [ParsedPerson] {
+        // Outer block — capture everything between <w15:person ...> and </w15:person>
+        // OR a self-closing <w15:person ... />. Self-closing has no presenceInfo.
+        let blockPattern = #"<w15:person\b([^>]*?)(?:>([\s\S]*?)</w15:person>|/>)"#
+        guard let blockRegex = try? NSRegularExpression(pattern: blockPattern) else { return [] }
         let nsString = xml as NSString
-        var people: [(String, String?)] = []
-        for match in regex.matches(in: xml, range: NSRange(location: 0, length: nsString.length))
-        where match.numberOfRanges >= 2 {
-            people.append((nsString.substring(with: match.range(at: 1)), nil))
+        var people: [ParsedPerson] = []
+        let matches = blockRegex.matches(in: xml, range: NSRange(location: 0, length: nsString.length))
+        for match in matches where match.numberOfRanges >= 2 {
+            let openAttrs = nsString.substring(with: match.range(at: 1))
+            let inner: String
+            if match.numberOfRanges >= 3, match.range(at: 2).location != NSNotFound {
+                inner = nsString.substring(with: match.range(at: 2))
+            } else {
+                inner = ""
+            }
+            guard let author = extractAttribute(openAttrs, name: "w15:author") else { continue }
+            // presenceInfo attributes — providerId / userId / color (color rare but valid)
+            let providerId = extractAttribute(inner, prefix: "<w15:presenceInfo", name: "w15:providerId")
+            let userId = extractAttribute(inner, prefix: "<w15:presenceInfo", name: "w15:userId")
+            let color = extractAttribute(inner, prefix: "<w15:presenceInfo", name: "w15:color")
+            // Decompose userId triple "S::email::guid" — split on "::" with maxSplits=2
+            // so an email containing "::" stays intact in the middle slot.
+            var email: String? = nil
+            var guid: String? = nil
+            if let userId = userId {
+                let parts = userId.split(separator: ":", omittingEmptySubsequences: false)
+                    .joined(separator: ":")  // re-form
+                let segments = parts.components(separatedBy: "::")
+                if segments.count == 3, segments[0] == "S" {
+                    email = segments[1].isEmpty ? nil : segments[1]
+                    guid = segments[2].isEmpty ? nil : segments[2]
+                }
+            }
+            people.append(ParsedPerson(
+                author: author, providerId: providerId,
+                userId: userId, email: email, guid: guid, color: color
+            ))
         }
         return people
+    }
+
+    /// Extract `name="value"` from a substring. Optional `prefix` constrains the
+    /// search to attributes following a specific anchor (e.g., the presenceInfo
+    /// open tag) — necessary because openAttrs and inner are searched separately.
+    private func extractAttribute(_ text: String, prefix: String? = nil, name: String) -> String? {
+        let escapedName = NSRegularExpression.escapedPattern(for: name)
+        let pattern: String
+        if let prefix = prefix {
+            let escapedPrefix = NSRegularExpression.escapedPattern(for: prefix)
+            pattern = #"\#(escapedPrefix)\b[^>]*?\b\#(escapedName)="([^"]*)""#
+        } else {
+            pattern = #"\b\#(escapedName)="([^"]*)""#
+        }
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let nsString = text as NSString
+        guard let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: nsString.length)),
+              match.numberOfRanges >= 2 else { return nil }
+        return nsString.substring(with: match.range(at: 1))
     }
 
     private func listPeople(args: [String: Value]) async throws -> String {
@@ -11643,8 +11754,17 @@ class WordMCPServer {
         }
         let xml = readArchivePart(docId: docId, partPath: "word/people.xml") ?? ""
         let people = extractPeople(xml)
-        let entries = people.map { (author, _) in
-            "{\"person_id\":\"\(jsonEscape(author))\",\"display_name\":\"\(jsonEscape(author))\",\"email\":null,\"color\":null,\"provider_id\":null}"
+        let entries = people.map { p in
+            // v3.5.0: dual identity per #34. Callers MAY use person_id (GUID,
+            // stable across rename) or display_name_id (= author, v3.4.0 legacy).
+            // updatePerson / deletePerson accept either form.
+            let personId = jsonEscape(p.personId)
+            let displayNameId = jsonEscape(p.author)
+            let displayName = jsonEscape(p.displayName)
+            let email = p.email.map { "\"\(jsonEscape($0))\"" } ?? "null"
+            let color = p.color.map { "\"\(jsonEscape($0))\"" } ?? "null"
+            let providerId = p.providerId.map { "\"\(jsonEscape($0))\"" } ?? "null"
+            return "{\"person_id\":\"\(personId)\",\"display_name_id\":\"\(displayNameId)\",\"display_name\":\"\(displayName)\",\"email\":\(email),\"color\":\(color),\"provider_id\":\(providerId)}"
         }
         return "[" + entries.joined(separator: ",") + "]"
     }
@@ -11679,6 +11799,21 @@ class WordMCPServer {
         return "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w15:people xmlns:w15=\"http://schemas.microsoft.com/office/word/2012/wordml\"></w15:people>"
     }
 
+    /// Resolve the caller's `person_id` argument to the underlying `author`
+    /// attribute used for `<w15:person w15:author="…">` regex match. v3.5.0
+    /// (per #34): caller may pass EITHER the GUID (preferred, stable across
+    /// rename) OR the legacy display_name_id (= author). We try GUID first,
+    /// then fall back to author.
+    private func resolveAuthor(in people: [ParsedPerson], for identifier: String) -> String? {
+        if let byGuid = people.first(where: { $0.personId == identifier }) {
+            return byGuid.author
+        }
+        if let byAuthor = people.first(where: { $0.author == identifier }) {
+            return byAuthor.author
+        }
+        return nil
+    }
+
     private func updatePerson(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -11687,13 +11822,13 @@ class WordMCPServer {
             throw WordError.missingParameter("person_id")
         }
         var xml = readArchivePart(docId: docId, partPath: "word/people.xml") ?? ""
-        guard extractPeople(xml).contains(where: { $0.author == personId }) else {
+        guard let actualAuthor = resolveAuthor(in: extractPeople(xml), for: personId) else {
             return "Error: person_id not found: \(personId)"
         }
         // For MVP: only display_name update is supported via author attribute swap.
         if let newName = args["display_name"]?.stringValue {
             // Replace the matching <w15:person w15:author="OLD"> with new name.
-            let pattern = #"(<w15:person\s+[^>]*\bw15:author=")\#(NSRegularExpression.escapedPattern(for: personId))""#
+            let pattern = #"(<w15:person\s+[^>]*\bw15:author=")\#(NSRegularExpression.escapedPattern(for: actualAuthor))""#
             if let regex = try? NSRegularExpression(pattern: pattern) {
                 let nsString = xml as NSString
                 xml = regex.stringByReplacingMatches(
@@ -11715,13 +11850,16 @@ class WordMCPServer {
             throw WordError.missingParameter("person_id")
         }
         var xml = readArchivePart(docId: docId, partPath: "word/people.xml") ?? ""
+        guard let actualAuthor = resolveAuthor(in: extractPeople(xml), for: personId) else {
+            return "Error: person_id not found: \(personId)"
+        }
         // Count comments that reference this author
         var orphaned = 0
         if let doc = openDocuments[docId] {
-            orphaned = doc.comments.comments.filter { $0.author == personId }.count
+            orphaned = doc.comments.comments.filter { $0.author == actualAuthor }.count
         }
         // Remove the <w15:person> entry
-        let pattern = #"<w15:person\s+[^>]*\bw15:author="\#(NSRegularExpression.escapedPattern(for: personId))"[^>]*>[\s\S]*?</w15:person>"#
+        let pattern = #"<w15:person\s+[^>]*\bw15:author="\#(NSRegularExpression.escapedPattern(for: actualAuthor))"[^>]*>[\s\S]*?</w15:person>"#
         if let regex = try? NSRegularExpression(pattern: pattern) {
             let nsString = xml as NSString
             xml = regex.stringByReplacingMatches(
@@ -11731,7 +11869,7 @@ class WordMCPServer {
             )
         } else {
             // Self-closing variant
-            let altPattern = #"<w15:person\s+[^>]*\bw15:author="\#(NSRegularExpression.escapedPattern(for: personId))"[^>]*/>"#
+            let altPattern = #"<w15:person\s+[^>]*\bw15:author="\#(NSRegularExpression.escapedPattern(for: actualAuthor))"[^>]*/>"#
             if let regex = try? NSRegularExpression(pattern: altPattern) {
                 let nsString = xml as NSString
                 xml = regex.stringByReplacingMatches(
@@ -11786,6 +11924,9 @@ class WordMCPServer {
         if !found {
             return "Error: \(kind) not found: \(noteId)"
         }
+        // v3.5.0: typed-model in-place mutation here bypasses the instrumented
+        // public methods, so we must mark the corresponding part dirty manually.
+        doc.markPartDirty(kind == "endnote" ? "word/endnotes.xml" : "word/footnotes.xml")
         openDocuments[docId] = doc
         documentDirtyState[docId] = true
         return "{\"id\":\(noteId)}"
