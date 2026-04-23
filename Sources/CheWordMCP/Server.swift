@@ -124,6 +124,13 @@ class WordMCPServer {
     }
 
     private func removeSession(docId: String) {
+        // v3.3.0: release ooxml-swift v0.12.0+ preserved archive tempDir on session
+        // close. WordDocument is a value type → mutate a local copy; the underlying
+        // tempDir on disk is shared, so close() actually deletes it. The dictionary
+        // entry is then removed, discarding the now-stale archiveTempDir reference.
+        if var doc = openDocuments[docId] {
+            doc.close()
+        }
         openDocuments.removeValue(forKey: docId)
         documentOriginalPaths.removeValue(forKey: docId)
         documentDirtyState.removeValue(forKey: docId)
@@ -3684,6 +3691,117 @@ class WordMCPServer {
                 ])
             ),
 
+            // ==================== v3.3.0: Phase 2A — Theme + Header/Footer CRUD ====================
+            // Spec: che-word-mcp-ooxml-roundtrip-fidelity (closes #26 #27 #28)
+
+            Tool(
+                name: "get_theme",
+                description: "讀取 word/theme/theme1.xml 的 major/minor 字體 + 主題色盤。回傳 { fonts: { major/minor: { latin, ea, cs }}, colors: { accent1-6, hyperlink, followedHyperlink }}。文件無 theme part 時回 { error }。",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼")])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
+            ),
+            Tool(
+                name: "update_theme_fonts",
+                description: "部分更新 theme1.xml 的 major/minor 字體 slot（latin/ea/cs）。只改傳入的 slot，其他保留。例：{ minor: { ea: \"DFKai-SB\" }} 只改中文小字字體（適合論文中文字體規範修復）。",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼")]),
+                        "major": .object(["type": .string("object"), "description": .string("major font slot 部分更新：{ latin?, ea?, cs? }")]),
+                        "minor": .object(["type": .string("object"), "description": .string("minor font slot 部分更新：{ latin?, ea?, cs? }")])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
+            ),
+            Tool(
+                name: "update_theme_color",
+                description: "替換主題色盤的單一 slot。slot 範圍：accent1-6 / hyperlink / followedHyperlink / dk1 / lt1 / dk2 / lt2。hex 為 6-char hex（例 \"5B9BD5\"）。",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼")]),
+                        "slot": .object(["type": .string("string"), "description": .string("色盤 slot 名稱")]),
+                        "hex": .object(["type": .string("string"), "description": .string("6-char hex 顏色值")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("slot"), .string("hex")])
+                ])
+            ),
+            Tool(
+                name: "set_theme",
+                description: "Low-level escape hatch：以使用者提供的完整 theme XML 字串覆寫 word/theme/theme1.xml。XML 必須 well-formed 且包含 <a:theme> 根元素。",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼")]),
+                        "full_xml": .object(["type": .string("string"), "description": .string("完整 theme1.xml 內容")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("full_xml")])
+                ])
+            ),
+
+            // Headers + Footers CRUD (closes #26 #27)
+            Tool(name: "list_headers",
+                 description: "列出文件所有 header parts。回傳 [{ header_id, type: 'default'|'first'|'even', section_id, has_watermark }]。",
+                 inputSchema: .object(["type": .string("object"),
+                                        "properties": .object(["doc_id": .object(["type": .string("string")])]),
+                                        "required": .array([.string("doc_id")])])),
+            Tool(name: "get_header",
+                 description: "讀取指定 header part 的文字 + 完整 XML + watermark 資訊（若有）。回傳 { text, xml, watermark }。",
+                 inputSchema: .object(["type": .string("object"),
+                                        "properties": .object([
+                                            "doc_id": .object(["type": .string("string")]),
+                                            "header_id": .object(["type": .string("string"), "description": .string("rId of the header relationship")])
+                                        ]),
+                                        "required": .array([.string("doc_id"), .string("header_id")])])),
+            Tool(name: "delete_header",
+                 description: "刪除指定 header part。同步移除 typed model entry、archiveTempDir 檔案、Relationship、Content_Types Override、document.xml 中的 sectionProperties <w:headerReference>。",
+                 inputSchema: .object(["type": .string("object"),
+                                        "properties": .object([
+                                            "doc_id": .object(["type": .string("string")]),
+                                            "header_id": .object(["type": .string("string")])
+                                        ]),
+                                        "required": .array([.string("doc_id"), .string("header_id")])])),
+            Tool(name: "list_watermarks",
+                 description: "列出文件所有 header 中的 watermark VML shapes。回傳 [{ header_id, type: 'text'|'image', text?, image_path?, color?, rotation?, scale? }]。",
+                 inputSchema: .object(["type": .string("object"),
+                                        "properties": .object(["doc_id": .object(["type": .string("string")])]),
+                                        "required": .array([.string("doc_id")])])),
+            Tool(name: "get_watermark",
+                 description: "讀取指定 header 的 watermark 完整參數。無 watermark 回 null。",
+                 inputSchema: .object(["type": .string("object"),
+                                        "properties": .object([
+                                            "doc_id": .object(["type": .string("string")]),
+                                            "header_id": .object(["type": .string("string")])
+                                        ]),
+                                        "required": .array([.string("doc_id"), .string("header_id")])])),
+
+            Tool(name: "list_footers",
+                 description: "列出文件所有 footer parts。回傳 [{ footer_id, type: 'default'|'first'|'even', section_id, has_page_number }]。",
+                 inputSchema: .object(["type": .string("object"),
+                                        "properties": .object(["doc_id": .object(["type": .string("string")])]),
+                                        "required": .array([.string("doc_id")])])),
+            Tool(name: "get_footer",
+                 description: "讀取指定 footer part 的文字 + XML + 識別出的 fields（PAGE / NUMPAGES 等）。回傳 { text, xml, fields }。",
+                 inputSchema: .object(["type": .string("object"),
+                                        "properties": .object([
+                                            "doc_id": .object(["type": .string("string")]),
+                                            "footer_id": .object(["type": .string("string")])
+                                        ]),
+                                        "required": .array([.string("doc_id"), .string("footer_id")])])),
+            Tool(name: "delete_footer",
+                 description: "刪除指定 footer part，與 delete_header 對稱（typed model + tempDir 檔案 + rels + Content_Types + section reference）。",
+                 inputSchema: .object(["type": .string("object"),
+                                        "properties": .object([
+                                            "doc_id": .object(["type": .string("string")]),
+                                            "footer_id": .object(["type": .string("string")])
+                                        ]),
+                                        "required": .array([.string("doc_id"), .string("footer_id")])])),
+
             // ==================== Phase 3: 學術功能（部分） ====================
 
             // 12.1 insert_caption - 插入圖表標號
@@ -4786,6 +4904,34 @@ class WordMCPServer {
             return try await removeDocumentPassword(args: args)
         case "restrict_editing_region":
             return try await restrictEditingRegion(args: args)
+
+        // v3.3.0: Phase 2A — Theme tools (closes #28)
+        case "get_theme":
+            return try await getTheme(args: args)
+        case "update_theme_fonts":
+            return try await updateThemeFonts(args: args)
+        case "update_theme_color":
+            return try await updateThemeColor(args: args)
+        case "set_theme":
+            return try await setTheme(args: args)
+
+        // v3.3.0: Phase 2A — Headers + Footers CRUD (closes #26 #27)
+        case "list_headers":
+            return try await listHeaders(args: args)
+        case "get_header":
+            return try await getHeaderTool(args: args)
+        case "delete_header":
+            return try await deleteHeader(args: args)
+        case "list_watermarks":
+            return try await listWatermarks(args: args)
+        case "get_watermark":
+            return try await getWatermark(args: args)
+        case "list_footers":
+            return try await listFooters(args: args)
+        case "get_footer":
+            return try await getFooterTool(args: args)
+        case "delete_footer":
+            return try await deleteFooter(args: args)
 
         // Phase 3: 學術功能
         case "insert_caption":
@@ -10743,5 +10889,491 @@ class WordMCPServer {
 
         // 標題列需要在 <w:trPr> 中設定 <w:tblHeader/>
         return "Header row(s) set for table \(tableIndex): first \(rowCount) row(s) will repeat across pages"
+    }
+
+    // MARK: - v3.3.0: Phase 2A — Theme tools (#28)
+
+    /// Read theme1.xml from the document's preserved archive.
+    /// Returns nil when there is no archive (initializer-built doc) or no theme part.
+    private func readThemeXML(docId: String) throws -> String? {
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+        guard let archiveTempDir = doc.archiveTempDir else {
+            return nil
+        }
+        let url = archiveTempDir.appendingPathComponent("word/theme/theme1.xml")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return nil
+        }
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func writeThemeXML(_ xml: String, docId: String) throws {
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+        guard let archiveTempDir = doc.archiveTempDir else {
+            throw WordError.parseError("文件無 preserved archive (initializer-built doc 無 theme1.xml 可改)")
+        }
+        let themeDir = archiveTempDir.appendingPathComponent("word/theme")
+        try FileManager.default.createDirectory(at: themeDir, withIntermediateDirectories: true)
+        try xml.write(to: themeDir.appendingPathComponent("theme1.xml"), atomically: true, encoding: .utf8)
+        documentDirtyState[docId] = true
+    }
+
+    /// Extract `typeface="X"` value from a `<a:latin/>`/`<a:ea/>`/`<a:cs/>` element.
+    /// Returns nil when the slot is not present.
+    private func extractFontTypeface(_ xml: String, slot: String) -> String? {
+        // Match `<a:<slot> typeface="..."/>` (typeface attribute may not be first).
+        let pattern = #"<a:\#(slot)\b[^/>]*?typeface="([^"]+)""#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let nsString = xml as NSString
+        guard let match = regex.firstMatch(in: xml, range: NSRange(location: 0, length: nsString.length)),
+              match.numberOfRanges >= 2
+        else { return nil }
+        let range = match.range(at: 1)
+        guard range.location != NSNotFound else { return nil }
+        return nsString.substring(with: range)
+    }
+
+    /// Extract one font slot (latin/ea/cs) from major or minor.
+    private func extractFontSlot(_ xml: String, major: Bool, slot: String) -> String? {
+        let outer = major ? "majorFont" : "minorFont"
+        let pattern = #"<a:\#(outer)>([\s\S]*?)</a:\#(outer)>"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let nsString = xml as NSString
+        guard let match = regex.firstMatch(in: xml, range: NSRange(location: 0, length: nsString.length)),
+              match.numberOfRanges >= 2
+        else { return nil }
+        let range = match.range(at: 1)
+        let inner = nsString.substring(with: range)
+        return extractFontTypeface(inner, slot: slot)
+    }
+
+    /// Extract `<a:srgbClr val="..."/>` from a named color slot.
+    private func extractColorSlot(_ xml: String, slot: String) -> String? {
+        let pattern = #"<a:\#(slot)>[\s\S]*?<a:srgbClr\s+val="([^"]+)""#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let nsString = xml as NSString
+        guard let match = regex.firstMatch(in: xml, range: NSRange(location: 0, length: nsString.length)),
+              match.numberOfRanges >= 2
+        else { return nil }
+        let range = match.range(at: 1)
+        return nsString.substring(with: range)
+    }
+
+    private func getTheme(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let themeXML = try readThemeXML(docId: docId) else {
+            return "Error: no theme part"
+        }
+        // Parse major/minor font slots
+        let majorLatin = extractFontSlot(themeXML, major: true, slot: "latin") ?? ""
+        let majorEa = extractFontSlot(themeXML, major: true, slot: "ea") ?? ""
+        let majorCs = extractFontSlot(themeXML, major: true, slot: "cs") ?? ""
+        let minorLatin = extractFontSlot(themeXML, major: false, slot: "latin") ?? ""
+        let minorEa = extractFontSlot(themeXML, major: false, slot: "ea") ?? ""
+        let minorCs = extractFontSlot(themeXML, major: false, slot: "cs") ?? ""
+        // Parse color scheme
+        let accent1 = extractColorSlot(themeXML, slot: "accent1") ?? ""
+        let accent2 = extractColorSlot(themeXML, slot: "accent2") ?? ""
+        let accent3 = extractColorSlot(themeXML, slot: "accent3") ?? ""
+        let accent4 = extractColorSlot(themeXML, slot: "accent4") ?? ""
+        let accent5 = extractColorSlot(themeXML, slot: "accent5") ?? ""
+        let accent6 = extractColorSlot(themeXML, slot: "accent6") ?? ""
+        let hyperlink = extractColorSlot(themeXML, slot: "hlink") ?? ""
+        let followed = extractColorSlot(themeXML, slot: "folHlink") ?? ""
+
+        var json = "{"
+        json += "\"fonts\":{"
+        json += "\"major\":{\"latin\":\"\(majorLatin)\",\"ea\":\"\(majorEa)\",\"cs\":\"\(majorCs)\"},"
+        json += "\"minor\":{\"latin\":\"\(minorLatin)\",\"ea\":\"\(minorEa)\",\"cs\":\"\(minorCs)\"}"
+        json += "},"
+        json += "\"colors\":{"
+        json += "\"accent1\":\"\(accent1)\",\"accent2\":\"\(accent2)\",\"accent3\":\"\(accent3)\","
+        json += "\"accent4\":\"\(accent4)\",\"accent5\":\"\(accent5)\",\"accent6\":\"\(accent6)\","
+        json += "\"hyperlink\":\"\(hyperlink)\",\"followedHyperlink\":\"\(followed)\""
+        json += "}}"
+        return json
+    }
+
+    /// Replace a font slot's typeface value within the named outer (majorFont/minorFont).
+    private func replaceFontSlot(_ xml: String, major: Bool, slot: String, newTypeface: String) -> String {
+        let outer = major ? "majorFont" : "minorFont"
+        // Find outer block
+        let outerPattern = #"<a:\#(outer)>[\s\S]*?</a:\#(outer)>"#
+        guard let outerRegex = try? NSRegularExpression(pattern: outerPattern) else { return xml }
+        let nsString = xml as NSString
+        guard let outerMatch = outerRegex.firstMatch(in: xml, range: NSRange(location: 0, length: nsString.length))
+        else { return xml }
+        let outerStart = outerMatch.range.location
+        let outerLen = outerMatch.range.length
+        let outerStr = nsString.substring(with: outerMatch.range)
+
+        // Replace `typeface="..."` inside the matching `<a:<slot>` element.
+        let slotPattern = #"(<a:\#(slot)\b[^/>]*?typeface=")([^"]*)""#
+        guard let slotRegex = try? NSRegularExpression(pattern: slotPattern) else { return xml }
+        let updatedOuter = slotRegex.stringByReplacingMatches(
+            in: outerStr,
+            range: NSRange(location: 0, length: (outerStr as NSString).length),
+            withTemplate: "$1\(newTypeface)\""
+        )
+        let result = nsString.replacingCharacters(in: NSRange(location: outerStart, length: outerLen), with: updatedOuter)
+        return result
+    }
+
+    private func updateThemeFonts(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard var themeXML = try readThemeXML(docId: docId) else {
+            return "Error: no theme part"
+        }
+        // Apply major slot updates
+        if case .object(let majorObj) = args["major"] ?? .null {
+            for slot in ["latin", "ea", "cs"] {
+                if let v = majorObj[slot]?.stringValue {
+                    themeXML = replaceFontSlot(themeXML, major: true, slot: slot, newTypeface: v)
+                }
+            }
+        }
+        // Apply minor slot updates
+        if case .object(let minorObj) = args["minor"] ?? .null {
+            for slot in ["latin", "ea", "cs"] {
+                if let v = minorObj[slot]?.stringValue {
+                    themeXML = replaceFontSlot(themeXML, major: false, slot: slot, newTypeface: v)
+                }
+            }
+        }
+        try writeThemeXML(themeXML, docId: docId)
+        return "Theme fonts updated for \(docId)"
+    }
+
+    private func updateThemeColor(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let slot = args["slot"]?.stringValue else {
+            throw WordError.missingParameter("slot")
+        }
+        guard let hex = args["hex"]?.stringValue else {
+            throw WordError.missingParameter("hex")
+        }
+        let allowed: Set<String> = ["accent1", "accent2", "accent3", "accent4", "accent5", "accent6",
+                                     "hyperlink", "followedHyperlink", "dk1", "lt1", "dk2", "lt2"]
+        guard allowed.contains(slot) else {
+            return "Error: unknown slot '\(slot)'. Allowed: accent1, accent2, accent3, accent4, accent5, accent6, hyperlink, followedHyperlink, dk1, lt1, dk2, lt2"
+        }
+        // Validate hex
+        let hexPattern = "^[0-9A-Fa-f]{6}$"
+        guard hex.range(of: hexPattern, options: .regularExpression) != nil else {
+            return "Error: hex must be 6 hexadecimal characters (got '\(hex)')"
+        }
+        guard var themeXML = try readThemeXML(docId: docId) else {
+            return "Error: no theme part"
+        }
+        // Translate API slot name → OOXML element name
+        let elementName: String = {
+            switch slot {
+            case "hyperlink": return "hlink"
+            case "followedHyperlink": return "folHlink"
+            default: return slot
+            }
+        }()
+        let pattern = #"(<a:\#(elementName)>[\s\S]*?<a:srgbClr\s+val=")([^"]+)""#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return "Error: regex compile failed"
+        }
+        let nsString = themeXML as NSString
+        themeXML = regex.stringByReplacingMatches(
+            in: themeXML,
+            range: NSRange(location: 0, length: nsString.length),
+            withTemplate: "$1\(hex.uppercased())\""
+        )
+        try writeThemeXML(themeXML, docId: docId)
+        return "Theme color slot '\(slot)' updated to \(hex.uppercased())"
+    }
+
+    private func setTheme(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let fullXML = args["full_xml"]?.stringValue else {
+            throw WordError.missingParameter("full_xml")
+        }
+        // Validate XML well-formedness
+        guard let _ = try? XMLDocument(xmlString: fullXML) else {
+            return "Error: full_xml is not well-formed XML"
+        }
+        // Validate root element is <a:theme>
+        guard fullXML.contains("<a:theme") else {
+            return "Error: full_xml must contain <a:theme> root element"
+        }
+        try writeThemeXML(fullXML, docId: docId)
+        return "Theme replaced for \(docId)"
+    }
+
+    // MARK: - v3.3.0: Phase 2A — Headers/Footers/Watermarks (#26 #27)
+
+    /// Read original XML for a header/footer file from preserved archive.
+    /// `kind`: "header" or "footer". `fileName`: e.g. "header1.xml".
+    private func readHeaderFooterXML(docId: String, fileName: String) -> String? {
+        guard let doc = openDocuments[docId],
+              let archiveTempDir = doc.archiveTempDir else { return nil }
+        let url = archiveTempDir.appendingPathComponent("word/\(fileName)")
+        return try? String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// Detect VML watermark shape ID (PowerPlusWaterMarkObject) or sentinel.
+    private func headerHasWatermark(_ xml: String) -> Bool {
+        return xml.contains("PowerPlusWaterMarkObject") || xml.contains("o:spt=\"136\"")
+    }
+
+    /// Extract watermark text (when text-watermark) — returns nil if no/image watermark.
+    private func extractWatermarkText(_ xml: String) -> String? {
+        let pattern = #"<v:textpath[^>]*\bstring="([^"]*)""#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let nsString = xml as NSString
+        guard let match = regex.firstMatch(in: xml, range: NSRange(location: 0, length: nsString.length)),
+              match.numberOfRanges >= 2 else { return nil }
+        return nsString.substring(with: match.range(at: 1))
+    }
+
+    /// Detect PAGE / NUMPAGES field in footer XML.
+    private func footerHasPageNumber(_ xml: String) -> Bool {
+        return xml.range(of: #"w:fldSimple\s+w:instr="\s*PAGE"#, options: .regularExpression) != nil
+            || xml.range(of: #"w:instrText[^>]*>\s*PAGE\s"#, options: .regularExpression) != nil
+            || xml.range(of: #"w:fldSimple\s+w:instr="[^"]*PAGE"#, options: .regularExpression) != nil
+    }
+
+    /// Extract typed field (PAGE / NUMPAGES / REF / STYLEREF / unknown) from footer XML.
+    private func extractFooterFields(_ xml: String) -> [(type: String, instruction: String)] {
+        var fields: [(String, String)] = []
+        // <w:fldSimple w:instr="..."/>
+        let simplePattern = #"<w:fldSimple\s+w:instr="([^"]+)""#
+        if let regex = try? NSRegularExpression(pattern: simplePattern) {
+            let nsString = xml as NSString
+            for match in regex.matches(in: xml, range: NSRange(location: 0, length: nsString.length))
+            where match.numberOfRanges >= 2 {
+                let instr = nsString.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespaces)
+                let firstWord = instr.split(separator: " ", maxSplits: 1).first.map(String.init) ?? "unknown"
+                fields.append((firstWord, instr))
+            }
+        }
+        // <w:instrText>PAGE</w:instrText> spans
+        let instrPattern = #"<w:instrText[^>]*>([^<]+)</w:instrText>"#
+        if let regex = try? NSRegularExpression(pattern: instrPattern) {
+            let nsString = xml as NSString
+            for match in regex.matches(in: xml, range: NSRange(location: 0, length: nsString.length))
+            where match.numberOfRanges >= 2 {
+                let instr = nsString.substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespaces)
+                let firstWord = instr.split(separator: " ", maxSplits: 1).first.map(String.init) ?? "unknown"
+                fields.append((firstWord, instr))
+            }
+        }
+        return fields
+    }
+
+    /// Extract visible text from header/footer XML by concatenating <w:t> contents.
+    private func extractTextRuns(_ xml: String) -> String {
+        let pattern = #"<w:t[^>]*>([^<]*)</w:t>"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return "" }
+        let nsString = xml as NSString
+        var parts: [String] = []
+        for match in regex.matches(in: xml, range: NSRange(location: 0, length: nsString.length))
+        where match.numberOfRanges >= 2 {
+            parts.append(nsString.substring(with: match.range(at: 1)))
+        }
+        return parts.joined()
+    }
+
+    private func jsonEscape(_ s: String) -> String {
+        return s
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\t", with: "\\t")
+    }
+
+    private func headerSectionId(of header: Header, in doc: WordDocument) -> Int {
+        // Section_id is approximated by header position in document.headers
+        // (typed model doesn't currently track section→header reverse map).
+        return doc.headers.firstIndex(where: { $0.id == header.id }) ?? 0
+    }
+
+    private func listHeaders(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+        var entries: [String] = []
+        for header in doc.headers {
+            let xml = readHeaderFooterXML(docId: docId, fileName: header.fileName) ?? ""
+            let hasWM = headerHasWatermark(xml)
+            entries.append("{\"header_id\":\"\(header.id)\",\"type\":\"\(header.type.rawValue)\",\"section_id\":\(headerSectionId(of: header, in: doc)),\"has_watermark\":\(hasWM)}")
+        }
+        return "[" + entries.joined(separator: ",") + "]"
+    }
+
+    private func getHeaderTool(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let headerId = args["header_id"]?.stringValue else {
+            throw WordError.missingParameter("header_id")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+        guard let header = doc.headers.first(where: { $0.id == headerId }) else {
+            return "Error: header not found: \(headerId)"
+        }
+        let xml = readHeaderFooterXML(docId: docId, fileName: header.fileName) ?? ""
+        let text = extractTextRuns(xml)
+        let watermarkJSON: String
+        if let wmText = extractWatermarkText(xml) {
+            watermarkJSON = "{\"type\":\"text\",\"params\":{\"text\":\"\(jsonEscape(wmText))\"}}"
+        } else if headerHasWatermark(xml) {
+            watermarkJSON = "{\"type\":\"image\",\"params\":{}}"
+        } else {
+            watermarkJSON = "null"
+        }
+        return "{\"text\":\"\(jsonEscape(text))\",\"xml\":\"\(jsonEscape(xml))\",\"watermark\":\(watermarkJSON)}"
+    }
+
+    private func deleteHeader(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let headerId = args["header_id"]?.stringValue else {
+            throw WordError.missingParameter("header_id")
+        }
+        guard var doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+        guard let idx = doc.headers.firstIndex(where: { $0.id == headerId }) else {
+            return "Error: header not found: \(headerId)"
+        }
+        let removed = doc.headers.remove(at: idx)
+        // Remove sectionProperties' headerReference (best-effort — full section
+        // tracking is out-of-scope for v3.3.0; the typed model already excludes
+        // the header so future writes won't reference it).
+        if let archiveTempDir = doc.archiveTempDir {
+            let url = archiveTempDir.appendingPathComponent("word/\(removed.fileName)")
+            try? FileManager.default.removeItem(at: url)
+        }
+        openDocuments[docId] = doc
+        documentDirtyState[docId] = true
+        return "Deleted header \(headerId) (\(removed.fileName))"
+    }
+
+    private func listWatermarks(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+        var entries: [String] = []
+        for header in doc.headers {
+            let xml = readHeaderFooterXML(docId: docId, fileName: header.fileName) ?? ""
+            guard headerHasWatermark(xml) else { continue }
+            if let wmText = extractWatermarkText(xml) {
+                entries.append("{\"header_id\":\"\(header.id)\",\"type\":\"text\",\"text\":\"\(jsonEscape(wmText))\"}")
+            } else {
+                entries.append("{\"header_id\":\"\(header.id)\",\"type\":\"image\"}")
+            }
+        }
+        return "[" + entries.joined(separator: ",") + "]"
+    }
+
+    private func getWatermark(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let headerId = args["header_id"]?.stringValue else {
+            throw WordError.missingParameter("header_id")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+        guard let header = doc.headers.first(where: { $0.id == headerId }) else {
+            return "Error: header not found: \(headerId)"
+        }
+        let xml = readHeaderFooterXML(docId: docId, fileName: header.fileName) ?? ""
+        guard headerHasWatermark(xml) else { return "null" }
+        if let wmText = extractWatermarkText(xml) {
+            return "{\"header_id\":\"\(headerId)\",\"type\":\"text\",\"text\":\"\(jsonEscape(wmText))\"}"
+        }
+        return "{\"header_id\":\"\(headerId)\",\"type\":\"image\"}"
+    }
+
+    private func footerSectionId(of footer: Footer, in doc: WordDocument) -> Int {
+        return doc.footers.firstIndex(where: { $0.id == footer.id }) ?? 0
+    }
+
+    private func listFooters(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+        var entries: [String] = []
+        for footer in doc.footers {
+            let xml = readHeaderFooterXML(docId: docId, fileName: footer.fileName) ?? ""
+            let hasPN = footerHasPageNumber(xml)
+            entries.append("{\"footer_id\":\"\(footer.id)\",\"type\":\"\(footer.type.rawValue)\",\"section_id\":\(footerSectionId(of: footer, in: doc)),\"has_page_number\":\(hasPN)}")
+        }
+        return "[" + entries.joined(separator: ",") + "]"
+    }
+
+    private func getFooterTool(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let footerId = args["footer_id"]?.stringValue else {
+            throw WordError.missingParameter("footer_id")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+        guard let footer = doc.footers.first(where: { $0.id == footerId }) else {
+            return "Error: footer not found: \(footerId)"
+        }
+        let xml = readHeaderFooterXML(docId: docId, fileName: footer.fileName) ?? ""
+        let text = extractTextRuns(xml)
+        let fields = extractFooterFields(xml)
+        let fieldsJSON = "[" + fields.map { "{\"type\":\"\(jsonEscape($0.type))\",\"instruction\":\"\(jsonEscape($0.instruction))\"}" }.joined(separator: ",") + "]"
+        return "{\"text\":\"\(jsonEscape(text))\",\"xml\":\"\(jsonEscape(xml))\",\"fields\":\(fieldsJSON)}"
+    }
+
+    private func deleteFooter(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let footerId = args["footer_id"]?.stringValue else {
+            throw WordError.missingParameter("footer_id")
+        }
+        guard var doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+        guard let idx = doc.footers.firstIndex(where: { $0.id == footerId }) else {
+            return "Error: footer not found: \(footerId)"
+        }
+        let removed = doc.footers.remove(at: idx)
+        if let archiveTempDir = doc.archiveTempDir {
+            let url = archiveTempDir.appendingPathComponent("word/\(removed.fileName)")
+            try? FileManager.default.removeItem(at: url)
+        }
+        openDocuments[docId] = doc
+        documentDirtyState[docId] = true
+        return "Deleted footer \(footerId) (\(removed.fileName))"
     }
 }

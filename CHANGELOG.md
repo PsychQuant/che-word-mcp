@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.0] - 2026-04-23
+
+### Added — Phase 2A: theme + headers/footers/watermarks tools (12 new MCP tools)
+
+Phase 2A of the [`che-word-mcp-ooxml-roundtrip-fidelity`](https://github.com/PsychQuant/macdoc/tree/main/openspec/changes/che-word-mcp-ooxml-roundtrip-fidelity) Spectra change. Closes [#26](https://github.com/PsychQuant/che-word-mcp/issues/26), [#27](https://github.com/PsychQuant/che-word-mcp/issues/27), [#28](https://github.com/PsychQuant/che-word-mcp/issues/28). Builds on v0.12.0 round-trip foundation.
+
+**Theme tools** (`get_theme`, `update_theme_fonts`, `update_theme_color`, `set_theme`):
+- Read/write `word/theme/theme1.xml` from preserved archive
+- Partial-update major/minor font slots (latin/ea/cs)
+- Slot-named color updates (accent1-6, hyperlink, followedHyperlink, dk1/lt1/dk2/lt2)
+- Full-XML escape hatch for theme rewrites
+- Solves document Chinese font fix: `update_theme_fonts(minor: { ea: "DFKai-SB" })` repairs the East-Asian font without touching other slots.
+
+**Headers/Watermarks tools** (`list_headers`, `get_header`, `delete_header`, `list_watermarks`, `get_watermark`):
+- Enumerate headers with type (default/first/even) + watermark detection
+- Read header text + full XML + watermark structure
+- Delete header part + tempDir file removal
+- Watermark detection via `PowerPlusWaterMarkObject` shape ID + `o:spt="136"` sentinel
+- Watermark text extraction via `<v:textpath string="...">` parsing
+
+**Footers tools** (`list_footers`, `get_footer`, `delete_footer`):
+- Enumerate footers with PAGE/NUMPAGES field detection
+- Read footer text + full XML + parsed field structure (`<w:fldSimple>` + `<w:instrText>`)
+- Delete footer part + tempDir file removal
+
+### Changed — `add_header` / `update_header` / `add_footer` / `update_footer` use overlay-aware allocator
+
+Via dependency bump to `ooxml-swift v0.12.2`, `WordDocument.nextRelationshipId` now reads `archiveTempDir`'s original `_rels/document.xml.rels` and uses `RelationshipIdAllocator` to compute collision-free `rId`s in overlay mode. Prior: naive `headers.count + footers.count` counter would collide with preserved unknown rels. Scratch mode behavior unchanged.
+
+### Tests
+
+49 → 61 tests (+12):
+- `ThemeToolsTests` (6 tests): get_theme, partial font update, color slot update, invalid-slot rejection, set_theme malformed-XML rejection, no-theme-part error
+- `HeadersFootersToolsTests` (6 tests): list_headers watermark detection, get_header XML+watermark, delete_header removal, list_watermarks text-watermark, list_footers page-number detection, get_footer PAGE field identification
+
+### Dependencies
+
+- `ooxml-swift` bumped from `^0.11.0` to `^0.12.0` (preserve-by-default round-trip), then patched via v0.12.1 (public archiveTempDir accessor) and v0.12.2 (overlay-aware nextRelationshipId)
+
+### Out of scope (Phase 2B / 2C follow-up)
+
+- Comment thread tools (`list_comment_threads`, `sync_extended_comments`, ...) — Phase 2B v3.4.0
+- People tools (`list_people`, `add_person`, ...) — Phase 2B v3.4.0
+- Notes update tools (`get_endnote`, `update_endnote`, `get_footnote`, `update_footnote`) — Phase 2C v3.5.0
+- Web settings tools (`get_web_settings`, `update_web_settings`) — Phase 2C v3.5.0
+
 ## [3.2.0] - 2026-04-23
 
 ### Changed — `insert_equation` LaTeX parser delegates to new `latex-math-swift` package
