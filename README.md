@@ -9,8 +9,12 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 - **Pure Swift Implementation**: No Node.js, Python, or external runtime required
 - **Direct OOXML Manipulation**: Works directly with XML, no Microsoft Word installation needed
 - **Single Binary**: Just one executable file
-- **165 MCP Tools**: Comprehensive document manipulation capabilities
+- **171+ MCP Tools**: Comprehensive document manipulation capabilities
 - **Dual-Mode Access**: Direct Mode (read-only, one step) and Session Mode (full lifecycle)
+- **Round-trip Fidelity (v3.3.0+)**: `save_document` preserves OOXML parts the typed model doesn't manage (`word/theme/`, `webSettings.xml`, `people.xml`, `commentsExtended/Extensible/Ids`, `glossary/`, `customXml/`) byte-for-byte. Closes the lossy-by-design pipeline that previously stripped headers/footers/theme/fonts on every save.
+- **Theme + Header/Footer/Watermark CRUD (v3.3.0+)**: 12 new tools for `word/theme/theme1.xml` editing, header/footer enumeration + deletion, watermark VML detection. Solves document Chinese font fix path: `update_theme_fonts({ minor: { ea: "DFKai-SB" } })`.
+- **Comment Threads + People + Notes Update + Web Settings (v3.4.0+)**: 13 new tools for collaborative comment metadata, `people.xml` author records, in-place endnote/footnote editing (preserves IDs), and `webSettings.xml` configuration.
+- **Full LaTeX Subset for `insert_equation` (v3.2.0+)**: Delegated to [`latex-math-swift`](https://github.com/PsychQuant/latex-math-swift). Supports `\frac`, `\sqrt`, `\hat`/`\bar`/`\tilde` accents, `\left/\right` delimiters, `\sum`/`\int`/`\prod` n-ary with bounds, function names, limits, `\text{}`, all Greek letters (including `\varepsilon` variants), and common operators.
 - **Text-Anchor Insertion**: Insert captions / images relative to matched text (`after_text` / `before_text`), no pre-search call required
 - **Batch Operations**: `replace_text_batch` / `search_text_batch` collapse N round-trips into one
 - **Session State API**: SHA256 + mtime-based disk drift detection, `revert_to_disk` / `reload_from_disk` / `check_disk_drift`
@@ -22,6 +26,9 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 
 | Version | Date | Changes |
 |---------|------|---------|
+| v3.4.0 | 2026-04-23 | **Phase 2B + 2C combined** (closes #24 #25 #29 #30 #31): comment threads (`list_comment_threads` / `get_comment_thread` / `sync_extended_comments`), people (`list_people` / `add_person` / `update_person` / `delete_person`), notes update (`get_endnote` / `update_endnote` / `get_footnote` / `update_footnote` — preserves note IDs), web settings (`get_web_settings` / `update_web_settings`). 13 new MCP tools. |
+| v3.3.0 | 2026-04-23 | **Phase 2A** (closes #26 #27 #28): theme tools (`get_theme` / `update_theme_fonts` / `update_theme_color` / `set_theme`), headers (`list_headers` / `get_header` / `delete_header`), watermarks (`list_watermarks` / `get_watermark`), footers (`list_footers` / `get_footer` / `delete_footer`). 12 new MCP tools. Bumped to ooxml-swift 0.12.x for preserve-by-default round-trip. |
+| v3.2.0 | 2026-04-23 | **`insert_equation` LaTeX parser delegated to `latex-math-swift`** (closes #22). Full LaTeX subset: `\frac`, `\sqrt`, `\hat`/`\bar`/`\tilde`, `\left`/`\right`, `\sum`/`\int`/`\prod` with bounds, `\ln`/`\sin`/`\cos`/`\tan`/`\log`/`\exp`/`\max`/`\min`/`\det`, `\sup`/`\inf`/`\lim`, `\text{}`, all Greek letters (incl. `\varepsilon` variants), common operators. 18 econometrics fixture equations now all parse. Adds `MathAccent` via ooxml-swift 0.11.0. |
 | v3.1.0 | 2026-04-22 | 9 readback tools: Caption CRUD (`list_captions` / `get_caption` / `update_caption` / `delete_caption`), `update_all_fields` (F9-equivalent SEQ recount), Equation CRUD (`list_equations` / `get_equation` / `update_equation` / `delete_equation`). Built on new ooxml-swift 0.10.0 `FieldParser` + `OMMLParser`. |
 | v3.0.0 | 2026-04-22 | **BREAKING**: session state API. New tools `get_session_state` / `revert_to_disk` / `reload_from_disk` / `check_disk_drift`. `open_document` track_changes default flipped from true to false. `close_document` dirty-check now returns `E_DIRTY_DOC` text response with recovery options (`save_document` / `discard_changes: true` / `finalize_document`). |
 | v2.3.0 | 2026-04-22 | Text-anchor compound tool — `insert_caption` / `insert_image_from_path` accept `after_text` / `before_text` / `text_instance`. Eliminates the `search_text + insert_*` two-call pattern (~50% RPC reduction for document caption workflows). |
@@ -202,7 +209,7 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
   https://raw.githubusercontent.com/PsychQuant/che-word-mcp/main/skills/che-word-mcp/SKILL.md
 ```
 
-## Available Tools (165 Total)
+## Available Tools (171+ Total)
 
 ### Document Management (6 tools)
 
@@ -284,15 +291,37 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
 | `insert_page_break` | Insert page break |
 | `insert_section_break` | Insert section break |
 
-### Headers & Footers (5 tools)
+### Headers & Footers (13 tools)
 
+Write tools (5):
 | Tool | Description |
 |------|-------------|
-| `add_header` | Add header content |
-| `update_header` | Update header content |
+| `add_header` | Add header content (uses `RelationshipIdAllocator` since v3.3.0+ — collision-free rIds in overlay mode) |
+| `update_header` | Update header content (preserves filename + rId; in-place tempDir overwrite) |
 | `add_footer` | Add footer content |
 | `update_footer` | Update footer content |
 | `insert_page_number` | Insert page number field |
+
+Read + delete tools (8, **v3.3.0+**, closes #26 #27):
+| Tool | Description |
+|------|-------------|
+| `list_headers` | Enumerate header parts with type (default/first/even) + section_id + has_watermark |
+| `get_header` | Read text + full XML + watermark structure |
+| `delete_header` | Remove typed model entry + tempDir file + Relationship + Content_Types Override |
+| `list_watermarks` | Scan all headers for VML `PowerPlusWaterMarkObject` shapes (text or image) |
+| `get_watermark` | Single-header watermark detail (returns `null` if no watermark) |
+| `list_footers` | Enumerate footer parts with type + section_id + has_page_number |
+| `get_footer` | Read text + XML + parsed field structure (PAGE / NUMPAGES / REF / STYLEREF) |
+| `delete_footer` | Symmetric with delete_header |
+
+### Theme Editing (4 tools, **v3.3.0+**, closes #28)
+
+| Tool | Description |
+|------|-------------|
+| `get_theme` | Read major/minor font slots (latin/ea/cs) + color scheme (accent1-6, hyperlink, followedHyperlink) from `word/theme/theme1.xml` |
+| `update_theme_fonts` | Partial-update font slots — e.g. `{ minor: { ea: "DFKai-SB" } }` for document Chinese font fix |
+| `update_theme_color` | Slot-named hex color update with validation (rejects invalid slot + non-6-char-hex) |
+| `set_theme` | Low-level escape hatch — replace theme1.xml verbatim (validates `<a:theme>` root + well-formed XML) |
 
 ### Images (7 tools)
 
@@ -347,8 +376,9 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
 | `insert_bookmark` | Insert bookmark |
 | `delete_bookmark` | Delete bookmark |
 
-### Comments & Revisions (10 tools)
+### Comments & Revisions (13 tools)
 
+Comment write + read (7):
 | Tool | Description |
 |------|-------------|
 | `insert_comment` | Insert comment |
@@ -357,19 +387,57 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
 | `list_comments` | List all comments |
 | `reply_to_comment` | Reply to existing comment |
 | `resolve_comment` | Mark comment as resolved |
+| `list_comment_threads` | **v3.4.0** — enumerate threads (root_comment_id + replies + resolved + durable_id) using typed `Comment.parentId` from `commentsExtended.xml` |
+
+Comment thread tools (2, **v3.4.0+**, closes #29):
+| Tool | Description |
+|------|-------------|
+| `get_comment_thread` | Read root + walk children for full reply tree |
+| `sync_extended_comments` | Report typed comment count for triplet sync planning |
+
+Revision tracking (4):
+| Tool | Description |
+|------|-------------|
 | `enable_track_changes` | Enable track changes |
 | `disable_track_changes` | Disable track changes |
 | `accept_revision` | Accept revision |
 | `reject_revision` | Reject revision |
 
-### Footnotes & Endnotes (4 tools)
+### People — Comment Authors (4 tools, **v3.4.0+**, closes #30)
 
+| Tool | Description |
+|------|-------------|
+| `list_people` | Parse `<w15:person>` entries from `word/people.xml` |
+| `add_person` | Add new entry; auto-create `people.xml` part when absent; duplicate-name `_2` suffix |
+| `update_person` | Update display_name (author attribute swap) |
+| `delete_person` | Remove entry; report `comments_orphaned` count |
+
+### Footnotes & Endnotes (10 tools)
+
+Write + delete (4):
 | Tool | Description |
 |------|-------------|
 | `insert_footnote` | Insert footnote |
 | `delete_footnote` | Delete footnote |
 | `insert_endnote` | Insert endnote |
 | `delete_endnote` | Delete endnote |
+
+List + read + update (6, **v3.4.0+**, closes #24 #25):
+| Tool | Description |
+|------|-------------|
+| `list_footnotes` | Direct Mode supported |
+| `list_endnotes` | Direct Mode supported |
+| `get_footnote` | Read text + runs by integer ID |
+| `update_footnote` | In-place text replacement, preserves footnote_id (cross-references stay valid) |
+| `get_endnote` | Read text + runs by integer ID |
+| `update_endnote` | In-place text replacement, preserves endnote_id |
+
+### Web Settings (2 tools, **v3.4.0+**, closes #31)
+
+| Tool | Description |
+|------|-------------|
+| `get_web_settings` | Parse `word/webSettings.xml` flag elements (`relyOnVML`, `optimizeForBrowser`, `allowPNG`, `doNotSaveAsSingleFile`); returns `{ error: "no webSettings part" }` when absent |
+| `update_web_settings` | Partial update by key; auto-create part if absent |
 
 ### Field Codes (8 tools)
 
@@ -403,7 +471,7 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
 | `set_character_spacing` | Set character spacing |
 | `set_text_effect` | Set text animation effect |
 
-> **Note**: The counts above cover key tool categories. Total surface is **165 tools** including specialized Document Comparison, Revision Tracking, Content Controls, Field Codes, and Formatting helpers. Run the server and call `tools/list` for the complete, authoritative set.
+> **Note**: The counts above cover key tool categories. Total surface is **171+ tools** as of v3.4.0 including specialized Document Comparison, Revision Tracking, Content Controls, Field Codes, Theme Editing, Header/Footer/Watermark CRUD, Comment Threads + People, Notes Update, Web Settings, and Formatting helpers. Run the server and call `tools/list` for the complete, authoritative set.
 
 ## Usage Examples
 
@@ -475,7 +543,8 @@ document.docx (ZIP)
 ### Dependencies
 
 - [MCP Swift SDK](https://github.com/modelcontextprotocol/swift-sdk) (v0.12.0+) — Model Context Protocol implementation
-- [ooxml-swift](https://github.com/PsychQuant/ooxml-swift) (v0.10.0+) — OOXML parsing, `FieldParser`, `OMMLParser`, `updateAllFields()`
+- [ooxml-swift](https://github.com/PsychQuant/ooxml-swift) (**v0.12.0+**) — OOXML parsing + **preserve-by-default round-trip architecture** (PreservedArchive, RelationshipIdAllocator, ContentTypesOverlay), `FieldParser`, `OMMLParser`, `updateAllFields()`, `MathAccent`
+- [latex-math-swift](https://github.com/PsychQuant/latex-math-swift) (**v0.1.0+**) — LaTeX subset → OMML `MathComponent` AST parser (used by `insert_equation` v3.2.0+)
 - [markdown-swift](https://github.com/PsychQuant/markdown-swift) (v0.2.0+) — Markdown generation
 - [word-to-md-swift](https://github.com/PsychQuant/word-to-md-swift) (v0.4.0+) — Word to Markdown conversion
 
@@ -488,7 +557,7 @@ document.docx (ZIP)
 | Requires Word | Yes | No | No | **No** |
 | Runtime | Node.js | Python | Node.js | **None** |
 | Single Binary | No | No | No | **Yes** |
-| Tools Count | ~10 | N/A | N/A | **165** |
+| Tools Count | ~10 | N/A | N/A | **171+** |
 | Images | Limited | Yes | Yes | **Yes** |
 | Comments | No | Limited | Limited | **Yes** |
 | Track Changes | No | No | No | **Yes** |
