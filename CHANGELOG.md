@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.1] - 2026-04-23
+
+### Fixed — universal binary (x86_64 + arm64)
+
+v3.5.0 was shipped as **arm64-only** because the release-build step ran a single-arch `swift build -c release`. Intel Mac users (Mac Pro 2019, MacBook Pro 16" Intel, etc.) couldn't run the binary at all (`Bad CPU type in executable` from `exec`).
+
+v3.5.1 follows the documented `mcp-deploy` Phase 1 workflow:
+
+```bash
+swift build -c release --arch arm64
+swift build -c release --arch x86_64
+lipo -create .build/arm64-apple-macosx/release/CheWordMCP \
+              .build/x86_64-apple-macosx/release/CheWordMCP \
+              -output mcpb/server/CheWordMCP
+xattr -cr mcpb/server/CheWordMCP
+codesign --force --sign - mcpb/server/CheWordMCP
+```
+
+Verified via `lipo -info`:
+
+```
+mcpb/server/CheWordMCP: Mach-O universal binary with 2 architectures: [x86_64:Mach-O 64-bit executable x86_64] [arm64]
+```
+
+### Compatibility
+
+- **No source code changes** — same Server.swift / ooxml-swift v0.13.0 contract as v3.5.0.
+- **Drop-in replacement**: existing `~/bin/CheWordMCP` (arm64) can be replaced via wrapper auto-download or manual `cp`. No config / API changes.
+- All 79/79 tests still pass (no semantic change since v3.5.0).
+
 ## [3.5.0] - 2026-04-23
 
 ### Fixed — true byte-preservation via dirty tracking (closes [#23 round-2](https://github.com/PsychQuant/che-word-mcp/issues/23), [#32](https://github.com/PsychQuant/che-word-mcp/issues/32), [#33](https://github.com/PsychQuant/che-word-mcp/issues/33), [#34](https://github.com/PsychQuant/che-word-mcp/issues/34))
