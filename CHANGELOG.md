@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] - 2026-04-23
+
+### Changed — `insert_equation` LaTeX parser delegates to new `latex-math-swift` package
+
+Closes [#22](https://github.com/PsychQuant/che-word-mcp/issues/22) via the `che-word-mcp-latex-parser-expansion` Spectra change in `PsychQuant/macdoc/openspec/changes/`.
+
+The previous in-source `parseLatexSubset` parser (`Server.swift:7253-7371`, 30-entry whitelist of Greek + symbols + the macros `\frac` and `\sqrt`) is replaced by delegation to `LaTeXMathSwift.LaTeXMathParser.parse(_ latex: String) throws -> [MathComponent]`. This dramatically expands the macro coverage and resolves the long-standing schema-vs-implementation drift.
+
+**New macro coverage** (full list in `latex-math-swift` README):
+
+- `\frac{a}{b}`, `\sqrt{a}`, `\sqrt[n]{a}`
+- Structural sub/superscript `a_{b}`, `a^{b}`, `a_{b}^{c}`, `a^{c}_{b}` — both orderings normalize to the same `<m:sSubSup>` element editable in MS Word
+- Accents `\hat{x}`, `\bar{x}`, `\tilde{x}`, `\dot{x}`, `\overline{x}` → emit `<m:acc>` (depends on new ooxml-swift 0.11.0 `MathAccent` type)
+- Delimiter pairs `\left(...\right)`, `\left[...\right]`, `\left\{...\right\}`, `\left|...\right|`, `\left\|...\right\|`
+- N-ary operators with bounds `\sum_{a}^{b}`, `\int_{a}^{b}`, `\prod_{a}^{b}` (and bare versions without bounds)
+- Function names `\ln`, `\sin`, `\cos`, `\tan`, `\log`, `\exp`, `\max`, `\min`, `\det` followed by `(...)` argument
+- Limit forms `\sup_{x}`, `\inf_{x}`, `\lim_{x \to 0}`
+- Plain-text-in-math via `\text{...}`
+- All ECMA-376 §22.1.2.93 lowercase + uppercase Greek letters plus variants (`\varepsilon`, `\vartheta`, `\varphi`, `\varpi`, `\varrho`, `\varsigma`)
+- Common operators `\cdot`, `\times`, `\pm`, `\mp`, `\sim`, `\approx`, `\neq`, `\le`, `\ge`, `\to`, `\infty`, `\partial`, `\nabla`, `\cdots`, `\ldots`, `\mid`, `\quad`, `\,`
+
+### Behavior expansion (review before upgrading)
+
+Equations that previously returned `unrecognized token` errors now succeed. This is the explicit purpose of the change, but callers SHOULD audit any test fixtures that asserted on the *failure* of specific tokens (e.g., `\Delta`, `\hat`, `\varepsilon`, `\sup`, `\left`, `\ln` as standalone token) and update them to expect the new successful path.
+
+### Schema description rewrite
+
+The MCP `tools/list` schema for `insert_equation`'s `latex` parameter is rewritten to enumerate the accurate supported macro families (see `Server.swift:2153`). The previous misleading "narrow subset" summary is removed. LLM tool-use prompts that cached the old description will see updated guidance on next `tools/list` call.
+
+### Tests
+
+49/49 XCTest cases pass (was 45). The 4 new tests in `Tests/CheWordMCPTests/InsertEquationGoldenTests.swift` cover all 18 document fixture equations from issue #22 with three layers of verification (parse, OMML element coverage, OMMLParser round-trip).
+
+### Out of scope (Phase 2 / Phase 3 follow-up)
+
+- Pandoc-equivalent token coverage (`\overset`, `\underset`, `\begin{matrix}`, `\stackrel`, `\xrightarrow`, etc.) — deferred to a follow-up issue.
+- Per-token `components:` JSON snippet hint embedded in error messages (issue #22 Option C) — useful UX but orthogonal; deferred.
+- `che-pptx-mcp` adoption of `latex-math-swift` — separate change opened when PPTX equation tooling is prioritized.
+
+### Dependencies
+
+- `ooxml-swift` bumped to `^0.11.0` (adds `MathAccent`)
+- New: `latex-math-swift ^0.1.0` (https://github.com/PsychQuant/latex-math-swift)
+
 ## [3.1.0] - 2026-04-22
 
 ### Added — 9 readback MCP tools (Caption CRUD + update_all_fields + Equation CRUD)
