@@ -1,8 +1,8 @@
 {
   "manifest_version": "0.3",
   "name": "che-word-mcp",
-  "version": "3.5.1",
-  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v3.5.1: universal binary (x86_64 + arm64) — Intel Mac compatibility restored. v3.5.0: true byte-preservation via dirty tracking — Reader-loaded <org> theses survive no-op save_document round-trip with all 13 fontTable entries, 6 distinct headers, 4 footers, three-segment PAGE field, and full <w15:presenceInfo> identity preserved. Closes #23 round-2 + #32 #33 #34. Built on ooxml-swift 0.13.0.",
+  "version": "3.5.2",
+  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v3.5.2: rels overlay merge — Reader-loaded document no-op save_document round-trip preserves theme/webSettings/people/customXml/commentsExtended/commentsIds rels (closes #35). v3.5.1: universal binary (x86_64+arm64). v3.5.0: true byte-preservation via dirty tracking. Closes #23 round-2 + #32 #33 #34 #35. Built on ooxml-swift 0.13.1.",
   "author": {
     "name": "Che Cheng"
   },
