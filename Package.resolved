@@ -19,6 +19,15 @@
       }
     },
     {
+      "identity" : "latex-math-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/PsychQuant/latex-math-swift.git",
+      "state" : {
+        "revision" : "4e80aacd081f76ed26fdd23ff9627661b20eadc3",
+        "version" : "0.1.0"
+      }
+    },
+    {
       "identity" : "markdown-swift",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/PsychQuant/markdown-swift.git",
@@ -32,8 +41,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/PsychQuant/ooxml-swift.git",
       "state" : {
-        "revision" : "96b21e52067a80fb2399e00fdfd130588e5919cb",
-        "version" : "0.10.0"
+        "revision" : "c124defbf8ca5926f48239ce10fc52d44dbba7fc",
+        "version" : "0.11.0"
       }
     },
     {
@@ -68,8 +77,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-nio.git",
       "state" : {
-        "revision" : "558f24a4647193b5a0e2104031b71c55d31ff83a",
-        "version" : "2.97.1"
+        "revision" : "cd6710454f25733900e133c6caf5188952763c36",
+        "version" : "2.98.0"
       }
     },
     {

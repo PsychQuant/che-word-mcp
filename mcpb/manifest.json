@@ -1,8 +1,8 @@
 {
   "manifest_version": "0.3",
   "name": "che-word-mcp",
-  "version": "3.1.0",
-  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v3.1.0: 9 readback tools — Caption CRUD (list/get/update/delete_caption) + update_all_fields (F9-equivalent SEQ counter recomputation) + Equation CRUD (list/get/update/delete_equation). Built on ooxml-swift 0.10.0 FieldParser + OMMLParser. Closes #17 #19 #21.",
+  "version": "3.2.0",
+  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v3.2.0: insert_equation latex parser delegated to latex-math-swift v0.1.0 — supports \\frac \\sqrt \\hat \\bar \\tilde \\left/\\right \\sum/\\int/\\prod (with bounds) \\ln/\\sin/\\cos/etc \\sup/\\inf/\\lim \\text all Greek letters and common operators. 18/18 econometrics document fixture equations now parse where v3.1.0 returned 'unrecognized token' errors. Built on ooxml-swift 0.11.0 (MathAccent added). Closes #22.",
   "author": {
     "name": "Che Cheng"
   },

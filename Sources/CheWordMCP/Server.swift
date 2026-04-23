@@ -3,6 +3,7 @@ import MCP
 import OOXMLSwift
 import WordToMDSwift
 import CommonConverterSwift
+import LaTeXMathSwift
 
 /// Word MCP Server - Swift OOXML Word 文件處理
 class WordMCPServer {
@@ -2136,7 +2137,7 @@ class WordMCPServer {
             // 7.3 數學公式
             Tool(
                 name: "insert_equation",
-                description: "插入數學公式（結構化 OMML）。v2.1+ 推薦用 components: JSON tree；latex: 為 fallback（窄子集：\\frac{}{}, \\sqrt{}, _{}, ^{}, 希臘字母, ∑/∫/∏/·/×/±；不支援的 token 會報錯）。必須提供 components 或 latex 其中之一。",
+                description: "插入數學公式（結構化 OMML，可在 Word native equation editor 雙擊編輯）。v3.2+ 的 latex: 支援 LaTeX 子集（見下方 latex 參數描述完整 token 清單）；components: 為 JSON tree fallback，給超出 LaTeX 子集的進階用法。必須提供 components 或 latex 其中之一。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -2150,7 +2151,7 @@ class WordMCPServer {
                         ]),
                         "latex": .object([
                             "type": .string("string"),
-                            "description": .string("Fallback: pseudo-LaTeX 字串。僅支援窄子集；未識別 token 會回錯並建議改用 components")
+                            "description": .string("LaTeX 子集字串。支援的 macro 家族: \\frac{a}{b}, \\sqrt{a}, \\sqrt[n]{a}; 結構化 sub/sup a_{b}^{c} (兩種順序自動正規化); accent \\hat \\bar \\tilde \\dot \\overline; delimiter \\left( \\right) \\left[ \\right] \\left\\{ \\right\\} \\left| \\right| \\left\\| \\right\\|; n-ary \\sum_{a}^{b} \\int_{a}^{b} \\prod_{a}^{b} (有無 bound 都可); function \\ln \\sin \\cos \\tan \\log \\exp \\max \\min \\det 後接 (...); limit \\sup_{x} \\inf_{x} \\lim_{x \\to 0}; 文字 \\text{...}; 全部小寫/大寫希臘字母及變體 (\\alpha-\\omega, \\Gamma-\\Omega, \\varepsilon \\vartheta \\varphi etc.); 常用運算子 \\cdot \\times \\pm \\sim \\approx \\neq \\le \\ge \\to \\infty \\partial \\cdots \\mid \\quad. 超出此清單的 macro (例如 \\overbrace, \\stackrel) 會回錯，請改用 components: 參數提供完整 MathComponent JSON tree。")
                         ]),
                         "display_mode": .object([
                             "type": .string("boolean"),
@@ -7087,17 +7088,18 @@ class WordMCPServer {
         return "Inserted dropdown '\(name)' with \(options.count) options at paragraph \(paragraphIndex)"
     }
 
-    /// insert_equation MCP tool — now emits structurally correct OMML.
+    /// insert_equation MCP tool — emits structurally correct OMML.
     ///
-    /// BREAKING from previous release:
-    /// - Accepts `components:` argument (JSON tree with `type` discriminator) —
-    ///   primary path. Produces valid `<m:oMath>` / `<m:oMathPara>` output that
-    ///   Word renders as a live equation.
-    /// - `latex:` argument retained as fallback but supports only a NARROW
-    ///   pseudo-LaTeX subset: `\frac{a}{b}`, `\sqrt{a}`, `a^{b}`, `a_{b}`,
-    ///   a handful of Greek letters, and summation/integration symbols.
-    ///   Unrecognized syntax returns an error naming the first bad token and
-    ///   referring callers to `components:` for full control.
+    /// Two input paths:
+    /// - `components:` argument — JSON tree with `type` discriminator. Primary
+    ///   path for callers needing fine control.
+    /// - `latex:` argument — LaTeX subset delegated to `LaTeXMathSwift.LaTeXMathParser`.
+    ///   Supports `\frac`, `\sqrt`, `\hat`, `\bar`, `\tilde`, `\left/\right`,
+    ///   `\sum`/`\int`/`\prod` with bounds, `\ln`/`\sin`/`\cos`/etc.,
+    ///   `\sup`/`\inf`/`\lim`, `\text{}`, all Greek letters (lowercase /
+    ///   uppercase / variants), and common operators. Anything else returns
+    ///   an error naming the unrecognized token. See latex-math-swift README
+    ///   for the canonical macro list.
     private func insertEquation(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -7106,11 +7108,11 @@ class WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        // Primary path: components:. Fallback: latex: subset.
-        let component: MathComponent
+        // Resolve to a sequence of MathComponent atoms.
+        let components: [MathComponent]
         if let componentsValue = args["components"] {
             do {
-                component = try parseMathComponent(from: componentsValue)
+                components = [try parseMathComponent(from: componentsValue)]
             } catch MathParseError.unknownType(let t) {
                 return "Error: unknown math component type '\(t)'. Supported: run, fraction, radical, subSuperScript, nary."
             } catch MathParseError.missingField(let f, let t) {
@@ -7120,14 +7122,16 @@ class WordMCPServer {
             }
         } else if let latex = args["latex"]?.stringValue {
             do {
-                component = try parseLatexSubset(latex)
-            } catch LatexParseError.unrecognizedToken(let tok) {
+                components = try parseLatex(latex)
+            } catch LaTeXParseError.unrecognizedToken(let tok) {
                 return "Error: unrecognized LaTeX token '\(tok)'. Use `components:` argument for full MathComponent control."
-            } catch LatexParseError.malformed(let msg) {
+            } catch LaTeXParseError.malformed(let msg) {
                 return "Error: malformed LaTeX: \(msg). Use `components:` for complex expressions."
+            } catch LaTeXParseError.empty {
+                return "Error: empty LaTeX input."
             }
         } else {
-            return "Error: either 'components' (JSON tree) or 'latex' (pseudo-LaTeX subset) argument required"
+            return "Error: either 'components' (JSON tree) or 'latex' (LaTeX subset) argument required"
         }
 
         let displayMode = args["display_mode"]?.boolValue ?? true
@@ -7135,7 +7139,7 @@ class WordMCPServer {
 
         // Assemble OMML with required namespace
         let xmlns = "xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\""
-        let inner = component.toOMML()
+        let inner = components.map { $0.toOMML() }.joined()
         let ommlXML = displayMode
             ? "<m:oMathPara \(xmlns)><m:oMath>\(inner)</m:oMath></m:oMathPara>"
             : "<m:oMath \(xmlns)>\(inner)</m:oMath>"
@@ -7158,11 +7162,6 @@ class WordMCPServer {
         case unknownType(String)
         case missingField(field: String, forType: String)
         case invalidStructure(String)
-    }
-
-    private enum LatexParseError: Error {
-        case unrecognizedToken(String)
-        case malformed(String)
     }
 
     /// Parse an MCP Value (JSON) into a MathComponent tree.
@@ -7250,124 +7249,17 @@ class WordMCPServer {
         }
     }
 
-    /// Minimal pseudo-LaTeX subset parser. Phase 1 scope: plain text, Greek
-    /// letters (`\alpha` etc.), summation/integration symbols (as unicode
-    /// MathRun), single-macro expressions `\frac{a}{b}`, `\sqrt{a}`, `x^{y}`,
-    /// `x_{y}`. Anything else throws `LatexParseError.unrecognizedToken`.
-    private func parseLatexSubset(_ latex: String) throws -> MathComponent {
-        let trimmed = latex.trimmingCharacters(in: .whitespaces)
-        if trimmed.isEmpty {
-            throw LatexParseError.malformed("empty input")
-        }
-        // Try top-level single-macro match first
-        if trimmed.hasPrefix("\\frac{") {
-            let (numerator, denominator) = try parseFracTopLevel(trimmed)
-            return MathFraction(
-                numerator: [try parseLatexSubset(numerator)],
-                denominator: [try parseLatexSubset(denominator)]
-            )
-        }
-        if trimmed.hasPrefix("\\sqrt{") {
-            let inner = try parseSingleBracedArg(trimmed, after: "\\sqrt")
-            return MathRadical(radicand: [try parseLatexSubset(inner)])
-        }
-        // Plain text / Greek / symbol fallback
-        return try parseLatexPlain(trimmed)
-    }
-
-    /// Parse `\frac{A}{B}` → (A, B). Throws on malformed.
-    private func parseFracTopLevel(_ s: String) throws -> (String, String) {
-        guard s.hasPrefix("\\frac{") else {
-            throw LatexParseError.malformed("expected \\frac{")
-        }
-        let afterFrac = s.dropFirst("\\frac{".count)
-        guard let (a, restA) = scanBalancedBraceBody(String(afterFrac)) else {
-            throw LatexParseError.malformed("unterminated \\frac numerator")
-        }
-        guard restA.hasPrefix("{") else {
-            throw LatexParseError.malformed("expected '{' after \\frac numerator")
-        }
-        guard let (b, _) = scanBalancedBraceBody(String(restA.dropFirst())) else {
-            throw LatexParseError.malformed("unterminated \\frac denominator")
-        }
-        return (a, b)
-    }
-
-    private func parseSingleBracedArg(_ s: String, after prefix: String) throws -> String {
-        let opened = prefix + "{"
-        guard s.hasPrefix(opened) else {
-            throw LatexParseError.malformed("expected '\(opened)'")
-        }
-        let after = s.dropFirst(opened.count)
-        guard let (body, _) = scanBalancedBraceBody(String(after)) else {
-            throw LatexParseError.malformed("unterminated braces after '\(prefix)'")
-        }
-        return body
-    }
-
-    /// Given a string that begins inside a `{...}` (no leading `{`), return the
-    /// body up to the matching closing brace + the rest of the string.
-    private func scanBalancedBraceBody(_ s: String) -> (String, String)? {
-        var depth = 1
-        var body = ""
-        var i = s.startIndex
-        while i < s.endIndex {
-            let c = s[i]
-            if c == "{" {
-                depth += 1
-                body.append(c)
-            } else if c == "}" {
-                depth -= 1
-                if depth == 0 {
-                    let rest = s[s.index(after: i)...]
-                    return (body, String(rest))
-                }
-                body.append(c)
-            } else {
-                body.append(c)
-            }
-            i = s.index(after: i)
-        }
-        return nil
-    }
-
-    /// Plain characters + Greek letter macros + fixed operator list. Any other
-    /// `\token` throws.
-    private func parseLatexPlain(_ s: String) throws -> MathComponent {
-        let greek: [String: String] = [
-            "\\alpha": "α", "\\beta": "β", "\\gamma": "γ", "\\delta": "δ",
-            "\\epsilon": "ε", "\\zeta": "ζ", "\\eta": "η", "\\theta": "θ",
-            "\\iota": "ι", "\\kappa": "κ", "\\lambda": "λ", "\\mu": "μ",
-            "\\nu": "ν", "\\xi": "ξ", "\\pi": "π", "\\rho": "ρ",
-            "\\sigma": "σ", "\\tau": "τ", "\\phi": "φ", "\\chi": "χ",
-            "\\psi": "ψ", "\\omega": "ω",
-            "\\sum": "∑", "\\int": "∫", "\\prod": "∏",
-            "\\cdot": "·", "\\times": "×", "\\pm": "±",
-            "\\infty": "∞", "\\partial": "∂",
-        ]
-        var result = ""
-        var i = s.startIndex
-        while i < s.endIndex {
-            let c = s[i]
-            if c == "\\" {
-                // Read token: backslash + alphabetic chars
-                var tokenEnd = s.index(after: i)
-                while tokenEnd < s.endIndex, s[tokenEnd].isLetter {
-                    tokenEnd = s.index(after: tokenEnd)
-                }
-                let token = String(s[i..<tokenEnd])
-                if let unicode = greek[token] {
-                    result.append(unicode)
-                    i = tokenEnd
-                } else {
-                    throw LatexParseError.unrecognizedToken(token)
-                }
-            } else {
-                result.append(c)
-                i = s.index(after: i)
-            }
-        }
-        return MathRun(text: result)
+    /// LaTeX subset parser delegated to `LaTeXMathSwift.LaTeXMathParser`.
+    ///
+    /// Returns an array of `MathComponent` instead of a single component
+    /// because real-world equations are sequences of atoms (`R_t = a + b`)
+    /// not single trees. The caller joins their OMML output for the
+    /// `<m:oMath>` body.
+    ///
+    /// Supported macros: see `latex-math-swift` README. Anything outside the
+    /// supported set throws `LaTeXParseError.unrecognizedToken`.
+    private func parseLatex(_ latex: String) throws -> [MathComponent] {
+        return try LaTeXMathParser.parse(latex)
     }
 
     private func setParagraphBorder(args: [String: Value]) async throws -> String {
