@@ -9,8 +9,12 @@
 - **純 Swift 實作**：不需要 Node.js、Python 或其他執行環境
 - **直接操作 OOXML**：直接處理 XML，不需要安裝 Microsoft Word
 - **單一執行檔**：只有一個 binary 檔案
-- **165 個 MCP 工具**：完整的文件操作功能
+- **171+ MCP 工具**：完整的文件操作功能
 - **Dual-Mode 存取**：Direct Mode（唯讀、一步完成）與 Session Mode（完整生命週期）
+- **Round-trip Fidelity（v3.3.0+）**：`save_document` 保留 typed model 不管理的 OOXML parts（`word/theme/`、`webSettings.xml`、`people.xml`、`commentsExtended/Extensible/Ids`、`glossary/`、`customXml/`）byte-for-byte。修復先前 lossy-by-design pipeline 每次儲存都會 strip 頁首/頁尾/theme/字體的問題。
+- **Theme + 頁首頁尾 + 浮水印 CRUD（v3.3.0+）**：12 個新工具操作 `word/theme/theme1.xml` 編輯、頁首頁尾列舉與刪除、浮水印 VML 偵測。直接解 document中文字體 fallback 路徑：`update_theme_fonts({ minor: { ea: "DFKai-SB" } })`。
+- **Comment Threads + People + Notes Update + Web Settings（v3.4.0+）**：13 個新工具，涵蓋協作註解 metadata、`people.xml` 作者紀錄、in-place endnote/footnote 編輯（保留 ID）、`webSettings.xml` 設定。
+- **完整 LaTeX 子集 for `insert_equation`（v3.2.0+）**：委派給 [`latex-math-swift`](https://github.com/PsychQuant/latex-math-swift)。支援 `\frac`、`\sqrt`、`\hat`/`\bar`/`\tilde` accent、`\left/\right` delimiter、`\sum`/`\int`/`\prod` n-ary 含 bound、function names、limits、`\text{}`、全部希臘字母（含 `\varepsilon` 變體）、常用運算子。
 - **Text-Anchor 插入**：`insert_caption` / `insert_image_from_path` 支援 `after_text` / `before_text`，省去先 search 再 insert 的兩段式流程
 - **批次操作**：`replace_text_batch` / `search_text_batch` 把 N 次 RPC 壓縮成一次
 - **Session State API**：SHA256 + mtime 磁碟 drift 偵測、`revert_to_disk` / `reload_from_disk` / `check_disk_drift`
@@ -22,6 +26,9 @@
 
 | 版本 | 日期 | 變更 |
 |------|------|------|
+| v3.4.0 | 2026-04-23 | **Phase 2B + 2C 合併**（closes #24 #25 #29 #30 #31）：comment threads（`list_comment_threads` / `get_comment_thread` / `sync_extended_comments`）、people（`list_people` / `add_person` / `update_person` / `delete_person`）、notes update（`get_endnote` / `update_endnote` / `get_footnote` / `update_footnote`，保留 note ID）、web settings（`get_web_settings` / `update_web_settings`）。13 個新 MCP 工具。|
+| v3.3.0 | 2026-04-23 | **Phase 2A**（closes #26 #27 #28）：theme tools（`get_theme` / `update_theme_fonts` / `update_theme_color` / `set_theme`）、headers（`list_headers` / `get_header` / `delete_header`）、watermarks（`list_watermarks` / `get_watermark`）、footers（`list_footers` / `get_footer` / `delete_footer`）。12 個新 MCP 工具。底層升級到 ooxml-swift 0.12.x（preserve-by-default round-trip 架構）。|
+| v3.2.0 | 2026-04-23 | **`insert_equation` LaTeX parser 委派給 `latex-math-swift`**（closes #22）。完整 LaTeX 子集：`\frac`、`\sqrt`、`\hat`/`\bar`/`\tilde`、`\left`/`\right`、`\sum`/`\int`/`\prod` 含 bound、`\ln`/`\sin`/`\cos`/`\tan`/`\log`/`\exp`/`\max`/`\min`/`\det`、`\sup`/`\inf`/`\lim`、`\text{}`、全部希臘字母（含 `\varepsilon` 變體）、常用運算子。18 個經濟學 fixture 公式現在全部能 parse。新增 `MathAccent`（透過 ooxml-swift 0.11.0）。|
 | v3.1.0 | 2026-04-22 | 9 個 readback 工具：Caption CRUD（`list_captions` / `get_caption` / `update_caption` / `delete_caption`）、`update_all_fields`（F9 等效 SEQ 重編號）、Equation CRUD（`list_equations` / `get_equation` / `update_equation` / `delete_equation`）。底層使用新的 ooxml-swift 0.10.0 `FieldParser` + `OMMLParser`。|
 | v3.0.0 | 2026-04-22 | **BREAKING**：session state API。新增 `get_session_state` / `revert_to_disk` / `reload_from_disk` / `check_disk_drift` 工具。`open_document` 的 track_changes 預設從 true 翻成 false。`close_document` 遇 dirty 文件改回傳 `E_DIRTY_DOC` 文字回應，列出三條復原路徑（`save_document` / `discard_changes: true` / `finalize_document`）。|
 | v2.3.0 | 2026-04-22 | Text-anchor 複合工具 — `insert_caption` / `insert_image_from_path` 支援 `after_text` / `before_text` / `text_instance`，省掉 `search_text + insert_*` 的兩段式流程（論文圖表 caption 工作流 RPC 減半）。|
@@ -184,7 +191,7 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
 cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 ```
 
-## 可用工具（共 165 個）
+## 可用工具（共 171+ 個）
 
 ### 文件管理 (6 個)
 
@@ -266,15 +273,37 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `insert_page_break` | 插入分頁符號 |
 | `insert_section_break` | 插入分節符號 |
 
-### 頁首與頁尾 (5 個)
+### 頁首與頁尾 (13 個)
 
+寫入工具 (5)：
 | 工具 | 說明 |
 |------|------|
-| `add_header` | 新增頁首內容 |
-| `update_header` | 更新頁首內容 |
+| `add_header` | 新增頁首內容（v3.3.0+ 用 `RelationshipIdAllocator` — overlay mode 不會 rId 衝突）|
+| `update_header` | 更新頁首內容（保留檔名 + rId；in-place 覆寫 archiveTempDir）|
 | `add_footer` | 新增頁尾內容 |
 | `update_footer` | 更新頁尾內容 |
 | `insert_page_number` | 插入頁碼欄位 |
+
+讀取與刪除工具 (8，**v3.3.0+**，closes #26 #27)：
+| 工具 | 說明 |
+|------|------|
+| `list_headers` | 列舉所有 header parts，含 type（default/first/even）+ section_id + has_watermark |
+| `get_header` | 讀取文字 + 完整 XML + watermark 結構 |
+| `delete_header` | 移除 typed model entry + tempDir 檔案 + Relationship + Content_Types Override |
+| `list_watermarks` | 掃描所有 header 中的 VML `PowerPlusWaterMarkObject` shapes（text 或 image）|
+| `get_watermark` | 單一 header 的 watermark 詳細資訊（無 watermark 回 `null`）|
+| `list_footers` | 列舉所有 footer parts，含 type + section_id + has_page_number |
+| `get_footer` | 讀取文字 + XML + 解析後的 fields（PAGE / NUMPAGES / REF / STYLEREF）|
+| `delete_footer` | 與 delete_header 對稱 |
+
+### Theme 編輯 (4 個，**v3.3.0+**，closes #28)
+
+| 工具 | 說明 |
+|------|------|
+| `get_theme` | 讀取 `word/theme/theme1.xml` 的 major/minor 字體 slot（latin/ea/cs）+ 色盤（accent1-6, hyperlink, followedHyperlink）|
+| `update_theme_fonts` | 部分更新字體 slot — 例：`{ minor: { ea: "DFKai-SB" } }` 修復 document中文字體 |
+| `update_theme_color` | 按 slot 名稱 hex color 更新（拒絕無效 slot + 非 6 字元 hex）|
+| `set_theme` | 低階 escape hatch — 完整覆寫 theme1.xml（驗證 `<a:theme>` 根 + well-formed XML）|
 
 ### 圖片 (7 個)
 
@@ -329,8 +358,9 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `insert_bookmark` | 插入書籤 |
 | `delete_bookmark` | 刪除書籤 |
 
-### 註解與修訂 (10 個)
+### 註解與修訂 (13 個)
 
+註解寫入與讀取 (7)：
 | 工具 | 說明 |
 |------|------|
 | `insert_comment` | 插入註解 |
@@ -339,19 +369,57 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `list_comments` | 列出所有註解 |
 | `reply_to_comment` | 回覆現有註解 |
 | `resolve_comment` | 標記註解為已解決 |
+| `list_comment_threads` | **v3.4.0** — 列舉 thread 結構（root_comment_id + replies + resolved + durable_id），用 typed `Comment.parentId`（從 `commentsExtended.xml` 解析）|
+
+註解 thread 工具 (2，**v3.4.0+**，closes #29)：
+| 工具 | 說明 |
+|------|------|
+| `get_comment_thread` | 讀取 root + 走遍 children 建構完整 reply tree |
+| `sync_extended_comments` | 回報 typed comment count，用於 triplet sync 規劃 |
+
+修訂追蹤 (4)：
+| 工具 | 說明 |
+|------|------|
 | `enable_track_changes` | 啟用追蹤修訂 |
 | `disable_track_changes` | 停用追蹤修訂 |
 | `accept_revision` | 接受修訂 |
 | `reject_revision` | 拒絕修訂 |
 
-### 腳註與尾註 (4 個)
+### People — 註解作者 (4 個，**v3.4.0+**，closes #30)
 
+| 工具 | 說明 |
+|------|------|
+| `list_people` | 解析 `word/people.xml` 的 `<w15:person>` 紀錄 |
+| `add_person` | 新增 entry；不存在則 auto-create `people.xml` part；重名加 `_2` 後綴 |
+| `update_person` | 更新 display_name（author 屬性 swap）|
+| `delete_person` | 移除 entry；回報 `comments_orphaned` 數 |
+
+### 腳註與尾註 (10 個)
+
+寫入與刪除 (4)：
 | 工具 | 說明 |
 |------|------|
 | `insert_footnote` | 插入腳註 |
 | `delete_footnote` | 刪除腳註 |
 | `insert_endnote` | 插入尾註 |
 | `delete_endnote` | 刪除尾註 |
+
+列舉、讀取與更新 (6，**v3.4.0+**，closes #24 #25)：
+| 工具 | 說明 |
+|------|------|
+| `list_footnotes` | 支援 Direct Mode |
+| `list_endnotes` | 支援 Direct Mode |
+| `get_footnote` | 按整數 ID 讀取文字 + runs |
+| `update_footnote` | In-place 替換文字，保留 footnote_id（cross-references 仍有效）|
+| `get_endnote` | 按整數 ID 讀取文字 + runs |
+| `update_endnote` | In-place 替換文字，保留 endnote_id |
+
+### Web Settings (2 個，**v3.4.0+**，closes #31)
+
+| 工具 | 說明 |
+|------|------|
+| `get_web_settings` | 解析 `word/webSettings.xml` 旗標元素（`relyOnVML` / `optimizeForBrowser` / `allowPNG` / `doNotSaveAsSingleFile`）；無 part 時回 `{ error: "no webSettings part" }` |
+| `update_web_settings` | 按 key 部分更新；不存在則 auto-create part |
 
 ### 欄位代碼 (8 個)
 
@@ -385,7 +453,7 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `set_character_spacing` | 設定字元間距 |
 | `set_text_effect` | 設定文字動畫效果 |
 
-> **備註**：上述分類涵蓋主要工具。總工具面共 **165 個**，包含 Document Comparison、Revision Tracking、Content Controls、Field Codes、Formatting 等其他專門工具。啟動 server 後呼叫 `tools/list` 可取得完整清單。
+> **備註**：上述分類涵蓋主要工具。截至 v3.4.0 總工具面共 **171+ 個**，包含 Document Comparison、Revision Tracking、Content Controls、Field Codes、Theme Editing、Header/Footer/Watermark CRUD、Comment Threads + People、Notes Update、Web Settings、Formatting 等其他專門工具。啟動 server 後呼叫 `tools/list` 可取得完整清單。
 
 ## 使用範例
 
@@ -457,7 +525,8 @@ document.docx (ZIP)
 ### 依賴套件
 
 - [MCP Swift SDK](https://github.com/modelcontextprotocol/swift-sdk) (v0.12.0+) — Model Context Protocol 實作
-- [ooxml-swift](https://github.com/PsychQuant/ooxml-swift) (v0.10.0+) — OOXML 解析、`FieldParser`、`OMMLParser`、`updateAllFields()`
+- [ooxml-swift](https://github.com/PsychQuant/ooxml-swift) (**v0.12.0+**) — OOXML 解析 + **preserve-by-default round-trip 架構**（PreservedArchive、RelationshipIdAllocator、ContentTypesOverlay）、`FieldParser`、`OMMLParser`、`updateAllFields()`、`MathAccent`
+- [latex-math-swift](https://github.com/PsychQuant/latex-math-swift) (**v0.1.0+**) — LaTeX 子集 → OMML `MathComponent` AST parser（v3.2.0+ 由 `insert_equation` 使用）
 - [markdown-swift](https://github.com/PsychQuant/markdown-swift) (v0.2.0+) — Markdown 生成
 - [word-to-md-swift](https://github.com/PsychQuant/word-to-md-swift) (v0.4.0+) — Word 轉 Markdown
 
@@ -470,7 +539,7 @@ document.docx (ZIP)
 | 需要 Word | 是 | 否 | 否 | **否** |
 | 執行環境 | Node.js | Python | Node.js | **無** |
 | 單一執行檔 | 否 | 否 | 否 | **是** |
-| 工具數量 | ~10 | N/A | N/A | **165** |
+| 工具數量 | ~10 | N/A | N/A | **171+** |
 | 圖片支援 | 有限 | 是 | 是 | **是** |
 | 註解 | 否 | 有限 | 有限 | **是** |
 | 追蹤修訂 | 否 | 否 | 否 | **是** |
