@@ -5,6 +5,98 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.0] - 2026-04-23
+
+### Added — Autosave + checkpoint + recover_from_autosave (closes [#37](https://github.com/PsychQuant/che-word-mcp/issues/37))
+
+`save_document` is the only durability checkpoint pre-v3.6.0 — accumulated in-memory edits between explicit saves are lost on MCP crash. v3.0.0's `autosave: true` flag wrote to the source path on every mutation (eager-save), which defeats post-crash recovery against externally-edited targets (e.g., Word.app saved newer content between sessions).
+
+v3.6.0 introduces a per-mutation throttled checkpoint to a **separate file** (`<source>.autosave.docx`) plus an explicit `recover_from_autosave` tool. Caller sees the autosave file via `get_session_state.autosave_detected: true` and decides whether to recover; the server never auto-recovers on `open_document`.
+
+### New MCP tools
+
+```
+checkpoint(doc_id, path?)
+  → Manual snapshot. Writes current in-memory bytes to `path` (or
+    `<source>.autosave.docx` by default). Does NOT clear is_dirty.
+
+recover_from_autosave(doc_id, discard_changes?)
+  → Replace in-memory state with bytes from `<source>.autosave.docx`.
+    Refuses with E_DIRTY_DOC if session has uncommitted mutations
+    unless discard_changes: true (mirrors close_document dirty-check).
+    Sets is_dirty: true after recovery; autosave file persists until
+    next successful save_document cleans it up.
+```
+
+### New `open_document` argument
+
+```
+autosave_every: Int = 0
+  → 0 disables autosave (default, preserves pre-v3.6.0 behavior).
+  → N > 0 → every Nth successful mutation triggers a checkpoint write
+    to `<source>.autosave.docx`. Counter is per-session (resets on close).
+```
+
+### `get_session_state` response additions
+
+```
+autosave_detected: Bool      // true when <source>.autosave.docx exists
+autosave_path: String?       // file path or "(none)"
+```
+
+### Cleanup semantics
+
+- Successful `save_document` deletes `<source>.autosave.docx` if it exists
+- Successful `finalize_document` does the same
+- `checkpoint` and `recover_from_autosave` do NOT touch the cleanup logic
+
+### Architecture
+
+Per the SDD Decision (Phase 4): per-N-mutations is the simplest throttle that captures the stated incident pattern (12 mutations → 1 save). Time-based throttle (autosave every 30s) and WAL journal-based recovery were rejected as over-engineering for v1. Single overwriteable autosave file (no `<source>.autosave-<ts>.docx` rotation) keeps retention policy out of scope.
+
+```swift
+// Server.swift
+private var autosaveEvery: [String: Int] = [:]      // 0 = disabled
+private var autosaveCounter: [String: Int] = [:]    // increments per mutation
+
+// In storeDocument(markDirty: true) — after the dictionary writes:
+if let n = autosaveEvery[docId], n > 0,
+   let sourcePath = documentOriginalPaths[docId] {
+    let next = (autosaveCounter[docId] ?? 0) + 1
+    autosaveCounter[docId] = next
+    if next % n == 0 {
+        try DocxWriter.write(doc, to: URL(fileURLWithPath: sourcePath + ".autosave.docx"))
+    }
+}
+```
+
+Both new dicts are actor-isolated stored properties — same concurrency safety as v3.5.4's actor refactor.
+
+### Tests
+
+- `AutosaveCheckpointTests.swift` (NEW) — 9 tests covering all 5 new spec requirements:
+  - `testAutosaveEveryNthMutation` — N=3, 7 mutations, checkpoints at #3 and #6
+  - `testAutosaveEveryZeroDisables` — 100 mutations, no autosave
+  - `testSaveDocumentCleansUpAutosave` — autosave deleted on save success
+  - `testCheckpointDefaultPath` — manual checkpoint to autosave path; is_dirty preserved
+  - `testCheckpointExplicitPath` — manual checkpoint to arbitrary path; autosave path untouched
+  - `testOpenDocumentDetectsExistingAutosave` — stale autosave file flagged
+  - `testOpenDocumentReportsFalseAutosave` — false when no autosave
+  - `testRecoverFromAutosaveReplacesSession` — 12-paragraph autosave replaces 1-paragraph session, is_dirty: true
+  - `testRecoverFromAutosaveRefusedOnDirty` — E_DIRTY_DOC without discard_changes
+- **93/93 che-word-mcp tests pass** (was 84 → +9).
+
+### Compatibility
+
+- **Additive API** — `autosave_every` defaults to 0 (disabled) so existing callers see no behavior change. `checkpoint` + `recover_from_autosave` are net-new tools (no existing call site to break).
+- **Tool count** bumped from 171+ to **173+** (added `checkpoint` + `recover_from_autosave`).
+- **No `ooxml-swift` change** — implemented entirely in che-word-mcp server layer.
+- Universal binary (`x86_64 + arm64`) preserved.
+
+### Refs
+
+- This is **Phase 4 (final)** of the [`che-word-mcp-save-durability-stack`](https://github.com/PsychQuant/macdoc/tree/main/openspec/changes/che-word-mcp-save-durability-stack) Spectra change. Phases 1-3 closed in v3.5.3 / v3.5.4 / v3.5.5. SDD will be archived after this release.
+
 ## [3.5.5] - 2026-04-23
 
 ### Added — `keep_bak` opt-in for rollback escape hatch (closes [#38](https://github.com/PsychQuant/che-word-mcp/issues/38))

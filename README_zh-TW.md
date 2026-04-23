@@ -9,7 +9,8 @@
 - **純 Swift 實作**：不需要 Node.js、Python 或其他執行環境
 - **直接操作 OOXML**：直接處理 XML，不需要安裝 Microsoft Word
 - **單一執行檔**：只有一個 binary 檔案
-- **171+ MCP 工具**：完整的文件操作功能
+- **173+ MCP 工具**：完整的文件操作功能（v3.6.0 新增 `checkpoint` + `recover_from_autosave`）
+- **Save Durability Stack（v3.5.3+）**：atomic-rename save（#36）、actor-based 並行安全（#39）、`keep_bak` opt-in rollback（#38）、`autosave_every` 每 N 次 mutation checkpoint + 顯式 `recover_from_autosave`（#37）
 - **Dual-Mode 存取**：Direct Mode（唯讀、一步完成）與 Session Mode（完整生命週期）
 - **Round-trip Fidelity（v3.3.0+）**：`save_document` 保留 typed model 不管理的 OOXML parts（`word/theme/`、`webSettings.xml`、`people.xml`、`commentsExtended/Extensible/Ids`、`glossary/`、`customXml/`）byte-for-byte。修復先前 lossy-by-design pipeline 每次儲存都會 strip 頁首/頁尾/theme/字體的問題。
 - **Theme + 頁首頁尾 + 浮水印 CRUD（v3.3.0+）**：12 個新工具操作 `word/theme/theme1.xml` 編輯、頁首頁尾列舉與刪除、浮水印 VML 偵測。直接解 document中文字體 fallback 路徑：`update_theme_fonts({ minor: { ea: "DFKai-SB" } })`。
@@ -26,6 +27,10 @@
 
 | 版本 | 日期 | 變更 |
 |------|------|------|
+| v3.6.0 | 2026-04-23 | **Autosave + checkpoint + recover_from_autosave**（closes [#37](https://github.com/PsychQuant/che-word-mcp/issues/37)）。`open_document` 加 `autosave_every: Int = 0` 參數；N > 0 時每 N 次 mutation 觸發 checkpoint 寫入 `<source>.autosave.docx`（分離檔案，**不**是 eager-save 到 source）。新增工具：`checkpoint(doc_id, path?)` 手動快照，`recover_from_autosave(doc_id, discard_changes?)` 把 in-memory state 取代成 autosave bytes。`get_session_state` 加 `autosave_detected` + `autosave_path` 欄位。`save_document` / `finalize_document` 成功後自動清掉 `<source>.autosave.docx`。Phase 4 of save-durability-stack SDD。|
+| v3.5.5 | 2026-04-23 | **`keep_bak` opt-in 提供 rollback escape hatch**（closes [#38](https://github.com/PsychQuant/che-word-mcp/issues/38)）。`save_document` 加可選 `keep_bak: Bool = false`；`true` 且 target 已存在時 server 在 atomic-rename save 之前把舊檔搬到 `<path>.bak`（單一槽，會覆蓋舊 `.bak`）。如果未來 release 帶進 silent OOXML damage，使用者可 `mv <path>.bak <path>` 還原。`.bak` 放在 server 層 NOT ooxml-swift，`macdoc` CLI 用戶不會被 `.bak` 副作用打擾。Phase 3 of save-durability-stack SDD。|
+| v3.5.4 | 2026-04-23 | **`class WordMCPServer` → `actor WordMCPServer`**（closes [#39](https://github.com/PsychQuant/che-word-mcp/issues/39)）。8 個 mutable session state dictionaries 變成 actor-isolated；compiler 強制每個 cross-actor 存取必須 `await`。消除 pre-v3.5.4 12 個並行 `insert_image_from_path` 觸發的 Dictionary hash table 腐壞 race condition。Phase 2 of save-durability-stack SDD。|
+| v3.5.3 | 2026-04-23 | **Atomic-rename save**（closes [#36](https://github.com/PsychQuant/che-word-mcp/issues/36)）。Bump 到 ooxml-swift 0.13.2，把 `DocxWriter.write` 重構為先寫 `<url>.tmp.<UUID>` + `fsync` + `replaceItemAt`。任何 throw 或 process kill 中途中斷都會留下原檔不變（POSIX `rename(2)` 同 volume 是 kernel-atomic；跨 volume 自動 fallback 到 copy+delete）。397/397 ooxml-swift tests pass；新增 concurrent-observer regression test。Phase 1 of save-durability-stack SDD。|
 | v3.5.2 | 2026-04-23 | **Rels overlay merge**（closes [#35](https://github.com/PsychQuant/che-word-mcp/issues/35)）— Reader-loaded document no-op `save_document` round-trip 後完整保留 theme / webSettings / people / customXml / commentsExtended / commentsIds rels。v3.5.0/v3.5.1 修了 parts 層；v3.5.2 修了 rels 層。無 che-word-mcp source 變更，修復全在 ooxml-swift v0.13.1（`RelationshipsOverlay` + relationship-driven `extractImages`）。|
 | v3.5.1 | 2026-04-23 | **Universal binary**（`x86_64 + arm64`）— 修復 Intel Mac 相容性。v3.5.0 release-build 漏跑 `lipo -create` 步驟導致只發 arm64。無 source 變更，drop-in replacement。|
 | v3.5.0 | 2026-04-23 | **True byte-preservation via dirty tracking**（closes [#23 round-2](https://github.com/PsychQuant/che-word-mcp/issues/23) + [#32](https://github.com/PsychQuant/che-word-mcp/issues/32) [#33](https://github.com/PsychQuant/che-word-mcp/issues/33) [#34](https://github.com/PsychQuant/che-word-mcp/issues/34))。Reader-loaded document no-op `save_document` round-trip 後完整保留 13 fontTable + 6 distinct headers + 4 footers + three-segment PAGE field + `<w15:presenceInfo>` identity。基於 ooxml-swift 0.13.0（`modifiedParts: Set<String>` + `Header.originalFileName` + overlay-mode skip-when-not-dirty）。`list_people` 回傳 dual identity：`person_id`（GUID, rename 跨版本穩定）+ `display_name_id`（= author legacy）。|
