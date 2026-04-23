@@ -5,6 +5,68 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.0] - 2026-04-23
+
+### Added — Phase 2B + 2C combined: comment threads + people + notes update + web settings (13 new MCP tools)
+
+Combined release of Phase 2B + Phase 2C of [`che-word-mcp-ooxml-roundtrip-fidelity`](https://github.com/PsychQuant/macdoc/tree/main/openspec/changes/che-word-mcp-ooxml-roundtrip-fidelity). Closes [#24](https://github.com/PsychQuant/che-word-mcp/issues/24), [#25](https://github.com/PsychQuant/che-word-mcp/issues/25), [#29](https://github.com/PsychQuant/che-word-mcp/issues/29), [#30](https://github.com/PsychQuant/che-word-mcp/issues/30), [#31](https://github.com/PsychQuant/che-word-mcp/issues/31).
+
+**Scope adjustment from spec**: Phase 2B and Phase 2C were originally scheduled as separate v3.4.0 + v3.5.0 releases for incremental user value. Implementations landed in one continuous SDD-apply session, so combining into a single v3.4.0 release saves users one upgrade cycle without losing functionality.
+
+### Comment thread tools (closes #29)
+
+| Tool | Purpose |
+|---|---|
+| `list_comment_threads` | Enumerate threads using typed `Comment.parentId` (populated from `commentsExtended.xml` at parse time); each entry has root_comment_id + replies[] + resolved + durable_id |
+| `get_comment_thread` | Read root + walk children to build reply tree |
+| `sync_extended_comments` | Report typed comment count for triplet sync planning (full triplet writeback is a Phase 2B+ refinement) |
+
+### People tools (closes #30)
+
+| Tool | Purpose |
+|---|---|
+| `list_people` | Parse `<w15:person>` entries from `word/people.xml` |
+| `add_person` | Add new entry; auto-create `people.xml` part when absent; duplicate-name handling with `_2` suffix |
+| `update_person` | Update display_name (author attribute swap) |
+| `delete_person` | Remove entry; report `comments_orphaned` count |
+
+### Notes update tools (closes #24 #25)
+
+| Tool | Purpose |
+|---|---|
+| `get_endnote` / `get_footnote` | Read text + runs by integer ID |
+| `update_endnote` / `update_footnote` | In-place replace, preserves note ID so `<w:endnoteReference>`/`<w:footnoteReference>` cross-references in `document.xml` stay valid |
+
+### Web settings tools (closes #31)
+
+| Tool | Purpose |
+|---|---|
+| `get_web_settings` | Parse `word/webSettings.xml` flag elements (`relyOnVML`, `optimizeForBrowser`, `allowPNG`, `doNotSaveAsSingleFile`); return `{ error: "no webSettings part" }` when absent |
+| `update_web_settings` | Partial update by key; auto-create part if absent |
+
+### Behavior notes
+
+- **Comment thread metadata triplet sync** (`commentsExtended.xml` + `commentsExtensible.xml` + `commentsIds.xml`) is **partial** in this release. Existing `insert_comment`/`reply_to_comment`/`resolve_comment`/`delete_comment` writers still update only `comments.xml` + (for some paths) `commentsExtended.xml`. Full four-part triplet auto-sync is documented as a Phase 2B+ enhancement; users who need consistent extended metadata can call `sync_extended_comments` to verify state.
+- **Person record auto-creation on `insert_comment`** is also a future refinement; for now, callers explicitly add person records via `add_person`.
+
+### Tests
+
+61 → 68 (+7 in `Phase2BCSmokeTests`):
+- `list_comment_threads` on empty doc
+- `sync_extended_comments` returns counts
+- Full add → list → delete person round-trip
+- Duplicate person name handling with suffix
+- Unknown endnote ID error
+- `get_web_settings` no-part error
+- `update_web_settings` creates the part
+
+### Out of scope (for a future v3.5.x or v4.0)
+
+- Full four-part comment metadata triplet auto-sync inside existing comment write tools
+- People record auto-creation when `insert_comment(author:)` references unknown author
+- `commentsExtended.xml` parent/child writer refinement
+- `commentsIds.xml` UUID-based durable ID generation on each write
+
 ## [3.3.0] - 2026-04-23
 
 ### Added — Phase 2A: theme + headers/footers/watermarks tools (12 new MCP tools)
