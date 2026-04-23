@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.3] - 2026-04-23
+
+### Fixed — Atomic-rename save in DocxWriter (closes [#36](https://github.com/PsychQuant/che-word-mcp/issues/36))
+
+The 2026-04-23 incident (12 parallel `insert_image_from_path` + `save_document` → MCP crash → original 169KB docx replaced with 0-byte file) had the same root cause as a class of historical "save crash = data loss" reports: pre-v0.13.2 `DocxWriter.write` deleted the target file BEFORE computing the new bytes. Any throw or process kill between delete and write left the user with no recovery path.
+
+### Resolution
+
+v3.5.3 consumes [`ooxml-swift v0.13.2`](https://github.com/PsychQuant/ooxml-swift/releases/tag/v0.13.2) which refactors `DocxWriter.write(_:to:)` to the atomic-rename pattern:
+
+1. Compute new bytes (overlay or scratch serialization).
+2. Write bytes to `<url>.tmp.<UUID>` temp file.
+3. `FileHandle.synchronize()` (fsync) to flush kernel buffers to disk.
+4. `FileManager.replaceItemAt(url, withItemAt: tempURL, ...)` — POSIX `rename(2)` on same volume (kernel-atomic), copy+delete on cross-volume.
+5. `defer { try? FileManager.removeItem(at: tempURL) }` cleans up on every exit path.
+
+Properties:
+- **Atomicity** — external observers see either full original or full new bytes at `url`, never partial / zero-byte / absent.
+- **Throw-safe** — failure at any step (serialization, temp write, rename) leaves `url` byte-preserved.
+- **fsync'd** — power loss after rename guarantees the new bytes are durable.
+
+### Tests
+
+- 79/79 che-word-mcp tests pass (no consumer-side regression).
+- Underlying ooxml-swift v0.13.2 ships 397/397 tests including new `AtomicSaveTests` (6 tests) — headline test spins a concurrent observer thread polling `fileExists(atPath:)` during write; pre-v0.13.2 caught a window where the file was absent, v0.13.2 the observer never sees the gap.
+
+### Compatibility
+
+- **No source code changes** to che-word-mcp itself — fix is entirely in ooxml-swift dep.
+- **No API change**: `DocxWriter.write` signature unchanged; semantic guarantee strictly stronger.
+- Universal binary (`x86_64 + arm64`) preserved from v3.5.1.
+
+### Refs
+
+- This is Phase 1 of the [`che-word-mcp-save-durability-stack`](https://github.com/PsychQuant/macdoc/tree/main/openspec/changes/che-word-mcp-save-durability-stack) Spectra change. Phase 2 (#39 actor refactor), Phase 3 (#38 .bak preservation), Phase 4 (#37 autosave/checkpoint/recover) ship as subsequent releases.
+
 ## [3.5.2] - 2026-04-23
 
 ### Fixed — rels overlay merge preserves unknown rels types (closes [#35](https://github.com/PsychQuant/che-word-mcp/issues/35))
