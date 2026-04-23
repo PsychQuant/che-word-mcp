@@ -62,28 +62,26 @@ final class AutosaveCheckpointTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: autosavePath),
                        "Pre-condition: no autosave before any mutation")
 
-        // 7 mutations expected — checkpoints at #3 and #6.
+        // v3.7.0 Design B (#40): snapshot fires at the START of every Nth+1 mutation.
+        // For N=3 + 7 mutations: snapshot fires at start of mut4 (counter==3) and mut7 (counter==6).
         for i in 1...7 {
             _ = await server.invokeToolForTesting(
                 name: "insert_paragraph",
                 arguments: ["doc_id": .string("d1"), "text": .string("MUT_\(i)")]
             )
             switch i {
-            case 1, 2:
+            case 1, 2, 3:
                 XCTAssertFalse(FileManager.default.fileExists(atPath: autosavePath),
-                               "After mutation \(i): no autosave yet (counter=\(i), N=3)")
-            case 3:
+                               "After mutation \(i): no autosave yet (Design B: no snapshot fired in mut1-3)")
+            case 4:
                 XCTAssertTrue(FileManager.default.fileExists(atPath: autosavePath),
-                              "After mutation 3: autosave SHALL exist")
-            case 4, 5:
+                              "After mutation 4: autosave SHALL exist (snapshot fired at mut4 start, capturing post-MUT_3)")
+            case 5, 6:
                 XCTAssertTrue(FileManager.default.fileExists(atPath: autosavePath),
-                              "After mutation \(i): autosave from #3 still exists")
-            case 6:
-                XCTAssertTrue(FileManager.default.fileExists(atPath: autosavePath),
-                              "After mutation 6: autosave SHALL be overwritten")
+                              "After mutation \(i): autosave from mut4 still exists")
             case 7:
                 XCTAssertTrue(FileManager.default.fileExists(atPath: autosavePath),
-                              "After mutation 7: autosave from #6 still exists (next checkpoint at #9)")
+                              "After mutation 7: autosave SHALL be overwritten (snapshot fired at mut7 start, capturing post-MUT_6)")
             default: break
             }
         }
@@ -126,18 +124,25 @@ final class AutosaveCheckpointTests: XCTestCase {
             arguments: [
                 "path": .string(path),
                 "doc_id": .string("d1"),
-                "autosave_every": .int(1)   // every mutation → autosave
+                "autosave_every": .int(1)   // every mutation → snapshot on next mutation start
             ]
         )
 
+        // v3.7.0 Design B (#40): snapshot fires at START of mutation when counter > 0 && counter % N == 0.
+        // For N=1: 1st mutation has counter=0 (no snapshot); 2nd mutation has counter=1 (snapshot fires).
+        // Need 2 mutations to get an autosave file.
         _ = await server.invokeToolForTesting(
             name: "insert_paragraph",
-            arguments: ["doc_id": .string("d1"), "text": .string("MUT")]
+            arguments: ["doc_id": .string("d1"), "text": .string("MUT_1")]
+        )
+        _ = await server.invokeToolForTesting(
+            name: "insert_paragraph",
+            arguments: ["doc_id": .string("d1"), "text": .string("MUT_2")]
         )
 
         let autosavePath = path + ".autosave.docx"
         XCTAssertTrue(FileManager.default.fileExists(atPath: autosavePath),
-                      "Pre-condition: autosave exists after mutation")
+                      "Pre-condition: autosave exists after 2 mutations (snapshot fired at MUT_2 start)")
 
         _ = await server.invokeToolForTesting(
             name: "save_document",

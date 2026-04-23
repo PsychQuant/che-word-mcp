@@ -37,6 +37,31 @@ actor WordMCPServer {
     private var autosaveEvery: [String: Int] = [:]
     private var autosaveCounter: [String: Int] = [:]
 
+    /// Phase A of `che-word-mcp-insert-crash-autosave-fix` (#41 investigation).
+    /// Set to `true` when `CHE_WORD_MCP_LOG_LEVEL=debug` is in process env at
+    /// actor init OR when test seam constructor passes `forceDebugLogging: true`.
+    /// Read-only after init.
+    private let debugLoggingEnabled: Bool
+
+    /// Test seam — when `debugLoggingEnabled`, every emitted event is also
+    /// appended here so XCTests can assert event traces without subprocess wrapping.
+    /// Bounded ring buffer (last 1000 events) to avoid unbounded growth.
+    private var debugEventLog: [DebugLogEvent] = []
+    private static let debugEventLogCapacity = 1000
+
+    /// One emitted log event. `event` is the dotted name (e.g. `storeDocument.entry`),
+    /// `keyValues` is the structured payload.
+    struct DebugLogEvent: Sendable, Equatable {
+        let event: String
+        let keyValues: [(String, String)]
+
+        static func == (lhs: DebugLogEvent, rhs: DebugLogEvent) -> Bool {
+            lhs.event == rhs.event &&
+                lhs.keyValues.count == rhs.keyValues.count &&
+                zip(lhs.keyValues, rhs.keyValues).allSatisfy { $0.0 == $1.0 && $0.1 == $1.1 }
+        }
+    }
+
     /// Word → Markdown 轉換器（嵌入 word-to-md-swift library）
     private let wordConverter = WordConverter()
     private let defaultRevisionAuthor = "CheWordMCP"
@@ -100,7 +125,7 @@ actor WordMCPServer {
     - `autosave: true` on open → auto-writes after every edit
     """
 
-    init() async {
+    init(forceDebugLogging: Bool = false) async {
         self.server = Server(
             name: "che-word-mcp",
             version: "1.17.0",
@@ -108,6 +133,10 @@ actor WordMCPServer {
             capabilities: .init(tools: .init())
         )
         self.transport = StdioTransport()
+        // Phase A (#41 investigation): snapshot env-var ONCE at actor init.
+        // Test seam: `forceDebugLogging: true` lets XCTests opt in without subprocess wrapping.
+        let envValue = ProcessInfo.processInfo.environment["CHE_WORD_MCP_LOG_LEVEL"]
+        self.debugLoggingEnabled = forceDebugLogging || envValue == "debug"
 
         // 註冊 Tool handlers
         await registerToolHandlers()
@@ -253,6 +282,25 @@ actor WordMCPServer {
         for docId: String,
         markDirty: Bool = true
     ) async throws {
+        // Phase A (#41 investigation): structured entry log.
+        logDebug(event: "storeDocument.entry", [
+            ("doc_id", docId),
+            ("markDirty", String(markDirty)),
+            ("autosaveCounter", String(autosaveCounter[docId] ?? 0)),
+            ("autosaveEvery", String(autosaveEvery[docId] ?? 0))
+        ])
+
+        // Phase C (Design B, #40): dispatch pre-mutation snapshot BEFORE we
+        // overwrite openDocuments[docId] with the new state. The dispatcher
+        // reads openDocuments[docId] (still the OLD state at this point) and
+        // writes it to <sourcePath>.autosave.docx. This captures the
+        // "everything before mutation K" guarantee — if the new state being
+        // committed turns out to be corrupt, or if a follow-up mutation
+        // crashes, the autosave file holds the prior known-good state.
+        if markDirty {
+            dispatchAutosaveCheckpointIfDue(docId: docId)
+        }
+
         var doc = document
         if markDirty {
             enforceTrackChangesIfNeeded(&doc, docId: docId)
@@ -260,28 +308,21 @@ actor WordMCPServer {
         openDocuments[docId] = doc
         documentDirtyState[docId] = markDirty
 
-        // Phase 4 (closes #37): per-N-mutations autosave throttle.
-        // Increment + dispatch checkpoint write to <sourcePath>.autosave.docx
-        // when counter % N == 0. Independent of legacy `documentAutosave` (which
-        // does eager-save to source path); autosave_every writes to a separate
-        // file so caller can recover via recover_from_autosave even when source
-        // was updated externally.
-        if markDirty,
-           let n = autosaveEvery[docId], n > 0,
-           let sourcePath = documentOriginalPaths[docId] {
-            let next = (autosaveCounter[docId] ?? 0) + 1
-            autosaveCounter[docId] = next
-            if next % n == 0 {
-                let autosaveURL = URL(fileURLWithPath: sourcePath + ".autosave.docx")
-                // Best-effort — checkpoint failures should not block mutations.
-                do {
-                    try DocxWriter.write(doc, to: autosaveURL)
-                } catch {
-                    FileHandle.standardError.write(
-                        Data("Warning: autosave checkpoint failed for '\(docId)' at '\(autosaveURL.path)': \(error.localizedDescription)\n".utf8)
-                    )
-                }
-            }
+        // Phase C (Design B, #40): increment counter AFTER mutation commit.
+        // Counter == "number of successful storeDocument calls since session start
+        // or last save_document". The dispatcher above checks `counter > 0 &&
+        // counter % N == 0` BEFORE this increment, so the first storeDocument
+        // (counter=0) does NOT fire a snapshot, but the second onward will.
+        if markDirty, autosaveEvery[docId] != nil {
+            autosaveCounter[docId] = (autosaveCounter[docId] ?? 0) + 1
+        }
+
+        // Phase A (#41 investigation): structured exit log.
+        defer {
+            logDebug(event: "storeDocument.exit", [
+                ("doc_id", docId),
+                ("autosaveCounter", String(autosaveCounter[docId] ?? 0))
+            ])
         }
 
         guard markDirty, documentAutosave[docId] == true, let path = documentOriginalPaths[docId] else {
@@ -291,15 +332,49 @@ actor WordMCPServer {
         try persistDocumentToDisk(doc, docId: docId, path: path)
     }
 
+    /// Phase C (Design B, #40): pre-mutation snapshot dispatch. Mutating
+    /// handlers (insertImageFromPath, insertParagraph, replaceText, etc.)
+    /// SHALL call this BEFORE running their mutation. When
+    /// `autosaveCounter[docId] > 0 && counter % autosaveEvery == 0`, write
+    /// the CURRENT in-memory state to `<sourcePath>.autosave.docx` — capturing
+    /// state-just-before-the-incoming-mutation. On crash mid-mutation, the
+    /// autosave file holds the pre-mutation state, preserving K-1 mutations.
+    internal func dispatchAutosaveCheckpointIfDue(docId: String) {
+        guard let n = autosaveEvery[docId], n > 0 else { return }
+        let counter = autosaveCounter[docId] ?? 0
+        guard counter > 0, counter % n == 0 else { return }
+        guard let sourcePath = documentOriginalPaths[docId] else { return }
+        guard let doc = openDocuments[docId] else { return }
+
+        let autosaveURL = URL(fileURLWithPath: sourcePath + ".autosave.docx")
+        let startTime = Date()
+        do {
+            try DocxWriter.write(doc, to: autosaveURL)
+            logDebug(event: "dispatchAutosaveCheckpoint.exit", [
+                ("doc_id", docId),
+                ("autosavePath", autosaveURL.path),
+                ("counter", String(counter)),
+                ("elapsedMs", String(Int(Date().timeIntervalSince(startTime) * 1000)))
+            ])
+        } catch {
+            FileHandle.standardError.write(
+                Data("Warning: autosave checkpoint failed for '\(docId)' at '\(autosaveURL.path)': \(error.localizedDescription)\n".utf8)
+            )
+        }
+    }
+
     /// Best-effort delete `<sourcePath>.autosave.docx` after a successful
     /// save_document / finalize_document. Phase 4 (closes #37) — captures the
     /// "Successful save_document cleans up .autosave.docx" scenario.
+    /// Phase C (Design B, #40): also reset `autosaveCounter[docId] = 0` so the
+    /// next mutation cycle starts fresh (no immediate snapshot at counter==0).
     private func cleanupAutosaveFile(for docId: String) {
         guard let sourcePath = documentOriginalPaths[docId] else { return }
         let autosavePath = sourcePath + ".autosave.docx"
         if FileManager.default.fileExists(atPath: autosavePath) {
             try? FileManager.default.removeItem(atPath: autosavePath)
         }
+        autosaveCounter[docId] = 0
     }
 
     private func flushDirtyDocumentsOnShutdown() async {
@@ -345,6 +420,36 @@ actor WordMCPServer {
     /// tests (Phase 2, closes #39). Returns nil if doc not open.
     func imageCountForTesting(_ docId: String) -> Int? {
         openDocuments[docId]?.images.count
+    }
+
+    // MARK: - Phase A (#41 investigation) — Structured debug logging
+
+    /// Test seam: returns whether debug logging is on for this actor instance.
+    func isDebugLoggingEnabledForTesting() -> Bool {
+        return debugLoggingEnabled
+    }
+
+    /// Test seam: returns the captured event log (only populated when
+    /// `debugLoggingEnabled == true`).
+    func debugEventLogForTesting() -> [DebugLogEvent] {
+        return debugEventLog
+    }
+
+    /// Emit a structured diagnostic event to stderr + (in tests) the in-memory
+    /// ring buffer. No-op when `debugLoggingEnabled == false` — designed for
+    /// zero-overhead in production default.
+    private func logDebug(event: String, _ keyValues: [(String, String)] = []) {
+        guard debugLoggingEnabled else { return }
+        let stamp = Self.iso8601Formatter.string(from: Date())
+        let kvString = keyValues.map { "\($0.0)=\($0.1)" }.joined(separator: " ")
+        let line = "[\(stamp)] DEBUG \(event)\(kvString.isEmpty ? "" : " ")\(kvString)\n"
+        FileHandle.standardError.write(Data(line.utf8))
+
+        // Append to bounded ring buffer for test introspection.
+        debugEventLog.append(DebugLogEvent(event: event, keyValues: keyValues))
+        if debugEventLog.count > Self.debugEventLogCapacity {
+            debugEventLog.removeFirst(debugEventLog.count - Self.debugEventLogCapacity)
+        }
     }
 
     func flushDirtyDocumentsForTesting() async {
@@ -415,7 +520,7 @@ actor WordMCPServer {
                         ]),
                         "autosave_every": .object([
                             "type": .string("integer"),
-                            "description": .string("v3.6.0 新增：每 N 次 mutation 自動 checkpoint 一次到 <path>.autosave.docx（預設 0 = disabled）。獨立於 autosave；checkpoint 寫到分離檔，crash 後可用 recover_from_autosave 還原。Refs #37.")
+                            "description": .string("v3.7.0 BREAKING: default flipped 0 → 1 (Design B pre-mutation snapshot). 每 N 次 mutation 在下次 mutation 開始時 snapshot 至 <path>.autosave.docx，捕捉 pre-mutation state（crash on K 保留 1..K-1）。傳 0 顯式禁用 autosave。Refs #40.")
                         ])
                     ]),
                     "required": .array([.string("path"), .string("doc_id")])
@@ -5346,7 +5451,9 @@ actor WordMCPServer {
         // BREAKING v3.0.0: track_changes default flipped from on → off (Refs #13)
         let trackChanges = args["track_changes"]?.boolValue ?? false
         // Phase 4 (v3.6.0, closes #37): per-N-mutations checkpoint throttle.
-        let autosaveEveryN = args["autosave_every"]?.intValue ?? 0
+        // Phase C (Design B, #40): default flipped from 0 to 1.
+        // Callers wanting zero autosave overhead must explicitly pass autosave_every: 0.
+        let autosaveEveryN = args["autosave_every"]?.intValue ?? 1
 
         let url = URL(fileURLWithPath: path)
         var doc = try DocxReader.read(from: url)
@@ -6790,6 +6897,21 @@ actor WordMCPServer {
             throw WordError.fileNotFound(path)
         }
 
+        // Phase A (#41 investigation): structured entry log.
+        let anchorKind: String
+        if args["into_table_cell"]?.objectValue != nil { anchorKind = "intoTableCell" }
+        else if args["after_text"]?.stringValue != nil { anchorKind = "after_text" }
+        else if args["before_text"]?.stringValue != nil { anchorKind = "before_text" }
+        else { anchorKind = "index" }
+        let startTime = Date()
+        logDebug(event: "insertImageFromPath.entry", [
+            ("doc_id", docId),
+            ("anchor", anchorKind),
+            ("imagePath", (path as NSString).lastPathComponent),
+            ("bodyChildrenCount", String(doc.body.children.count)),
+            ("imagesCount", String(doc.images.count))
+        ])
+
         // Resolve width/height (auto-aspect)
         let widthArg = args["width"]?.intValue
         let heightArg = args["height"]?.intValue
@@ -6859,6 +6981,14 @@ actor WordMCPServer {
         }
 
         try await storeDocument(doc, for: docId)
+
+        // Phase A (#41 investigation): structured exit log.
+        let elapsedMs = Int(Date().timeIntervalSince(startTime) * 1000)
+        logDebug(event: "insertImageFromPath.exit", [
+            ("doc_id", docId),
+            ("imageId", imageId),
+            ("elapsedMs", String(elapsedMs))
+        ])
 
         let url = URL(fileURLWithPath: path)
         return "Inserted image '\(url.lastPathComponent)' with id '\(imageId)' (\(width)x\(height) pixels)"

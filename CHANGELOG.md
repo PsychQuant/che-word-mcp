@@ -5,6 +5,70 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.7.0] - 2026-04-24
+
+### Changed — autosave Design B + default flip; insert crash hardening
+
+Two coordinated v3.6.0 production blocker fixes from the `che-word-mcp-insert-crash-autosave-fix` SDD:
+
+#### #40 — autosave_every redesigned to Design B; default flipped 0 → 1
+
+Pre-v3.7.0 implementation was Design A: counter incremented AFTER mutation succeeded; checkpoint fired when `count % N == 0`. Failure mode: for `autosave_every: N + crash on mutation K where K%N≠0`, mutations between checkpoints were lost. Worst case (#40 incident): `autosave_every: 3 + crash on mutation 3 = 0 mutations preserved` because counter never incremented (mutation crashed before `storeDocument` ran).
+
+v3.7.0 switches to **Design B**: snapshot dispatch fires at the START of every mutating handler (specifically, at the entry of `storeDocument` BEFORE `openDocuments[docId]` is overwritten). The dispatcher reads `openDocuments[docId]` (the OLD pre-mutation state) and writes it to `<sourcePath>.autosave.docx`. On crash mid-mutation K, the autosave file holds the post-mutation-(K-1) state.
+
+**Default flip**: `autosave_every` default value flipped from `0` (disabled) to `1` (snapshot before every mutation). Maximum safety; perf-conscious callers must explicitly pass `autosave_every: 0` to opt out.
+
+```swift
+// Server.swift:storeDocument refactor
+internal func storeDocument(...) async throws {
+    // Phase C (Design B): snapshot BEFORE we overwrite openDocuments[docId].
+    if markDirty {
+        dispatchAutosaveCheckpointIfDue(docId: docId)
+    }
+    // ... existing mutation commit ...
+    if markDirty, autosaveEvery[docId] != nil {
+        autosaveCounter[docId] = (autosaveCounter[docId] ?? 0) + 1
+    }
+}
+```
+
+**BREAKING (effective)** for v3.6.0 callers:
+- Code that omitted `autosave_every` now gets `1` (every mutation snapshots prior state). To restore v3.6.0 disabled-by-default behavior, add `autosave_every: 0` to `open_document` calls.
+- Code that passed `autosave_every: 0` explicitly is unaffected.
+- Code that passed `autosave_every: N > 0` now sees Design B semantics — snapshot fires at mutation N+1 start (capturing post-mutation-N state), not at mutation N completion.
+
+#### #41 — Phase A structured logging for sequential insert crash investigation
+
+Adds `CHE_WORD_MCP_LOG_LEVEL=debug` env-var-gated diagnostic logger. Off by default (zero overhead in production). When enabled, emits one-line stderr events for `insertImageFromPath` entry/exit, `storeDocument` entry/exit, `dispatchAutosaveCheckpoint` exit. New `WordMCPServer(forceDebugLogging:)` test seam constructor for XCTest introspection.
+
+The 3rd-sequential-insert crash root cause requires runtime instrumentation against an document fixture; this release ships the infrastructure so any future session with the fixture can capture the trace via `swift test --filter InsertCrashRegressionTests`. Per SDD non-goals, Phases B/C/D ship regardless of Phase A repro outcome.
+
+#### Defensive hardening from ooxml-swift v0.13.3
+
+- `DocxReader.read` is now fully serial (libxml2 thread-safety + recovery determinism)
+- `nextImageRelationshipId` delegates to allocator-based `nextRelationshipId` (fragile naïve counter eliminated)
+
+### Tests
+
+- 93 baseline + 7 new = **100/100 tests pass** (1 InsertCrashRegression skipped — fixture not present):
+  - `StructuredLoggingTests` (2 scenarios): default-off, debug-on event capture
+  - `InsertCrashRegressionTests` (1 scenario, XCTSkip fallback): 3-sequential-insert smoke
+  - `AutosaveDesignBTests` (4 scenarios): mid-batch durability, Nth-mutation timing, N=0 disable, save cleanup + counter reset
+- Pre-existing v3.6.0 `AutosaveCheckpointTests` updated to match Design B semantics (3 of 9 scenarios edited; 6 unchanged).
+
+### Compatibility
+
+- **MCP API surface** — no removed tools; `autosave_every` parameter now defaults to `1` (was `0`); `CHE_WORD_MCP_LOG_LEVEL` env var is optional.
+- **No `ooxml-swift` API change** — bumped from `0.13.2` to `0.13.3` (PATCH, internal refactor).
+- Universal binary (x86_64 + arm64) preserved.
+
+### Refs
+
+- PsychQuant/che-word-mcp#40 — autosave Design B
+- PsychQuant/che-word-mcp#41 — sequential insert crash investigation
+- Phase A + B + C + D of [`che-word-mcp-insert-crash-autosave-fix`](https://github.com/PsychQuant/macdoc/tree/main/openspec/changes/che-word-mcp-insert-crash-autosave-fix) Spectra change
+
 ## [3.6.0] - 2026-04-23
 
 ### Added — Autosave + checkpoint + recover_from_autosave (closes [#37](https://github.com/PsychQuant/che-word-mcp/issues/37))
