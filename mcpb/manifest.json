@@ -1,8 +1,8 @@
 {
   "manifest_version": "0.3",
   "name": "che-word-mcp",
-  "version": "3.5.4",
-  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v3.5.4: actor refactor (closes #39) — class WordMCPServer → actor WordMCPServer for compiler-enforced concurrency safety; eliminates Dictionary races from parallel async mutations. v3.5.3: atomic-rename save (closes #36). v3.5.2: rels overlay merge (closes #35). v3.5.1: universal binary. Built on ooxml-swift 0.13.2.",
+  "version": "3.5.5",
+  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v3.5.5: keep_bak opt-in (closes #38) — save_document gains keep_bak: bool arg; when true server renames target → <path>.bak before atomic-rename save (single slot, opt-out by default). v3.5.4: actor refactor (closes #39). v3.5.3: atomic-rename save (closes #36). Built on ooxml-swift 0.13.2.",
   "author": {
     "name": "Che Cheng"
   },

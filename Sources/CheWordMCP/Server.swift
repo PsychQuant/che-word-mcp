@@ -173,8 +173,34 @@ actor WordMCPServer {
         }
     }
 
-    private func persistDocumentToDisk(_ document: WordDocument, docId: String, path: String) throws {
+    /// Writes `document` to `path` using `DocxWriter.write` (atomic-rename
+    /// since v3.5.3). Updates session disk-hash + mtime tracking.
+    ///
+    /// - Parameter keepBak: when `true` and the target file already exists at
+    ///   `path`, rename target → `<path>.bak` BEFORE the atomic-rename save
+    ///   (overwriting any prior `.bak`). When `false` (default), no `.bak`
+    ///   side-effect — preserves pre-v3.5.5 behavior. Per the
+    ///   `che-word-mcp-save-durability-stack` SDD Decision (Phase 3 / closes
+    ///   #38), `.bak` lives at the server layer NOT `ooxml-swift` so other
+    ///   `DocxWriter` consumers (e.g., `macdoc` CLI) don't get unwanted
+    ///   `.bak` files.
+    private func persistDocumentToDisk(
+        _ document: WordDocument,
+        docId: String,
+        path: String,
+        keepBak: Bool = false
+    ) throws {
         let url = URL(fileURLWithPath: path)
+
+        if keepBak, FileManager.default.fileExists(atPath: path) {
+            let bakURL = url.appendingPathExtension("bak")
+            // Overwrite any existing .bak (single-slot, no rotation per SDD).
+            if FileManager.default.fileExists(atPath: bakURL.path) {
+                try FileManager.default.removeItem(at: bakURL)
+            }
+            try FileManager.default.moveItem(at: url, to: bakURL)
+        }
+
         try DocxWriter.write(document, to: url)
         openDocuments[docId] = document
         documentOriginalPaths[docId] = path
@@ -341,7 +367,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "save_document",
-                description: "儲存 Word 文件 (.docx)，未指定路徑時自動使用開啟時的原始路徑",
+                description: "儲存 Word 文件 (.docx)，未指定路徑時自動使用開啟時的原始路徑。v3.5.5+：可加 keep_bak: true 讓 server 在覆蓋前把舊檔搬到 <path>.bak 作為 rollback escape hatch（預設 false，不留 .bak）。Refs #38.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -352,6 +378,10 @@ actor WordMCPServer {
                         "path": .object([
                             "type": .string("string"),
                             "description": .string("儲存路徑（可選，從磁碟開啟的文件可省略）")
+                        ]),
+                        "keep_bak": .object([
+                            "type": .string("boolean"),
+                            "description": .string("v3.5.5 新增：若 true 且目標檔已存在，覆蓋前先把它搬到 <path>.bak（單一槽，會覆蓋舊 .bak）。預設 false。需手動清理 .bak。")
                         ])
                     ]),
                     "required": .array([.string("doc_id")])
@@ -5248,13 +5278,16 @@ actor WordMCPServer {
 
         let explicitPath = args["path"]?.stringValue
         let path = try effectiveSavePath(for: docId, explicitPath: explicitPath)
-        try persistDocumentToDisk(doc, docId: docId, path: path)
+        let keepBak = args["keep_bak"]?.boolValue ?? false
+        try persistDocumentToDisk(doc, docId: docId, path: path, keepBak: keepBak)
 
+        let bakSuffix = keepBak && FileManager.default.fileExists(atPath: path + ".bak")
+            ? " (pre-save bytes preserved at \(path).bak)"
+            : ""
         if explicitPath == nil {
-            return "Saved document to original path: \(path)"
+            return "Saved document to original path: \(path)\(bakSuffix)"
         }
-
-        return "Saved document to: \(path)"
+        return "Saved document to: \(path)\(bakSuffix)"
     }
 
     private func closeDocument(args: [String: Value]) async throws -> String {

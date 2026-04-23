@@ -5,6 +5,75 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.5] - 2026-04-23
+
+### Added — `keep_bak` opt-in for rollback escape hatch (closes [#38](https://github.com/PsychQuant/che-word-mcp/issues/38))
+
+Pre-v3.5.5 `save_document` overwrote the target unconditionally. If a future save shipped silent OOXML damage (think v3.4.0 header strip, v3.5.0 rels regen), the original was permanently destroyed — no rollback path.
+
+v3.5.3's atomic-rename save guarantees the target is never partial / zero-byte / absent, but it does NOT preserve the *previous-save* contents. `keep_bak` adds an opt-in escape hatch.
+
+### Architecture
+
+```swift
+// che-word-mcp/Sources/CheWordMCP/Server.swift
+private func persistDocumentToDisk(
+    _ document: WordDocument, docId: String, path: String,
+    keepBak: Bool = false   // NEW
+) throws {
+    let url = URL(fileURLWithPath: path)
+    if keepBak, FileManager.default.fileExists(atPath: path) {
+        let bakURL = url.appendingPathExtension("bak")
+        if FileManager.default.fileExists(atPath: bakURL.path) {
+            try FileManager.default.removeItem(at: bakURL)   // single-slot, no rotation
+        }
+        try FileManager.default.moveItem(at: url, to: bakURL)
+    }
+    try DocxWriter.write(document, to: url)   // atomic-rename (v3.5.3)
+    // ... session state refresh (unchanged) ...
+}
+```
+
+`save_document` MCP tool gains `keep_bak: bool` argument (default `false`):
+
+```jsonc
+{
+  "name": "save_document",
+  "arguments": {
+    "doc_id": "document",
+    "keep_bak": true     // optional, default false
+  }
+}
+```
+
+Per the SDD Decision (Phase 3): `.bak` lives at the **server layer**, NOT `ooxml-swift` — keeps `DocxWriter` unopinionated about file-system side effects so other consumers (e.g., `macdoc` CLI) don't get surprise `.bak` files.
+
+### Behavior
+
+- `keep_bak: true` + target exists → target moved to `<path>.bak` BEFORE atomic-rename save. Single-slot: any prior `.bak` is overwritten. User can `mv <path>.bak <path>` to roll back.
+- `keep_bak: true` + target does not exist (first save) → no-op (nothing to back up).
+- `keep_bak: false` (default) → no `.bak` side-effect (preserves pre-v3.5.5 behavior).
+- `.bak` cleanup is the caller's responsibility — server never auto-deletes.
+
+### Tests
+
+- 80 baseline tests pass unchanged + 4 new `BakPreservationTests`:
+  - `testKeepBakTruePreservesPreSaveBytes` — SHA256 of `.bak` matches original.
+  - `testKeepBakDefaultOptOut` — no `.bak` when arg omitted.
+  - `testConsecutiveSavesOverwriteBak` — second save's `.bak` matches first save's output, not original-original.
+  - `testFirstTimeSaveNoBak` — fresh save with non-existent target produces no `.bak`.
+- **84/84 che-word-mcp tests pass**.
+
+### Compatibility
+
+- **No API breaking change** — `keep_bak` is additive; default `false` matches pre-v3.5.5 behavior.
+- **No `ooxml-swift` change** — fix is entirely in `che-word-mcp` server layer.
+- Universal binary (`x86_64 + arm64`) preserved.
+
+### Refs
+
+- This is **Phase 3** of the [`che-word-mcp-save-durability-stack`](https://github.com/PsychQuant/macdoc/tree/main/openspec/changes/che-word-mcp-save-durability-stack) Spectra change. Phase 1 (#36) shipped in v3.5.3, Phase 2 (#39) in v3.5.4, Phase 4 (#37) follows.
+
 ## [3.5.4] - 2026-04-23
 
 ### Fixed — class → actor refactor for concurrency safety (closes [#39](https://github.com/PsychQuant/che-word-mcp/issues/39))
