@@ -5,6 +5,65 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.4] - 2026-04-23
+
+### Fixed — class → actor refactor for concurrency safety (closes [#39](https://github.com/PsychQuant/che-word-mcp/issues/39))
+
+Pre-v3.5.4 `WordMCPServer` was declared as `class` with 8 unsynchronized `var` dictionary properties:
+
+```swift
+class WordMCPServer {
+    internal var openDocuments: [String: WordDocument] = [:]
+    private var documentOriginalPaths: [String: String] = [:]
+    private var documentDirtyState: [String: Bool] = [:]
+    private var documentAutosave: [String: Bool] = [:]
+    private var documentTrackChangesEnforced: [String: Bool] = [:]
+    private var documentDiskHash: [String: Data] = [:]
+    private var documentDiskMtime: [String: Date] = [:]
+    // ...
+}
+```
+
+When parallel async tasks (e.g., 12 concurrent `insert_image_from_path` calls in the 2026-04-23 incident) all called `try await storeDocument(doc, for: docId)`, those tasks landed on different threads and mutated the same `Dictionary` hash table without synchronization → hash table corruption → MCP process crash during subsequent `save_document` (which tried to read the corrupted state).
+
+v3.5.3's atomic-rename save prevented data loss when the crash hit, but the underlying race remained — closed by this actor refactor.
+
+### Architecture
+
+```swift
+// v3.5.4+:
+actor WordMCPServer { ... }   // compiler-enforced isolation
+```
+
+Properties:
+- All 8 mutable dictionaries become **actor-isolated stored properties** — every cross-actor access requires `await` (compiler-checked at every call site).
+- Same-actor calls (e.g., `await self.storeDocument(...)` from `insertImageFromPath`) do NOT introduce a suspension point — Swift's actor model optimizes them to synchronous calls. Read-mutate-write cycles within mutating handlers run atomically.
+- MCP swift-sdk handlers are already `async throws`, so the signature change surface is small. Test helpers gain `await` at call sites.
+
+### Reentrancy audit
+
+Every `await self.<method>()` path in mutating handlers (`insertImageFromPath` → `storeDocument`, `saveDocument` → `persistDocumentToDisk`, `closeDocument` → `removeSession`, `openDocument` → `initializeSession`, `flushDirtyDocumentsOnShutdown` loop) was audited:
+
+- All mutating handlers perform state mutations in a single synchronous block (no `await` between dictionary writes).
+- `storeDocument` / `persistDocumentToDisk` are sync internally; `async throws` exists only for caller-side compatibility.
+- No reordering needed — invariants trivially preserved.
+
+### Tests
+
+- 79 baseline tests pass unchanged + 1 new `ActorIsolationStressTests.testParallelInsertImageDoesNotCrash` (50 concurrent inserts × 5 iterations = 250 mutations against the same `doc_id`; asserts no crash + final image count == 50).
+- ThreadSanitizer note: macOS Xcode/SwiftPM has a known bug loading TSan too late for `swift test -Xswiftc -sanitize=thread`. The actor model itself provides compile-time race-freedom; the stress test verifies behavior + state integrity. Pre-v3.5.4 reproduces the crash at as few as 12 concurrent inserts without any sanitizer.
+- **80/80 che-word-mcp tests pass**.
+
+### Compatibility
+
+- **Public API** — all 146 MCP tools work identically; calls were already `async`.
+- **Test helpers** — `isDocumentDirtyForTesting`, `isTrackChangesEnabledForTesting`, `imageCountForTesting` (NEW) require `await` from outside the actor. Updated `WordMCPServerTests.swift` + `SessionStateTests.swift` accordingly.
+- Universal binary (`x86_64 + arm64`) preserved.
+
+### Refs
+
+- This is **Phase 2** of the [`che-word-mcp-save-durability-stack`](https://github.com/PsychQuant/macdoc/tree/main/openspec/changes/che-word-mcp-save-durability-stack) Spectra change. Phase 1 (#36 atomic save) shipped in v3.5.3. Phase 3 (#38 .bak) and Phase 4 (#37 autosave/checkpoint/recover) follow.
+
 ## [3.5.3] - 2026-04-23
 
 ### Fixed — Atomic-rename save in DocxWriter (closes [#36](https://github.com/PsychQuant/che-word-mcp/issues/36))

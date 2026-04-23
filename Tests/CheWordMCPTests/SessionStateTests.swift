@@ -202,13 +202,19 @@ final class SessionStateTests: XCTestCase {
             name: "insert_paragraph",
             arguments: ["doc_id": .string("d1"), "text": .string("edit")]
         )
-        XCTAssertTrue(server.isDocumentDirtyForTesting("d1"))
+        do {
+            let isDirty_ = await server.isDocumentDirtyForTesting("d1")
+            XCTAssertTrue(isDirty_)
+        }
 
         _ = await server.invokeToolForTesting(
             name: "revert_to_disk",
             arguments: ["doc_id": .string("d1")]
         )
-        XCTAssertFalse(server.isDocumentDirtyForTesting("d1"))
+        do {
+            let isDirty_ = await server.isDocumentDirtyForTesting("d1")
+            XCTAssertFalse(isDirty_)
+        }
     }
 
     func testCloseDirtyWithoutDiscardReturnsEDirtyDoc() async throws {
@@ -230,7 +236,10 @@ final class SessionStateTests: XCTestCase {
         )
         let text = resultText(closeResult)
         XCTAssertTrue(text.contains("E_DIRTY_DOC"))
-        XCTAssertTrue(server.isDocumentDirtyForTesting("d1"))
+        do {
+            let isDirty_ = await server.isDocumentDirtyForTesting("d1")
+            XCTAssertTrue(isDirty_)
+        }
     }
 
     func testCloseDirtyWithDiscardSucceeds() async throws {
@@ -254,7 +263,10 @@ final class SessionStateTests: XCTestCase {
             ]
         )
         XCTAssertTrue(resultText(closeResult).contains("Closed document"))
-        XCTAssertFalse(server.isDocumentDirtyForTesting("d1"))
+        do {
+            let isDirty_ = await server.isDocumentDirtyForTesting("d1")
+            XCTAssertFalse(isDirty_)
+        }
     }
 
     func testCheckDiskDriftReportsNoDriftOnUntouched() async throws {
