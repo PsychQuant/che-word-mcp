@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.7.1] - 2026-04-24
+
+### Fixed — `update_all_fields` no longer strips headers/footers (closes [#42](https://github.com/PsychQuant/che-word-mcp/issues/42))
+
+Pre-v3.7.1 `update_all_fields` triggered silent data loss on every academic template workflow with VML watermarks (<org> / 台大 / 政大 document templates). Calling `update_all_fields` once + saving stripped 6 headers × ~3600 bytes of template structure (watermarks, page numbers, chapter title STYLEREF) down to 318-byte `<w:p/>` stubs. Variant table from #42 conclusively pinned the locus to `update_all_fields` — no other tool exhibited the strip.
+
+### Resolution
+
+v3.7.1 consumes [`ooxml-swift v0.13.4`](https://github.com/PsychQuant/ooxml-swift/releases/tag/v0.13.4) which fixes the root cause: `WordDocument.updateAllFields` now propagates dirty bits honestly. Each container (body / headers / footers / footnotes / endnotes) tracks whether ANY SEQ field was actually rewritten; only confirmed-dirty containers get inserted into `modifiedParts`. Containers without SEQ stay out of `modifiedParts` → overlay-mode `DocxWriter` skips re-emission → original bytes preserved byte-for-byte.
+
+### Tests
+
+- 100/100 che-word-mcp tests pass unchanged (no consumer-side regression)
+- Underlying ooxml-swift v0.13.4 ships **407/407 tests** including 4 new `WordDocumentUpdateAllFieldsHeaderPreservationTests`
+
+### Compatibility
+
+- **No source code changes** to che-word-mcp itself — fix is entirely in ooxml-swift dep.
+- **No API change**: `update_all_fields` MCP tool signature unchanged; behavior strictly stronger (preserves what it should preserve).
+- Universal binary (x86_64 + arm64) preserved.
+- **Known limitation**: header that legitimately contains a SEQ field (rare — chapter caption in running header) still re-emits via `Header.toXML()` and strips co-located VML. Out of scope for this PATCH; tracked for follow-up.
+
+### Refs
+
+- PsychQuant/che-word-mcp#42 — incident report from 2026-04-23 document rescue workflow
+
 ## [3.7.0] - 2026-04-24
 
 ### Changed — autosave Design B + default flip; insert crash hardening
