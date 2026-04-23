@@ -15,19 +15,29 @@ public struct SessionStateView: Equatable {
     public let diskMtime: Date?
     public let isDirty: Bool
     public let trackChangesEnabled: Bool
+    /// v3.6.0+ (closes #37): true when `<sourcePath>.autosave.docx` exists at
+    /// `open_document` time (or any subsequent `get_session_state` call).
+    public let autosaveDetected: Bool
+    /// v3.6.0+: path to the detected autosave file (`<sourcePath>.autosave.docx`),
+    /// nil when `autosaveDetected == false`.
+    public let autosavePath: String?
 
     public init(
         sourcePath: String,
         diskHash: Data?,
         diskMtime: Date?,
         isDirty: Bool,
-        trackChangesEnabled: Bool
+        trackChangesEnabled: Bool,
+        autosaveDetected: Bool = false,
+        autosavePath: String? = nil
     ) {
         self.sourcePath = sourcePath
         self.diskHash = diskHash
         self.diskMtime = diskMtime
         self.isDirty = isDirty
         self.trackChangesEnabled = trackChangesEnabled
+        self.autosaveDetected = autosaveDetected
+        self.autosavePath = autosavePath
     }
 }
 

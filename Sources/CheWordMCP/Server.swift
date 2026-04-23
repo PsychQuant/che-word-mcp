@@ -29,6 +29,13 @@ actor WordMCPServer {
     /// Disk-drift detection (3.0.0 — Refs #12 #13 #15)
     private var documentDiskHash: [String: Data] = [:]
     private var documentDiskMtime: [String: Date] = [:]
+    /// Phase 4 (v3.6.0, closes #37): per-N-mutations autosave throttle.
+    /// `autosaveEvery[docId] > 0` enables periodic checkpoint to
+    /// `<sourcePath>.autosave.docx`; `0` (default) disables. `autosaveCounter`
+    /// increments on every `storeDocument(markDirty: true)` call; checkpoint
+    /// fires when `counter % N == 0`.
+    private var autosaveEvery: [String: Int] = [:]
+    private var autosaveCounter: [String: Int] = [:]
 
     /// Word → Markdown 轉換器（嵌入 word-to-md-swift library）
     private let wordConverter = WordConverter()
@@ -123,13 +130,16 @@ actor WordMCPServer {
         docId: String,
         document: WordDocument,
         sourcePath: String?,
-        autosave: Bool
+        autosave: Bool,
+        autosaveEveryN: Int = 0
     ) {
         openDocuments[docId] = document
         documentOriginalPaths[docId] = sourcePath
         documentDirtyState[docId] = false
         documentAutosave[docId] = autosave
         documentTrackChangesEnforced[docId] = true
+        autosaveEvery[docId] = autosaveEveryN
+        autosaveCounter[docId] = 0
     }
 
     private func removeSession(docId: String) {
@@ -147,6 +157,8 @@ actor WordMCPServer {
         documentTrackChangesEnforced.removeValue(forKey: docId)
         documentDiskHash.removeValue(forKey: docId)
         documentDiskMtime.removeValue(forKey: docId)
+        autosaveEvery.removeValue(forKey: docId)
+        autosaveCounter.removeValue(forKey: docId)
     }
 
     internal func isDirty(docId: String) -> Bool {
@@ -221,12 +233,17 @@ actor WordMCPServer {
               let sourcePath = documentOriginalPaths[docId] else {
             return nil
         }
+        // Phase 4 (closes #37): detect existing autosave file every read.
+        let autosavePath = sourcePath + ".autosave.docx"
+        let autosaveDetected = FileManager.default.fileExists(atPath: autosavePath)
         return SessionStateView(
             sourcePath: sourcePath,
             diskHash: documentDiskHash[docId],
             diskMtime: documentDiskMtime[docId],
             isDirty: isDirty(docId: docId),
-            trackChangesEnabled: documentTrackChangesEnforced[docId] ?? false
+            trackChangesEnabled: documentTrackChangesEnforced[docId] ?? false,
+            autosaveDetected: autosaveDetected,
+            autosavePath: autosaveDetected ? autosavePath : nil
         )
     }
 
@@ -243,11 +260,46 @@ actor WordMCPServer {
         openDocuments[docId] = doc
         documentDirtyState[docId] = markDirty
 
+        // Phase 4 (closes #37): per-N-mutations autosave throttle.
+        // Increment + dispatch checkpoint write to <sourcePath>.autosave.docx
+        // when counter % N == 0. Independent of legacy `documentAutosave` (which
+        // does eager-save to source path); autosave_every writes to a separate
+        // file so caller can recover via recover_from_autosave even when source
+        // was updated externally.
+        if markDirty,
+           let n = autosaveEvery[docId], n > 0,
+           let sourcePath = documentOriginalPaths[docId] {
+            let next = (autosaveCounter[docId] ?? 0) + 1
+            autosaveCounter[docId] = next
+            if next % n == 0 {
+                let autosaveURL = URL(fileURLWithPath: sourcePath + ".autosave.docx")
+                // Best-effort — checkpoint failures should not block mutations.
+                do {
+                    try DocxWriter.write(doc, to: autosaveURL)
+                } catch {
+                    FileHandle.standardError.write(
+                        Data("Warning: autosave checkpoint failed for '\(docId)' at '\(autosaveURL.path)': \(error.localizedDescription)\n".utf8)
+                    )
+                }
+            }
+        }
+
         guard markDirty, documentAutosave[docId] == true, let path = documentOriginalPaths[docId] else {
             return
         }
 
         try persistDocumentToDisk(doc, docId: docId, path: path)
+    }
+
+    /// Best-effort delete `<sourcePath>.autosave.docx` after a successful
+    /// save_document / finalize_document. Phase 4 (closes #37) — captures the
+    /// "Successful save_document cleans up .autosave.docx" scenario.
+    private func cleanupAutosaveFile(for docId: String) {
+        guard let sourcePath = documentOriginalPaths[docId] else { return }
+        let autosavePath = sourcePath + ".autosave.docx"
+        if FileManager.default.fileExists(atPath: autosavePath) {
+            try? FileManager.default.removeItem(atPath: autosavePath)
+        }
     }
 
     private func flushDirtyDocumentsOnShutdown() async {
@@ -360,6 +412,10 @@ actor WordMCPServer {
                         "track_changes": .object([
                             "type": .string("boolean"),
                             "description": .string("v3.0.0 新增：是否啟用追蹤修訂（預設 false；之前是 implicit true，見 CHANGELOG 3.0.0 BREAKING）")
+                        ]),
+                        "autosave_every": .object([
+                            "type": .string("integer"),
+                            "description": .string("v3.6.0 新增：每 N 次 mutation 自動 checkpoint 一次到 <path>.autosave.docx（預設 0 = disabled）。獨立於 autosave；checkpoint 寫到分離檔，crash 後可用 recover_from_autosave 還原。Refs #37.")
                         ])
                     ]),
                     "required": .array([.string("path"), .string("doc_id")])
@@ -4721,6 +4777,43 @@ actor WordMCPServer {
                     ]),
                     "required": .array([.string("doc_id"), .string("table_index")])
                 ])
+            ),
+            // Phase 4 (v3.6.0, closes #37): autosave / checkpoint / recover_from_autosave.
+            Tool(
+                name: "checkpoint",
+                description: "v3.6.0 新增：手動寫入目前 in-memory session state 到 disk。預設目標 <source>.autosave.docx；可選 path 參數寫到任意位置。不會清 is_dirty（不像 save_document）也不會更新 disk_hash/disk_mtime。Refs #37.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ]),
+                        "path": .object([
+                            "type": .string("string"),
+                            "description": .string("可選輸出路徑；省略時寫到 <source>.autosave.docx")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
+            ),
+            Tool(
+                name: "recover_from_autosave",
+                description: "v3.6.0 新增：從 <source>.autosave.docx 還原 session state（取代當前 in-memory doc，並設 is_dirty: true）。dirty session 沒傳 discard_changes: true 時回傳 E_DIRTY_DOC。autosave 檔不刪——下次 save_document 才清。Refs #37.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ]),
+                        "discard_changes": .object([
+                            "type": .string("boolean"),
+                            "description": .string("dirty session 強制覆蓋；預設 false")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
             )
         ]
     }
@@ -5181,6 +5274,12 @@ actor WordMCPServer {
         case "set_header_row":
             return try await setHeaderRow(args: args)
 
+        // Phase 4 (v3.6.0, closes #37)
+        case "checkpoint":
+            return try await checkpoint(args: args)
+        case "recover_from_autosave":
+            return try await recoverFromAutosave(args: args)
+
         default:
             throw WordError.unknownTool(name)
         }
@@ -5246,13 +5345,18 @@ actor WordMCPServer {
         let autosave = args["autosave"]?.boolValue ?? false
         // BREAKING v3.0.0: track_changes default flipped from on → off (Refs #13)
         let trackChanges = args["track_changes"]?.boolValue ?? false
+        // Phase 4 (v3.6.0, closes #37): per-N-mutations checkpoint throttle.
+        let autosaveEveryN = args["autosave_every"]?.intValue ?? 0
 
         let url = URL(fileURLWithPath: path)
         var doc = try DocxReader.read(from: url)
         if trackChanges && !doc.isTrackChangesEnabled() {
             doc.enableTrackChanges(author: defaultRevisionAuthor)
         }
-        initializeSession(docId: docId, document: doc, sourcePath: path, autosave: autosave)
+        initializeSession(
+            docId: docId, document: doc, sourcePath: path,
+            autosave: autosave, autosaveEveryN: autosaveEveryN
+        )
         // Override trackChangesEnforced default (initializeSession sets true)
         documentTrackChangesEnforced[docId] = trackChanges
 
@@ -5280,6 +5384,8 @@ actor WordMCPServer {
         let path = try effectiveSavePath(for: docId, explicitPath: explicitPath)
         let keepBak = args["keep_bak"]?.boolValue ?? false
         try persistDocumentToDisk(doc, docId: docId, path: path, keepBak: keepBak)
+        // Phase 4: clean up <source>.autosave.docx after successful save.
+        cleanupAutosaveFile(for: docId)
 
         let bakSuffix = keepBak && FileManager.default.fileExists(atPath: path + ".bak")
             ? " (pre-save bytes preserved at \(path).bak)"
@@ -5326,9 +5432,76 @@ actor WordMCPServer {
         let explicitPath = args["path"]?.stringValue
         let path = try effectiveSavePath(for: docId, explicitPath: explicitPath)
         try persistDocumentToDisk(doc, docId: docId, path: path)
+        // Phase 4: clean up <source>.autosave.docx after successful finalize.
+        cleanupAutosaveFile(for: docId)
         removeSession(docId: docId)
 
         return "Finalized document '\(docId)' to: \(path)"
+    }
+
+    // MARK: - Phase 4 (v3.6.0, closes #37) — checkpoint + recover_from_autosave
+
+    /// `checkpoint` MCP tool — manual session state write. Defaults to
+    /// `<source>.autosave.docx`; explicit `path` overrides. Does NOT clear
+    /// is_dirty (unlike save_document), does NOT update disk_hash/disk_mtime.
+    private func checkpoint(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        let target: String
+        if let explicit = args["path"]?.stringValue, !explicit.isEmpty {
+            target = explicit
+        } else {
+            guard let sourcePath = documentOriginalPaths[docId], !sourcePath.isEmpty else {
+                throw WordError.invalidParameter(
+                    "path",
+                    "checkpoint default path requires the document to have a known source path; pass explicit path or open from disk first."
+                )
+            }
+            target = sourcePath + ".autosave.docx"
+        }
+
+        try DocxWriter.write(doc, to: URL(fileURLWithPath: target))
+        return "Checkpoint written for '\(docId)' to: \(target)"
+    }
+
+    /// `recover_from_autosave` MCP tool — replace in-memory doc with bytes
+    /// from `<source>.autosave.docx`, set is_dirty: true, do NOT delete the
+    /// autosave file (cleanup deferred to next save_document).
+    private func recoverFromAutosave(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard openDocuments[docId] != nil else {
+            throw WordError.documentNotFound(docId)
+        }
+        guard let sourcePath = documentOriginalPaths[docId], !sourcePath.isEmpty else {
+            return "Error: E_NO_AUTOSAVE — document '\(docId)' has no known source path."
+        }
+        let autosavePath = sourcePath + ".autosave.docx"
+        guard FileManager.default.fileExists(atPath: autosavePath) else {
+            return "Error: E_NO_AUTOSAVE — no autosave file at '\(autosavePath)'."
+        }
+
+        let discardChanges = args["discard_changes"]?.boolValue ?? false
+        if isDirty(docId: docId) && !discardChanges {
+            return """
+            Error: E_DIRTY_DOC — document '\(docId)' has uncommitted changes.
+            Choose one:
+              - call save_document first to persist current edits, then recover_from_autosave
+              - pass discard_changes: true to overwrite in-memory state with autosave bytes
+              - use finalize_document to save+close before recovering
+            """
+        }
+
+        let recoveredDoc = try DocxReader.read(from: URL(fileURLWithPath: autosavePath))
+        openDocuments[docId] = recoveredDoc
+        documentDirtyState[docId] = true
+        return "Recovered document '\(docId)' from autosave: \(autosavePath). Call save_document to persist."
     }
 
     private func getDocumentSessionState(args: [String: Value]) async throws -> String {
@@ -5392,6 +5565,8 @@ actor WordMCPServer {
         - disk_mtime_iso8601: \(diskMtime)
         - is_dirty: \(view.isDirty)
         - track_changes_enabled: \(view.trackChangesEnabled)
+        - autosave_detected: \(view.autosaveDetected)
+        - autosave_path: \(view.autosavePath ?? "(none)")
         """
     }
 
