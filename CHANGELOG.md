@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.2] - 2026-04-23
+
+### Fixed — rels overlay merge preserves unknown rels types (closes [#35](https://github.com/PsychQuant/che-word-mcp/issues/35))
+
+v3.5.0 + v3.5.1 closed [#23 round-2](https://github.com/PsychQuant/che-word-mcp/issues/23) at the **parts layer** (41/42 parts byte-equal on no-op round-trip) — but the **rels layer** still had two regressions:
+
+**Root cause A** — `DocxReader.extractImages` was directory-driven: walked `word/media/` and used `targetToId[targetPath] ?? "rId_\(fileName)"` as fallback. The fallback produced ids like `rId_image1.png` violating the OOXML `rId[0-9]+` convention AND made `hasNewTypedRelationships` return true on no-op load → forced rels regeneration.
+
+**Root cause B** — `writeDocumentRelationships` built rels **from the typed-model parts list only**. Original rels for **unknown types** (theme / webSettings / customXml / commentsExtensible / commentsIds / people) were silently dropped. After any legitimate edit (e.g., `addHeader`), <org> theses lost theme inheritance + comment author identity even though parts were byte-preserved.
+
+### Resolution
+
+v3.5.2 consumes [`ooxml-swift v0.13.1`](https://github.com/PsychQuant/ooxml-swift/releases/tag/v0.13.1) which introduces:
+
+1. **`RelationshipsOverlay`** — parallel to `ContentTypesOverlay` from v0.12.0. Parses original `word/_rels/document.xml.rels`; merges typed-model rels with preservation of unknown rel types.
+2. **`writeDocumentRelationships` overlay-mode dispatch** — calls `RelationshipsOverlay.merge` in overlay mode; scratch mode preserves pre-v0.13.1 output.
+3. **`extractImages` rewritten relationship-driven** — iterates `relationships.imageRelationships` (source of truth); tries multiple path normalizations; skips orphan rels rather than forge ids.
+
+### Tests
+
+- 79/79 che-word-mcp tests pass (no consumer-side regression).
+- Underlying ooxml-swift v0.13.1 ships 391/391 tests including 3 new `RelationshipsOverlayTests` cases.
+
+### Compatibility
+
+- **No source code changes** to che-word-mcp itself — fix is entirely in ooxml-swift dep.
+- **No API change**: `RelationshipsOverlay` is internal to ooxml-swift.
+- **Behaviour change** (intended): no-op round-trip + edit round-trip both preserve unknown rels types. Callers who expected the lossy regenerate behavior — there are no known such callers.
+- Universal binary (`x86_64 + arm64`) preserved from v3.5.1.
+
 ## [3.5.1] - 2026-04-23
 
 ### Fixed — universal binary (x86_64 + arm64)
