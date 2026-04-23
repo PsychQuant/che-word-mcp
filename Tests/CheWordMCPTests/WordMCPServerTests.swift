@@ -36,7 +36,10 @@ final class WordMCPServerTests: XCTestCase {
             arguments: ["doc_id": .string("doc")]
         )
 
-        XCTAssertEqual(server.isTrackChangesEnabledForTesting("doc"), true)
+        do {
+            let trackChanges_ = await server.isTrackChangesEnabledForTesting("doc")
+            XCTAssertEqual(trackChanges_, true)
+        }
     }
 
     func testDirtyDocumentCannotCloseWithoutSave() async {
@@ -64,7 +67,10 @@ final class WordMCPServerTests: XCTestCase {
         XCTAssertTrue(text.contains("E_DIRTY_DOC"))
         XCTAssertTrue(text.contains("discard_changes"))
         XCTAssertTrue(text.contains("finalize_document"))
-        XCTAssertTrue(server.isDocumentDirtyForTesting("doc"))
+        do {
+            let isDirty_ = await server.isDocumentDirtyForTesting("doc")
+            XCTAssertTrue(isDirty_)
+        }
     }
 
     func testDuplicateDocIdIsRejectedBeforeOverwrite() async {
@@ -88,7 +94,10 @@ final class WordMCPServerTests: XCTestCase {
 
         XCTAssertEqual(duplicateCreate.isError, true)
         XCTAssertTrue(resultText(duplicateCreate).contains("Document already open"))
-        XCTAssertTrue(server.isDocumentDirtyForTesting("doc"))
+        do {
+            let isDirty_ = await server.isDocumentDirtyForTesting("doc")
+            XCTAssertTrue(isDirty_)
+        }
     }
 
     func testNewDocumentRequiresExplicitPathForFirstSave() async {
@@ -112,7 +121,10 @@ final class WordMCPServerTests: XCTestCase {
 
         XCTAssertEqual(saveResult.isError, true)
         XCTAssertTrue(resultText(saveResult).contains("No path was provided"))
-        XCTAssertTrue(server.isDocumentDirtyForTesting("doc"))
+        do {
+            let isDirty_ = await server.isDocumentDirtyForTesting("doc")
+            XCTAssertTrue(isDirty_)
+        }
     }
 
     func testSaveDocumentWithoutPathUsesOriginalOpenedPath() async throws {
@@ -143,7 +155,10 @@ final class WordMCPServerTests: XCTestCase {
         XCTAssertEqual(saveResult.isError, nil)
         XCTAssertTrue(resultText(saveResult).contains("original path"))
         XCTAssertTrue(try readDocumentText(from: url).contains("After"))
-        XCTAssertFalse(server.isDocumentDirtyForTesting("doc"))
+        do {
+            let isDirty_ = await server.isDocumentDirtyForTesting("doc")
+            XCTAssertFalse(isDirty_)
+        }
     }
 
     func testAutosavePersistsMutationsImmediatelyWhenEnabled() async throws {
@@ -170,7 +185,10 @@ final class WordMCPServerTests: XCTestCase {
 
         XCTAssertEqual(insertResult.isError, nil)
         XCTAssertTrue(try readDocumentText(from: url).contains("Autosaved line"))
-        XCTAssertFalse(server.isDocumentDirtyForTesting("doc"))
+        do {
+            let isDirty_ = await server.isDocumentDirtyForTesting("doc")
+            XCTAssertFalse(isDirty_)
+        }
     }
 
     func testGetDocumentSessionStateReportsDirtyAndFinalizeReadiness() async throws {
@@ -248,11 +266,17 @@ final class WordMCPServerTests: XCTestCase {
             ]
         )
 
-        XCTAssertTrue(server.isDocumentDirtyForTesting("doc"))
+        do {
+            let isDirty_ = await server.isDocumentDirtyForTesting("doc")
+            XCTAssertTrue(isDirty_)
+        }
 
         await server.flushDirtyDocumentsForTesting()
 
-        XCTAssertFalse(server.isDocumentDirtyForTesting("doc"))
+        do {
+            let isDirty_ = await server.isDocumentDirtyForTesting("doc")
+            XCTAssertFalse(isDirty_)
+        }
         XCTAssertTrue(try readDocumentText(from: url).contains("Needs flush"))
     }
 
@@ -272,7 +296,10 @@ final class WordMCPServerTests: XCTestCase {
 
         await server.flushDirtyDocumentsForTesting()
 
-        XCTAssertTrue(server.isDocumentDirtyForTesting("doc"))
+        do {
+            let isDirty_ = await server.isDocumentDirtyForTesting("doc")
+            XCTAssertTrue(isDirty_)
+        }
     }
 
     func testFinalizeDocumentSavesAndClosesUsingOriginalPath() async throws {
@@ -302,7 +329,10 @@ final class WordMCPServerTests: XCTestCase {
 
         XCTAssertEqual(finalizeResult.isError, nil)
         XCTAssertTrue(resultText(finalizeResult).contains("Finalized document"))
-        XCTAssertNil(server.isTrackChangesEnabledForTesting("doc"))
+        do {
+            let trackChanges_ = await server.isTrackChangesEnabledForTesting("doc")
+            XCTAssertNil(trackChanges_)
+        }
         XCTAssertTrue(try readDocumentText(from: url).contains("Finalize me"))
     }
 
@@ -327,6 +357,9 @@ final class WordMCPServerTests: XCTestCase {
 
         XCTAssertEqual(finalizeResult.isError, true)
         XCTAssertTrue(resultText(finalizeResult).contains("No path was provided"))
-        XCTAssertTrue(server.isDocumentDirtyForTesting("doc"))
+        do {
+            let isDirty_ = await server.isDocumentDirtyForTesting("doc")
+            XCTAssertTrue(isDirty_)
+        }
     }
 }

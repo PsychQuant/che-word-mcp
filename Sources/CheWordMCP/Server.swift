@@ -6,7 +6,16 @@ import CommonConverterSwift
 import LaTeXMathSwift
 
 /// Word MCP Server - Swift OOXML Word 文件處理
-class WordMCPServer {
+///
+/// **Concurrency model (v3.5.4+, closes #39)**: declared as `actor` for
+/// compiler-enforced synchronization of session state dictionaries
+/// (`openDocuments`, `documentDirtyState`, `documentDiskHash`, etc.). Pre-v3.5.4
+/// `class` declaration allowed parallel async tasks (e.g., 12 concurrent
+/// `insert_image_from_path` calls) to mutate Swift `Dictionary` hash tables
+/// without synchronization, causing corruption + save-time crash. The atomic
+/// rename in v3.5.3 prevents data loss when the crash hits, but the underlying
+/// race remained — closed by this actor refactor.
+actor WordMCPServer {
     private let server: Server
     private let transport: StdioTransport
 
@@ -252,6 +261,12 @@ class WordMCPServer {
 
     func isTrackChangesEnabledForTesting(_ docId: String) -> Bool? {
         openDocuments[docId]?.isTrackChangesEnabled()
+    }
+
+    /// Expose `openDocuments[docId].images.count` for actor-isolation stress
+    /// tests (Phase 2, closes #39). Returns nil if doc not open.
+    func imageCountForTesting(_ docId: String) -> Int? {
+        openDocuments[docId]?.images.count
     }
 
     func flushDirtyDocumentsForTesting() async {
