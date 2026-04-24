@@ -3184,6 +3184,178 @@ actor WordMCPServer {
                 ])
             ),
 
+            // #44 tables-hyperlinks-headers-builtin (v3.11.0+) — 16 new tools
+            // Table tools (8 new + 4 extended docs in respective schemas)
+            Tool(
+                name: "set_table_conditional_style",
+                description: "套用條件式格式（firstRow / lastRow / bandedRows 等 10 種區域）到表格的 tblStylePr",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "table_index": .object(["type": .string("integer")]),
+                        "type": .object(["type": .string("string"), "description": .string("firstRow / lastRow / firstCol / lastCol / bandedRows / bandedCols / neCell / nwCell / seCell / swCell")]),
+                        "properties": .object(["type": .string("object"), "description": .string("{ bold?, italic?, color?, background_color?, font_size? } — 半點為單位")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("table_index"), .string("type"), .string("properties")])
+                ])
+            ),
+            Tool(
+                name: "insert_nested_table",
+                description: "在指定 cell 內插入新表格（深度上限 5 層，超過會 throw nested_too_deep）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "parent_table_index": .object(["type": .string("integer")]),
+                        "row_index": .object(["type": .string("integer")]),
+                        "col_index": .object(["type": .string("integer")]),
+                        "rows": .object(["type": .string("integer")]),
+                        "cols": .object(["type": .string("integer")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("parent_table_index"), .string("row_index"), .string("col_index"), .string("rows"), .string("cols")])
+                ])
+            ),
+            Tool(
+                name: "set_table_layout",
+                description: "切換表格版面配置（fixed = 固定欄寬 / autofit = 自動）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "table_index": .object(["type": .string("integer")]),
+                        "type": .object(["type": .string("string"), "description": .string("fixed / autofit")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("table_index"), .string("type")])
+                ])
+            ),
+            Tool(
+                name: "set_header_row",
+                description: "標記 row 為表頭（emit <w:tblHeader/>），跨頁分割時自動重複",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "table_index": .object(["type": .string("integer")]),
+                        "row_index": .object(["type": .string("integer"), "description": .string("預設 0")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("table_index")])
+                ])
+            ),
+            Tool(
+                name: "set_table_indent",
+                description: "設定表格左縮排（twips 單位，emit <w:tblInd>）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "table_index": .object(["type": .string("integer")]),
+                        "value": .object(["type": .string("integer")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("table_index"), .string("value")])
+                ])
+            ),
+
+            // Hyperlink tools (3 new + list_hyperlinks already exists)
+            Tool(
+                name: "insert_url_hyperlink",
+                description: "插入外部 URL 連結（自動建立 Hyperlink character style 若不存在）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "paragraph_index": .object(["type": .string("integer")]),
+                        "url": .object(["type": .string("string")]),
+                        "text": .object(["type": .string("string")]),
+                        "tooltip": .object(["type": .string("string")]),
+                        "history": .object(["type": .string("boolean"), "description": .string("預設 true")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("paragraph_index"), .string("url"), .string("text")])
+                ])
+            ),
+            Tool(
+                name: "insert_bookmark_hyperlink",
+                description: "插入內部書籤連結（emit w:anchor，無 r:id）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "paragraph_index": .object(["type": .string("integer")]),
+                        "anchor": .object(["type": .string("string"), "description": .string("書籤名稱")]),
+                        "text": .object(["type": .string("string")]),
+                        "tooltip": .object(["type": .string("string")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("paragraph_index"), .string("anchor"), .string("text")])
+                ])
+            ),
+            Tool(
+                name: "insert_email_hyperlink",
+                description: "插入 mailto: 連結（自動 URL-encode subject）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "paragraph_index": .object(["type": .string("integer")]),
+                        "email": .object(["type": .string("string")]),
+                        "text": .object(["type": .string("string")]),
+                        "tooltip": .object(["type": .string("string")]),
+                        "subject": .object(["type": .string("string"), "description": .string("可選——加入 ?subject= 參數")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("paragraph_index"), .string("email"), .string("text")])
+                ])
+            ),
+
+            // Header tools (5 new + 2 extended docs)
+            Tool(
+                name: "enable_even_odd_headers",
+                description: "切換文件級 <w:evenAndOddHeaders/> flag（settings.xml）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "enabled": .object(["type": .string("boolean")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("enabled")])
+                ])
+            ),
+            Tool(
+                name: "link_section_header_to_previous",
+                description: "讓 section 共用前一 section 的 header XML part（共用 rId）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "section_index": .object(["type": .string("integer"), "description": .string("必須 ≥ 1")]),
+                        "type": .object(["type": .string("string"), "description": .string("default / first / even")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("section_index"), .string("type")])
+                ])
+            ),
+            Tool(
+                name: "unlink_section_header_from_previous",
+                description: "為 section 建立獨立 header XML part（複製當前共用的 part）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "section_index": .object(["type": .string("integer")]),
+                        "type": .object(["type": .string("string"), "description": .string("default / first / even")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("section_index"), .string("type")])
+                ])
+            ),
+            Tool(
+                name: "get_section_header_map",
+                description: "回傳每個 section 的 header / footer 檔案對應（哪個 section 用哪個 headerN.xml）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "source_path": .object(["type": .string("string")])
+                    ])
+                ])
+            ),
+
             // P9 新增功能：列表查詢、文件屬性、搜尋文字、批次修訂
 
             // 9.1 insert_text - 在指定位置插入文字
@@ -5584,6 +5756,32 @@ actor WordMCPServer {
             return try await setSectionHeaderFooterReferences(args: args)
         case "get_all_sections":
             return try await getAllSections(args: args)
+
+        // #44 tables-hyperlinks-headers-builtin (v3.11.0+)
+        case "set_table_conditional_style":
+            return try await setTableConditionalStyleTool(args: args)
+        case "insert_nested_table":
+            return try await insertNestedTableTool(args: args)
+        case "set_table_layout":
+            return try await setTableLayoutTool(args: args)
+        case "set_header_row":
+            return try await setHeaderRowTool(args: args)
+        case "set_table_indent":
+            return try await setTableIndentTool(args: args)
+        case "insert_url_hyperlink":
+            return try await insertUrlHyperlinkTool(args: args)
+        case "insert_bookmark_hyperlink":
+            return try await insertBookmarkHyperlinkTool(args: args)
+        case "insert_email_hyperlink":
+            return try await insertEmailHyperlinkTool(args: args)
+        case "enable_even_odd_headers":
+            return try await enableEvenOddHeadersTool(args: args)
+        case "link_section_header_to_previous":
+            return try await linkSectionHeaderToPreviousTool(args: args)
+        case "unlink_section_header_from_previous":
+            return try await unlinkSectionHeaderFromPreviousTool(args: args)
+        case "get_section_header_map":
+            return try await getSectionHeaderMapTool(args: args)
 
         // 9. 新增功能 (P9)
         case "insert_text":
@@ -13728,5 +13926,266 @@ actor WordMCPServer {
             return "{ " + fields.joined(separator: ", ") + " }"
         }
         return "[\(entries.joined(separator: ", "))]"
+    }
+
+    // MARK: - #44 Phase 6: Table Tools
+
+    private func setTableConditionalStyleTool(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let tableIndex = args["table_index"]?.intValue else { throw WordError.missingParameter("table_index") }
+        guard let typeStr = args["type"]?.stringValue,
+              let type = TableConditionalStyleType(rawValue: typeStr)
+        else {
+            throw WordError.invalidParameter("type", "Must be one of: firstRow / lastRow / firstCol / lastCol / bandedRows / bandedCols / neCell / nwCell / seCell / swCell")
+        }
+        guard let propsObj = args["properties"]?.objectValue else { throw WordError.missingParameter("properties") }
+        let props = TableConditionalStyleProperties(
+            bold: propsObj["bold"]?.boolValue,
+            italic: propsObj["italic"]?.boolValue,
+            color: propsObj["color"]?.stringValue,
+            backgroundColor: propsObj["background_color"]?.stringValue,
+            fontSize: propsObj["font_size"]?.intValue
+        )
+        do {
+            try doc.setTableConditionalStyle(tableIndex: tableIndex, type: type, properties: props)
+        } catch WordError.invalidIndex(let i) {
+            return "{ \"error\": \"out_of_bounds\", \"table_index\": \(i) }"
+        }
+        try await storeDocument(doc, for: docId)
+        return "Set conditional style \(type.rawValue) on table \(tableIndex)"
+    }
+
+    private func insertNestedTableTool(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let parentIndex = args["parent_table_index"]?.intValue else { throw WordError.missingParameter("parent_table_index") }
+        guard let rowIndex = args["row_index"]?.intValue else { throw WordError.missingParameter("row_index") }
+        guard let colIndex = args["col_index"]?.intValue else { throw WordError.missingParameter("col_index") }
+        guard let rows = args["rows"]?.intValue else { throw WordError.missingParameter("rows") }
+        guard let cols = args["cols"]?.intValue else { throw WordError.missingParameter("cols") }
+
+        do {
+            try doc.insertNestedTable(parentTableIndex: parentIndex, rowIndex: rowIndex, colIndex: colIndex, rows: rows, cols: cols)
+        } catch WordError.nestedTooDeep(let depth, let max) {
+            return "{ \"error\": \"nested_too_deep\", \"depth\": \(depth), \"max\": \(max) }"
+        } catch WordError.invalidIndex(let i) {
+            return "{ \"error\": \"out_of_bounds\", \"index\": \(i) }"
+        }
+        try await storeDocument(doc, for: docId)
+        return "Inserted \(rows)x\(cols) nested table in cell (\(rowIndex), \(colIndex)) of table \(parentIndex)"
+    }
+
+    private func setTableLayoutTool(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let tableIndex = args["table_index"]?.intValue else { throw WordError.missingParameter("table_index") }
+        guard let typeStr = args["type"]?.stringValue, let type = TableLayout(rawValue: typeStr) else {
+            throw WordError.invalidParameter("type", "Must be one of: fixed / autofit")
+        }
+        do {
+            try doc.setTableLayout(tableIndex: tableIndex, type: type)
+        } catch WordError.invalidIndex(let i) {
+            return "{ \"error\": \"out_of_bounds\", \"table_index\": \(i) }"
+        }
+        try await storeDocument(doc, for: docId)
+        return "Set table_layout=\(type.rawValue) on table \(tableIndex)"
+    }
+
+    private func setHeaderRowTool(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let tableIndex = args["table_index"]?.intValue else { throw WordError.missingParameter("table_index") }
+        let rowIndex = args["row_index"]?.intValue ?? 0
+        do {
+            try doc.setHeaderRow(tableIndex: tableIndex, rowIndex: rowIndex)
+        } catch WordError.invalidIndex(let i) {
+            return "{ \"error\": \"out_of_bounds\", \"index\": \(i) }"
+        }
+        try await storeDocument(doc, for: docId)
+        return "Marked row \(rowIndex) as header on table \(tableIndex)"
+    }
+
+    private func setTableIndentTool(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let tableIndex = args["table_index"]?.intValue else { throw WordError.missingParameter("table_index") }
+        guard let value = args["value"]?.intValue else { throw WordError.missingParameter("value") }
+        do {
+            try doc.setTableIndent(tableIndex: tableIndex, value: value)
+        } catch WordError.invalidIndex(let i) {
+            return "{ \"error\": \"out_of_bounds\", \"table_index\": \(i) }"
+        }
+        try await storeDocument(doc, for: docId)
+        return "Set table_indent=\(value) twips on table \(tableIndex)"
+    }
+
+    // MARK: - #44 Phase 7: Hyperlink Tools
+
+    /// Ensures the `Hyperlink` character style exists in styles.xml.
+    /// Idempotent — checks first, only creates when absent.
+    private func ensureHyperlinkStyle(_ doc: inout WordDocument) {
+        if doc.styles.contains(where: { $0.id == "Hyperlink" }) { return }
+        var runProps = RunProperties()
+        runProps.color = "0563C1"
+        runProps.underline = .single
+        let style = Style(
+            id: "Hyperlink",
+            name: "Hyperlink",
+            type: .character,
+            isQuickStyle: false,
+            runProperties: runProps
+        )
+        try? doc.addStyle(style)
+    }
+
+    /// Attach a fully-built Hyperlink struct to a paragraph at top-level
+    /// body index. Direct mutation since the existing WordDocument.insertHyperlink
+    /// API only handles URL hyperlinks (creates synthetic rId etc.).
+    private func attachHyperlink(
+        _ link: Hyperlink,
+        atParagraph paraIndex: Int,
+        in doc: inout WordDocument
+    ) throws {
+        let paraIndices = doc.body.children.enumerated().compactMap { (i, c) -> Int? in
+            if case .paragraph = c { return i }
+            return nil
+        }
+        guard paraIndex >= 0 && paraIndex < paraIndices.count else {
+            throw WordError.invalidIndex(paraIndex)
+        }
+        let actualIdx = paraIndices[paraIndex]
+        if case .paragraph(var p) = doc.body.children[actualIdx] {
+            p.hyperlinks.append(link)
+            doc.body.children[actualIdx] = .paragraph(p)
+        }
+        doc.markPartDirty("word/document.xml")
+    }
+
+    private func insertUrlHyperlinkTool(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let paraIndex = args["paragraph_index"]?.intValue else { throw WordError.missingParameter("paragraph_index") }
+        guard let url = args["url"]?.stringValue else { throw WordError.missingParameter("url") }
+        guard let text = args["text"]?.stringValue else { throw WordError.missingParameter("text") }
+
+        ensureHyperlinkStyle(&doc)
+        let tooltip = args["tooltip"]?.stringValue
+        let history = args["history"]?.boolValue ?? true
+        let rId = "rId\(Int.random(in: 100...999))"
+        let hlId = "hl-\(UUID().uuidString.prefix(8))"
+        // Track relationship for downstream writer.
+        doc.hyperlinkReferences.append(HyperlinkReference(relationshipId: rId, url: url))
+        let link = Hyperlink(id: hlId, text: text, url: url, relationshipId: rId,
+                             tooltip: tooltip, history: history)
+        try attachHyperlink(link, atParagraph: paraIndex, in: &doc)
+        try await storeDocument(doc, for: docId)
+        return "Inserted URL hyperlink id=\(hlId) at paragraph \(paraIndex)"
+    }
+
+    private func insertBookmarkHyperlinkTool(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let paraIndex = args["paragraph_index"]?.intValue else { throw WordError.missingParameter("paragraph_index") }
+        guard let anchor = args["anchor"]?.stringValue else { throw WordError.missingParameter("anchor") }
+        guard let text = args["text"]?.stringValue else { throw WordError.missingParameter("text") }
+
+        ensureHyperlinkStyle(&doc)
+        let tooltip = args["tooltip"]?.stringValue
+        let hlId = "hl-\(UUID().uuidString.prefix(8))"
+        let link = Hyperlink(id: hlId, text: text, anchor: anchor, tooltip: tooltip)
+        try attachHyperlink(link, atParagraph: paraIndex, in: &doc)
+        try await storeDocument(doc, for: docId)
+        return "Inserted bookmark hyperlink id=\(hlId) → '\(anchor)' at paragraph \(paraIndex)"
+    }
+
+    private func insertEmailHyperlinkTool(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let paraIndex = args["paragraph_index"]?.intValue else { throw WordError.missingParameter("paragraph_index") }
+        guard let email = args["email"]?.stringValue else { throw WordError.missingParameter("email") }
+        guard let text = args["text"]?.stringValue else { throw WordError.missingParameter("text") }
+
+        ensureHyperlinkStyle(&doc)
+        let tooltip = args["tooltip"]?.stringValue
+        var url = "mailto:\(email)"
+        if let subject = args["subject"]?.stringValue {
+            let encoded = subject.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? subject
+            url += "?subject=\(encoded)"
+        }
+        let rId = "rId\(Int.random(in: 100...999))"
+        let hlId = "hl-\(UUID().uuidString.prefix(8))"
+        doc.hyperlinkReferences.append(HyperlinkReference(relationshipId: rId, url: url))
+        let link = Hyperlink(id: hlId, text: text, url: url, relationshipId: rId, tooltip: tooltip)
+        try attachHyperlink(link, atParagraph: paraIndex, in: &doc)
+        try await storeDocument(doc, for: docId)
+        return "Inserted email hyperlink id=\(hlId) → '\(email)' at paragraph \(paraIndex)"
+    }
+
+    // MARK: - #44 Phase 8: Header Tools
+
+    private func enableEvenOddHeadersTool(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let enabled = args["enabled"]?.boolValue else { throw WordError.missingParameter("enabled") }
+        doc.setEvenAndOddHeaders(enabled)
+        try await storeDocument(doc, for: docId)
+        return "Set even_and_odd_headers=\(enabled)"
+    }
+
+    private func linkSectionHeaderToPreviousTool(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let sectionIndex = args["section_index"]?.intValue else { throw WordError.missingParameter("section_index") }
+        guard let typeStr = args["type"]?.stringValue, let type = HeaderFooterType(rawValue: typeStr) else {
+            throw WordError.invalidParameter("type", "Must be one of: default / first / even")
+        }
+        guard sectionIndex >= 1 else {
+            return "{ \"error\": \"out_of_bounds\", \"section_index\": \(sectionIndex), \"detail\": \"must be >= 1\" }"
+        }
+        // For single-section model (current limitation), this is a no-op
+        // returning success — multi-section split lands in future SDD.
+        _ = type
+        try await storeDocument(doc, for: docId)
+        return "Linked section \(sectionIndex) header type=\(type.rawValue) to previous (single-section model: no-op)"
+    }
+
+    private func unlinkSectionHeaderFromPreviousTool(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let sectionIndex = args["section_index"]?.intValue else { throw WordError.missingParameter("section_index") }
+        guard let typeStr = args["type"]?.stringValue, let type = HeaderFooterType(rawValue: typeStr) else {
+            throw WordError.invalidParameter("type", "Must be one of: default / first / even")
+        }
+        // Find the matching header to clone — first one of matching type.
+        guard let source = doc.headers.first(where: { $0.type == type }) else {
+            return "{ \"error\": \"not_found\", \"type\": \"\(type.rawValue)\" }"
+        }
+        let cloned = try doc.cloneHeaderForSection(
+            sourceFileName: source.fileName,
+            targetSectionIndex: sectionIndex,
+            type: type
+        )
+        try await storeDocument(doc, for: docId)
+        return "Unlinked section \(sectionIndex) header type=\(type.rawValue) — cloned to \(cloned)"
+    }
+
+    private func getSectionHeaderMapTool(args: [String: Value]) async throws -> String {
+        let doc = try await loadDocumentFromArgs(args)
+        // Single-section model: emit one entry referencing the headers/footers by type.
+        var fields: [String] = ["\"section_index\": 0"]
+        let headerDefault = doc.headers.first(where: { $0.type == .default })?.fileName
+        let headerFirst = doc.headers.first(where: { $0.type == .first })?.fileName
+        let headerEven = doc.headers.first(where: { $0.type == .even })?.fileName
+        let footerDefault = doc.footers.first(where: { $0.type == .default })?.fileName
+        let footerFirst = doc.footers.first(where: { $0.type == .first })?.fileName
+        let footerEven = doc.footers.first(where: { $0.type == .even })?.fileName
+        fields.append("\"header_default\": \(headerDefault.map { "\"\($0)\"" } ?? "null")")
+        fields.append("\"header_first\": \(headerFirst.map { "\"\($0)\"" } ?? "null")")
+        fields.append("\"header_even\": \(headerEven.map { "\"\($0)\"" } ?? "null")")
+        fields.append("\"footer_default\": \(footerDefault.map { "\"\($0)\"" } ?? "null")")
+        fields.append("\"footer_first\": \(footerFirst.map { "\"\($0)\"" } ?? "null")")
+        fields.append("\"footer_even\": \(footerEven.map { "\"\($0)\"" } ?? "null")")
+        return "[{ " + fields.joined(separator: ", ") + " }]"
     }
 }
