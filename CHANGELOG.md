@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.11.0] - 2026-04-25
+
+### Added — Tables / Hyperlinks / Headers extensions (closes [#49](https://github.com/PsychQuant/che-word-mcp/issues/49) [#50](https://github.com/PsychQuant/che-word-mcp/issues/50) [#51](https://github.com/PsychQuant/che-word-mcp/issues/51))
+
+Implements the `che-word-mcp-tables-hyperlinks-headers-builtin` SDD. Brings 16 new MCP tools completing the dependent triplet of the Office.js Roadmap P0 set (built on v3.10.0 styles + sections foundation).
+
+#### 1. Table tools (5 new)
+
+- `set_table_conditional_style` — apply firstRow / lastRow / bandedRows etc. (10 region types) via `<w:tblStylePr>`
+- `insert_nested_table` — insert table-in-cell (depth-limited to 5 — surfaces `nested_too_deep` error)
+- `set_table_layout` — switch fixed / autofit
+- `set_header_row` — mark row as `<w:tblHeader/>` for repeat-on-page-break
+- `set_table_indent` — table-level left indent (`<w:tblInd>`)
+
+#### 2. Hyperlink tools (3 new typed)
+
+- `insert_url_hyperlink` — external URL with optional tooltip + history flag
+- `insert_bookmark_hyperlink` — internal anchor link (`w:anchor`, no rId)
+- `insert_email_hyperlink` — `mailto:` with optional URL-encoded subject
+- All 3 auto-create the `Hyperlink` character style if missing (idempotent)
+
+#### 3. Header tools (4 new)
+
+- `enable_even_odd_headers` — toggle document-level `<w:evenAndOddHeaders/>` flag
+- `link_section_header_to_previous` / `unlink_section_header_from_previous` — Word-compat clone semantics
+- `get_section_header_map` — return per-section header / footer file assignments
+
+### Foundation: ooxml-swift v0.17.0
+
+- Table model: `conditionalStyles`, `tableIndent`, `explicitLayout`, `nestedTables` per cell, diagonal borders (`tl2br` / `tr2bl`)
+- New types: `TableConditionalStyleType` (10 cases), `TableConditionalStyleProperties`, `TableConditionalStyle`
+- Hyperlink model: `history: Bool` field (`w:history="0"` only when false)
+- Document model: `evenAndOddHeaders: Bool` for settings.xml round-trip
+- WordDocument 9 new mutation methods (Table 5 + Hyperlink 1 + Header 3), all explicitly mark relevant XML parts dirty
+- Reader: recursive parseTable with depth limit 5 (throws `WordError.invalidDocx`)
+- Writer: extendedTablePropertiesXML, cell.toXML emits nested tables + trailing empty paragraph (OOXML compliance)
+- New WordError cases: `nestedTooDeep(depth:max:)`, `hyperlinkNotFound(String)`
+
+### Tests
+
+- ooxml-swift: 507/507 pass (+16 new across TableAdvancedTests / HyperlinkTypedTests / HeaderMultiTypeTests)
+- che-word-mcp: 157/157 pass (+11 new TablesHyperlinksHeadersToolsTests, +3 new MeetingMinutesE2ETests covering financial report / academic paper / corporate proposal scenarios)
+
+### Backwards compatibility
+
+All new tools are additive. No existing tool signatures changed.
+
+### Office.js Roadmap progress
+
+After this release, P0 set has only #45 (Track Changes — independent) remaining. Roadmap moves to P1 territory.
+
 ## [3.10.0] - 2026-04-24
 
 ### Added — Styles + Numbering + Sections foundation (closes [#46](https://github.com/PsychQuant/che-word-mcp/issues/46) [#47](https://github.com/PsychQuant/che-word-mcp/issues/47) [#48](https://github.com/PsychQuant/che-word-mcp/issues/48))
