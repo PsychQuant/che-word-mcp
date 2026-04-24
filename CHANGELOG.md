@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.0] - 2026-04-24
+
+### Added — Content Controls (SDT) read/write tool suite (closes [#44](https://github.com/PsychQuant/che-word-mcp/issues/44))
+
+Implements the `che-word-mcp-content-controls-read-write` SDD. Enables full lifecycle management of Word's Structured Document Tags (SDTs / Content Controls): discover, read, modify, delete, plus advanced insert with new SDT types.
+
+#### 1. New read tools (3)
+
+- `list_content_controls` — enumerate every SDT in a document, flat (default) or nested tree mode. Supports both session (`doc_id`) and direct (`source_path`) modes.
+- `get_content_control` — fetch a single SDT by `id`, `tag`, or `alias`. Returns full metadata + `<w:sdtContent>` XML. Surfaces `not_found` / `multiple_matches` errors.
+- `list_repeating_section_items` — enumerate items inside a repeating-section SDT in document order.
+
+#### 2. New write tools (4)
+
+- `update_content_control_text` — replace text content of plain-text / rich-text / date / bibliography / citation SDTs. Preserves `<w:sdtPr>` byte-identical. Returns `unsupported_type` for picture / dropdown / combo / checkbox / group / repeating-section.
+- `replace_content_control_content` — replace the full `<w:sdtContent>` XML with whitelist validation. Rejects input containing `<w:sdt>`, `<w:body>`, `<w:sectPr>`, or XML declaration.
+- `delete_content_control` — remove an SDT, optionally unwrapping children (`keep_content: true` default). Block-level wrappers unwrap into the body container.
+- `update_repeating_section_item` — replace text of a single item by index. Surfaces `out_of_bounds` for invalid index.
+
+#### 3. Tool extensions
+
+- `insert_content_control` accepts 4 new types: `bibliography`, `citation`, `group`, `repeatingSectionItem`. New optional args: `list_items` (required for `dropDownList` / `comboBox`), `date_format`, `lock_type`. The `repeatingSection` type is now explicitly rejected with a redirect to `insert_repeating_section`.
+- `insert_repeating_section` accepts new optional `allow_insert_delete_sections: bool` arg (default `true`).
+- SDT id allocation now uses deterministic max-plus-one (was `Int.random(in: 100000...999999)` with collision risk).
+
+#### 4. Stub for forward compatibility
+
+- `list_custom_xml_parts` ships as an empty-list stub so tooling can target the schema today; real implementation lands in Change B (`che-word-mcp-customxml-databinding`).
+
+### Foundation: ooxml-swift v0.15.0 / v0.15.1
+
+- New `SDTParser` surfaces `<w:sdt>` as first-class `Paragraph.contentControls: [ContentControl]` (was opaque `Run.rawXML` blob)
+- 12-type discrimination (richText / plainText / picture / date / dropDownList / comboBox / checkbox / bibliography / citation / group / repeatingSection / repeatingSectionItem)
+- Nested SDT tree preservation (children + parentSdtId)
+- New `BodyChild.contentControl(ContentControl, children: [BodyChild])` enum case for block-level SDTs at `<w:body>` / `<w:tc>` level
+- WordDocument mutation methods: `updateContentControl(id:newText:)`, `replaceContentControlContent(id:contentXML:)`, `deleteContentControl(id:keepContent:)`, `allocateSdtId() -> Int`
+- New `WordError` cases: `contentControlNotFound`, `unsupportedSDTType`, `disallowedElement`, `repeatingSectionItemOutOfBounds`
+- v0.15.1 patch: `RepeatingSection.toXML()` emits `<w:id>` so MCP tools can locate sections by SDT id
+
+### Tests
+
+- ooxml-swift: 465/465 pass (+14 ContentControlMutationTests, +6 SDTParserTests)
+- che-word-mcp: 117/117 pass (+17 ContentControlToolsTests, +1 InvoiceTemplateE2ETests)
+
+### Backwards compatibility
+
+All new tools are additive. Existing `insert_content_control` / `insert_repeating_section` callers see no breaking changes (new args are optional). One internal behavior change: SDT ids are now deterministic sequential (max+1) instead of random — callers relying on random uniqueness across documents must switch to tag-based lookup.
+
+### Migration
+
+- ooxml-swift: minor bump 0.14.0 → 0.15.1 (new `BodyChild.contentControl` enum case — exhaustive switches must add the new case)
+- word-to-md-swift: bumped to 0.6.0 with handler for the new case
+
 ## [3.8.0] - 2026-04-24
 
 ### Added — Header/footer raw-element preservation + counter-isolation flag (closes [#52](https://github.com/PsychQuant/che-word-mcp/issues/52))
