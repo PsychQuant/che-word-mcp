@@ -2933,6 +2933,257 @@ actor WordMCPServer {
                 ])
             ),
 
+            // #44 styles-sections-numbering-foundations — 19 new tools (v3.10.0+)
+            // Style tools (4 new + 2 extended documented in create_style/update_style schemas)
+            Tool(
+                name: "get_style_inheritance_chain",
+                description: "回傳樣式繼承鏈（從查詢樣式向上沿 basedOn 至根）。支援 doc_id 或 source_path",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "source_path": .object(["type": .string("string")]),
+                        "style_id": .object(["type": .string("string"), "description": .string("樣式 ID")])
+                    ]),
+                    "required": .array([.string("style_id")])
+                ])
+            ),
+            Tool(
+                name: "link_styles",
+                description: "雙向連結 paragraph 與 character 樣式（emit <w:link>）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "paragraph_style_id": .object(["type": .string("string")]),
+                        "character_style_id": .object(["type": .string("string")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("paragraph_style_id"), .string("character_style_id")])
+                ])
+            ),
+            Tool(
+                name: "set_latent_styles",
+                description: "設定 <w:latentStyles> block — 控制 Quick Style Gallery 中內建樣式的可見性",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "latent_styles": .object(["type": .string("array"), "description": .string("[{name, ui_priority?, semi_hidden?, unhide_when_used?, q_format?}]")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("latent_styles")])
+                ])
+            ),
+            Tool(
+                name: "add_style_name_alias",
+                description: "為樣式加入本地化名稱別名（同 lang 已存在則替換）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "style_id": .object(["type": .string("string")]),
+                        "lang": .object(["type": .string("string"), "description": .string("BCP 47 語言代碼，例 \"de-DE\"")]),
+                        "name": .object(["type": .string("string"), "description": .string("本地化名稱")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("style_id"), .string("lang"), .string("name")])
+                ])
+            ),
+
+            // Numbering tools (8 new)
+            Tool(
+                name: "list_numbering_definitions",
+                description: "列出 numbering.xml 所有 abstractNum + num 定義",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "source_path": .object(["type": .string("string")])
+                    ])
+                ])
+            ),
+            Tool(
+                name: "get_numbering_definition",
+                description: "依 numId 取得單一 numbering 定義（含 abstractNumId 與 levels）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "num_id": .object(["type": .string("integer")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("num_id")])
+                ])
+            ),
+            Tool(
+                name: "create_numbering_definition",
+                description: "建立新的 abstractNum + 配對 num（最多 9 層），回傳新 numId",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "levels": .object(["type": .string("array"), "description": .string("[{ilvl, num_format, lvl_text, start?}]")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("levels")])
+                ])
+            ),
+            Tool(
+                name: "override_numbering_level",
+                description: "為 num 加 lvlOverride，覆寫指定 level 的起始值",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "num_id": .object(["type": .string("integer")]),
+                        "ilvl": .object(["type": .string("integer")]),
+                        "start_value": .object(["type": .string("integer")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("num_id"), .string("ilvl"), .string("start_value")])
+                ])
+            ),
+            Tool(
+                name: "assign_numbering_to_paragraph",
+                description: "將 numId+level 指派到段落（emit <w:numPr>）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "paragraph_index": .object(["type": .string("integer")]),
+                        "num_id": .object(["type": .string("integer")]),
+                        "level": .object(["type": .string("integer")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("paragraph_index"), .string("num_id"), .string("level")])
+                ])
+            ),
+            Tool(
+                name: "continue_list",
+                description: "延續既有 list — 將同一 num_id 指派給新段落",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "paragraph_index": .object(["type": .string("integer")]),
+                        "previous_list_num_id": .object(["type": .string("integer")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("paragraph_index"), .string("previous_list_num_id")])
+                ])
+            ),
+            Tool(
+                name: "start_new_list",
+                description: "從既有 abstractNum 建立新 num 並指派到段落，回傳新 numId",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "paragraph_index": .object(["type": .string("integer")]),
+                        "abstract_num_id": .object(["type": .string("integer")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("paragraph_index"), .string("abstract_num_id")])
+                ])
+            ),
+            Tool(
+                name: "gc_orphan_numbering",
+                description: "刪除無段落引用的 num 定義（abstractNum 不會刪除），回傳被刪 num_id 陣列",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")])
+                    ]),
+                    "required": .array([.string("doc_id")])
+                ])
+            ),
+
+            // Section tools (7 new)
+            Tool(
+                name: "set_line_numbers_for_section",
+                description: "啟用 section 行號標記（emit <w:lnNumType>）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "section_index": .object(["type": .string("integer")]),
+                        "count_by": .object(["type": .string("integer")]),
+                        "start": .object(["type": .string("integer")]),
+                        "restart": .object(["type": .string("string"), "description": .string("continuous / newSection / newPage")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("section_index"), .string("count_by")])
+                ])
+            ),
+            Tool(
+                name: "set_section_vertical_alignment",
+                description: "設定 section 內容垂直對齊（emit <w:vAlign>）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "section_index": .object(["type": .string("integer")]),
+                        "alignment": .object(["type": .string("string"), "description": .string("top / center / bottom / both")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("section_index"), .string("alignment")])
+                ])
+            ),
+            Tool(
+                name: "set_page_number_format",
+                description: "設定頁碼格式與起始值（emit <w:pgNumType>）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "section_index": .object(["type": .string("integer")]),
+                        "start": .object(["type": .string("integer")]),
+                        "format": .object(["type": .string("string"), "description": .string("decimal / lowerRoman / upperRoman / lowerLetter / upperLetter")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("section_index"), .string("format")])
+                ])
+            ),
+            Tool(
+                name: "set_section_break_type",
+                description: "切換分節符類型（emit <w:type>）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "section_index": .object(["type": .string("integer")]),
+                        "type": .object(["type": .string("string"), "description": .string("nextPage / continuous / evenPage / oddPage")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("section_index"), .string("type")])
+                ])
+            ),
+            Tool(
+                name: "set_title_page_distinct",
+                description: "切換首頁獨立頁首頁尾（emit/移除 <w:titlePg/>）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "section_index": .object(["type": .string("integer")]),
+                        "enabled": .object(["type": .string("boolean")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("section_index"), .string("enabled")])
+                ])
+            ),
+            Tool(
+                name: "set_section_header_footer_references",
+                description: "為 section 指派 default/first/even 類型的 header/footer rId",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "section_index": .object(["type": .string("integer")]),
+                        "references": .object(["type": .string("object"), "description": .string("{header_default?, header_first?, header_even?, footer_default?, footer_first?, footer_even?}")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("section_index"), .string("references")])
+                ])
+            ),
+            Tool(
+                name: "get_all_sections",
+                description: "回傳每個 section 的完整屬性摘要（page_size / margins / orientation / line_numbers / vertical_alignment / page_number_format / break_type / titlePg / header+footer refs）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "source_path": .object(["type": .string("string")])
+                    ])
+                ])
+            ),
+
             // P9 新增功能：列表查詢、文件屬性、搜尋文字、批次修訂
 
             // 9.1 insert_text - 在指定位置插入文字
@@ -5294,6 +5545,46 @@ actor WordMCPServer {
         case "list_custom_xml_parts":
             return try await listCustomXmlParts(args: args)
 
+        // #44 styles-sections-numbering-foundations (v3.10.0+)
+        case "get_style_inheritance_chain":
+            return try await getStyleInheritanceChain(args: args)
+        case "link_styles":
+            return try await linkStylesTool(args: args)
+        case "set_latent_styles":
+            return try await setLatentStylesTool(args: args)
+        case "add_style_name_alias":
+            return try await addStyleNameAliasTool(args: args)
+        case "list_numbering_definitions":
+            return try await listNumberingDefinitions(args: args)
+        case "get_numbering_definition":
+            return try await getNumberingDefinition(args: args)
+        case "create_numbering_definition":
+            return try await createNumberingDefinition(args: args)
+        case "override_numbering_level":
+            return try await overrideNumberingLevel(args: args)
+        case "assign_numbering_to_paragraph":
+            return try await assignNumberingToParagraph(args: args)
+        case "continue_list":
+            return try await continueListTool(args: args)
+        case "start_new_list":
+            return try await startNewListTool(args: args)
+        case "gc_orphan_numbering":
+            return try await gcOrphanNumbering(args: args)
+        case "set_line_numbers_for_section":
+            return try await setLineNumbersForSection(args: args)
+        case "set_section_vertical_alignment":
+            return try await setSectionVerticalAlignment(args: args)
+        case "set_page_number_format":
+            return try await setPageNumberFormat(args: args)
+        case "set_section_break_type":
+            return try await setSectionBreakType(args: args)
+        case "set_title_page_distinct":
+            return try await setTitlePageDistinct(args: args)
+        case "set_section_header_footer_references":
+            return try await setSectionHeaderFooterReferences(args: args)
+        case "get_all_sections":
+            return try await getAllSections(args: args)
+
         // 9. 新增功能 (P9)
         case "insert_text":
             return try await insertText(args: args)
@@ -6582,14 +6873,24 @@ actor WordMCPServer {
         if let italic = args["italic"]?.boolValue { runProps.italic = italic }
         if let color = args["color"]?.stringValue { runProps.color = color }
 
+        // v3.10.0+ (#48): Office.js parity args
+        let qFormat = args["q_format"]?.boolValue ?? true
+        let hidden = args["hidden"]?.boolValue ?? false
+        let semiHidden = args["semi_hidden"]?.boolValue ?? false
+        let linkedStyleId = args["linked_style_id"]?.stringValue
+        let nextStyleId = args["next_style_id"]?.stringValue ?? args["next_style"]?.stringValue
+
         let style = Style(
             id: styleId,
             name: name,
             type: styleType,
             basedOn: args["based_on"]?.stringValue,
-            nextStyle: args["next_style"]?.stringValue,
+            nextStyle: nextStyleId,
             isDefault: false,
-            isQuickStyle: true,
+            isQuickStyle: qFormat,
+            linkedStyleId: linkedStyleId,
+            hidden: hidden,
+            semiHidden: semiHidden,
             paragraphProperties: paraProps,
             runProperties: runProps
         )
@@ -6636,8 +6937,19 @@ actor WordMCPServer {
         )
 
         try doc.updateStyle(id: styleId, with: updates)
-        try await storeDocument(doc, for: docId)
 
+        // v3.10.0+ (#48): Office.js parity post-update for fields not in StyleUpdate
+        if let idx = doc.styles.firstIndex(where: { $0.id == styleId }) {
+            if let basedOn = args["based_on"]?.stringValue { doc.styles[idx].basedOn = basedOn }
+            if let nextId = args["next_style_id"]?.stringValue { doc.styles[idx].nextStyle = nextId }
+            if let linked = args["linked_style_id"]?.stringValue { doc.styles[idx].linkedStyleId = linked }
+            if let qFormat = args["q_format"]?.boolValue { doc.styles[idx].isQuickStyle = qFormat }
+            if let hidden = args["hidden"]?.boolValue { doc.styles[idx].hidden = hidden }
+            if let semiHidden = args["semi_hidden"]?.boolValue { doc.styles[idx].semiHidden = semiHidden }
+            doc.markPartDirty("word/styles.xml")
+        }
+
+        try await storeDocument(doc, for: docId)
         return "Updated style '\(styleId)'"
     }
 
@@ -13054,5 +13366,367 @@ actor WordMCPServer {
         }
         try writeArchivePart(docId: docId, partPath: "word/webSettings.xml", content: xml)
         return "Web settings updated"
+    }
+
+    // MARK: - #44 Phase 7: Style Tools
+
+    private func getStyleInheritanceChain(args: [String: Value]) async throws -> String {
+        let doc = try await loadDocumentFromArgs(args)
+        guard let styleId = args["style_id"]?.stringValue else {
+            throw WordError.missingParameter("style_id")
+        }
+        let chain = doc.getStyleInheritanceChain(styleId: styleId)
+        if chain.isEmpty {
+            return "{ \"error\": \"not_found\", \"style_id\": \"\(Self.jsonEscape(styleId))\" }"
+        }
+        // Cycle detection: original chain length should equal walked depth from
+        // styleId. If chain shorter than count of unique basedOn refs, cycle hit.
+        var seenIds = Set<String>()
+        var cycleDetected = false
+        for s in chain {
+            if !seenIds.insert(s.id).inserted { cycleDetected = true; break }
+        }
+        let entries = chain.map { s -> String in
+            var fields: [String] = [
+                "\"style_id\": \"\(Self.jsonEscape(s.id))\"",
+                "\"style_name\": \"\(Self.jsonEscape(s.name))\"",
+                "\"style_type\": \"\(s.type.rawValue)\""
+            ]
+            if let basedOn = s.basedOn {
+                fields.append("\"based_on\": \"\(Self.jsonEscape(basedOn))\"")
+            } else {
+                fields.append("\"based_on\": null")
+            }
+            return "{ " + fields.joined(separator: ", ") + " }"
+        }
+        return "{ \"chain\": [\(entries.joined(separator: ", "))], \"cycle_detected\": \(cycleDetected ? "true" : "false") }"
+    }
+
+    private func linkStylesTool(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let pId = args["paragraph_style_id"]?.stringValue else { throw WordError.missingParameter("paragraph_style_id") }
+        guard let cId = args["character_style_id"]?.stringValue else { throw WordError.missingParameter("character_style_id") }
+
+        do {
+            try doc.linkStyles(paragraphStyleId: pId, characterStyleId: cId)
+        } catch WordError.styleNotFound(let id) {
+            return "{ \"error\": \"not_found\", \"style_id\": \"\(Self.jsonEscape(id))\" }"
+        } catch WordError.typeMismatch(let exp, let act) {
+            return "{ \"error\": \"type_mismatch\", \"expected\": \"\(exp)\", \"actual\": \"\(act)\" }"
+        }
+        try await storeDocument(doc, for: docId)
+        return "Linked styles \(pId) ↔ \(cId)"
+    }
+
+    private func setLatentStylesTool(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let arr = args["latent_styles"]?.arrayValue else { throw WordError.missingParameter("latent_styles") }
+
+        var entries: [LatentStyle] = []
+        for item in arr {
+            guard let obj = item.objectValue, let name = obj["name"]?.stringValue else { continue }
+            entries.append(LatentStyle(
+                name: name,
+                uiPriority: obj["ui_priority"]?.intValue,
+                semiHidden: obj["semi_hidden"]?.boolValue ?? false,
+                unhideWhenUsed: obj["unhide_when_used"]?.boolValue ?? false,
+                qFormat: obj["q_format"]?.boolValue ?? false
+            ))
+        }
+        doc.setLatentStyles(entries)
+        try await storeDocument(doc, for: docId)
+        return "Set latent_styles count=\(entries.count)"
+    }
+
+    private func addStyleNameAliasTool(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let styleId = args["style_id"]?.stringValue else { throw WordError.missingParameter("style_id") }
+        guard let lang = args["lang"]?.stringValue else { throw WordError.missingParameter("lang") }
+        guard let name = args["name"]?.stringValue else { throw WordError.missingParameter("name") }
+
+        do {
+            try doc.addStyleNameAlias(styleId: styleId, lang: lang, name: name)
+        } catch WordError.styleNotFound(let id) {
+            return "{ \"error\": \"not_found\", \"style_id\": \"\(Self.jsonEscape(id))\" }"
+        }
+        try await storeDocument(doc, for: docId)
+        return "Added alias for style=\(styleId) lang=\(lang)"
+    }
+
+    // MARK: - #44 Phase 8: Numbering Tools
+
+    private func listNumberingDefinitions(args: [String: Value]) async throws -> String {
+        let doc = try await loadDocumentFromArgs(args)
+        return Self.renderNumberingDefinitionsJSON(doc.numbering, scope: nil)
+    }
+
+    private func getNumberingDefinition(args: [String: Value]) async throws -> String {
+        let doc = try await loadDocumentFromArgs(args)
+        guard let numId = args["num_id"]?.intValue else { throw WordError.missingParameter("num_id") }
+        guard doc.numbering.nums.contains(where: { $0.numId == numId }) else {
+            return "{ \"error\": \"not_found\", \"num_id\": \(numId) }"
+        }
+        return Self.renderNumberingDefinitionsJSON(doc.numbering, scope: numId)
+    }
+
+    private func createNumberingDefinition(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let levelsArr = args["levels"]?.arrayValue else { throw WordError.missingParameter("levels") }
+
+        var levels: [Level] = []
+        for item in levelsArr {
+            guard let obj = item.objectValue,
+                  let ilvl = obj["ilvl"]?.intValue,
+                  let fmtStr = obj["num_format"]?.stringValue,
+                  let lvlText = obj["lvl_text"]?.stringValue
+            else { continue }
+            let fmt = NumberFormat(rawValue: fmtStr) ?? .decimal
+            let start = obj["start"]?.intValue ?? 1
+            levels.append(Level(ilvl: ilvl, start: start, numFmt: fmt, lvlText: lvlText, indent: 720 * (ilvl + 1)))
+        }
+        do {
+            let numId = try doc.createNumberingDefinition(levels: levels)
+            try await storeDocument(doc, for: docId)
+            return "{ \"num_id\": \(numId) }"
+        } catch WordError.invalidIndex(let count) {
+            return "{ \"error\": \"invalid_levels\", \"count\": \(count) }"
+        }
+    }
+
+    private func overrideNumberingLevel(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let numId = args["num_id"]?.intValue else { throw WordError.missingParameter("num_id") }
+        guard let ilvl = args["ilvl"]?.intValue else { throw WordError.missingParameter("ilvl") }
+        guard let startValue = args["start_value"]?.intValue else { throw WordError.missingParameter("start_value") }
+
+        do {
+            try doc.overrideNumberingLevel(numId: numId, level: ilvl, startValue: startValue)
+        } catch WordError.numIdNotFound(let id) {
+            return "{ \"error\": \"not_found\", \"num_id\": \(id) }"
+        }
+        try await storeDocument(doc, for: docId)
+        return "Override numId=\(numId) ilvl=\(ilvl) start=\(startValue)"
+    }
+
+    private func assignNumberingToParagraph(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let paraIndex = args["paragraph_index"]?.intValue else { throw WordError.missingParameter("paragraph_index") }
+        guard let numId = args["num_id"]?.intValue else { throw WordError.missingParameter("num_id") }
+        guard let level = args["level"]?.intValue else { throw WordError.missingParameter("level") }
+
+        do {
+            try doc.assignNumberingToParagraph(paragraphIndex: paraIndex, numId: numId, level: level)
+        } catch WordError.numIdNotFound(let id) {
+            return "{ \"error\": \"not_found\", \"num_id\": \(id) }"
+        } catch WordError.invalidIndex(let i) {
+            return "{ \"error\": \"out_of_bounds\", \"paragraph_index\": \(i) }"
+        }
+        try await storeDocument(doc, for: docId)
+        return "Assigned numId=\(numId) level=\(level) to paragraph \(paraIndex)"
+    }
+
+    private func continueListTool(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let paraIndex = args["paragraph_index"]?.intValue else { throw WordError.missingParameter("paragraph_index") }
+        guard let prevNum = args["previous_list_num_id"]?.intValue else { throw WordError.missingParameter("previous_list_num_id") }
+
+        do {
+            try doc.continueList(paragraphIndex: paraIndex, previousListNumId: prevNum)
+        } catch WordError.numIdNotFound(let id) {
+            return "{ \"error\": \"not_found\", \"num_id\": \(id) }"
+        } catch WordError.invalidIndex(let i) {
+            return "{ \"error\": \"out_of_bounds\", \"paragraph_index\": \(i) }"
+        }
+        try await storeDocument(doc, for: docId)
+        return "Continued list num_id=\(prevNum) at paragraph \(paraIndex)"
+    }
+
+    private func startNewListTool(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let paraIndex = args["paragraph_index"]?.intValue else { throw WordError.missingParameter("paragraph_index") }
+        guard let absId = args["abstract_num_id"]?.intValue else { throw WordError.missingParameter("abstract_num_id") }
+
+        do {
+            let newNumId = try doc.startNewList(paragraphIndex: paraIndex, abstractNumId: absId)
+            try await storeDocument(doc, for: docId)
+            return "{ \"num_id\": \(newNumId) }"
+        } catch WordError.abstractNumIdNotFound(let id) {
+            return "{ \"error\": \"not_found\", \"abstract_num_id\": \(id) }"
+        } catch WordError.invalidIndex(let i) {
+            return "{ \"error\": \"out_of_bounds\", \"paragraph_index\": \(i) }"
+        }
+    }
+
+    private func gcOrphanNumbering(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        let deleted = doc.gcOrphanNumbering()
+        try await storeDocument(doc, for: docId)
+        return "[\(deleted.map(String.init).joined(separator: ", "))]"
+    }
+
+    static func renderNumberingDefinitionsJSON(_ numbering: Numbering, scope: Int?) -> String {
+        let nums = scope.flatMap { id in numbering.nums.filter { $0.numId == id } } ?? numbering.nums
+        let entries: [String] = nums.map { num in
+            let abstract = numbering.abstractNums.first(where: { $0.abstractNumId == num.abstractNumId })
+            let levels = abstract?.levels ?? []
+            let levelStr = levels.map { l -> String in
+                "{ \"ilvl\": \(l.ilvl), \"num_format\": \"\(l.numFmt.rawValue)\", \"lvl_text\": \"\(jsonEscape(l.lvlText))\", \"start\": \(l.start) }"
+            }.joined(separator: ", ")
+            let overridesStr = num.lvlOverrides.map { o -> String in
+                "{ \"ilvl\": \(o.ilvl), \"start_override\": \(o.startOverride) }"
+            }.joined(separator: ", ")
+            return "{ \"num_id\": \(num.numId), \"abstract_num_id\": \(num.abstractNumId), \"levels\": [\(levelStr)], \"lvl_overrides\": [\(overridesStr)] }"
+        }
+        return "[\(entries.joined(separator: ", "))]"
+    }
+
+    // MARK: - #44 Phase 9: Section Tools
+
+    private func setLineNumbersForSection(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let sectionIndex = args["section_index"]?.intValue else { throw WordError.missingParameter("section_index") }
+        guard let countBy = args["count_by"]?.intValue else { throw WordError.missingParameter("count_by") }
+        let start = args["start"]?.intValue
+        let restartStr = args["restart"]?.stringValue ?? "continuous"
+        let restart = LineNumberRestart(rawValue: restartStr) ?? .continuous
+
+        do {
+            try doc.setSectionLineNumbers(sectionIndex: sectionIndex, countBy: countBy, start: start, restart: restart)
+        } catch WordError.invalidIndex(let i) {
+            return "{ \"error\": \"out_of_bounds\", \"section_index\": \(i) }"
+        }
+        try await storeDocument(doc, for: docId)
+        return "Set line numbers section=\(sectionIndex) count_by=\(countBy)"
+    }
+
+    private func setSectionVerticalAlignment(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let sectionIndex = args["section_index"]?.intValue else { throw WordError.missingParameter("section_index") }
+        guard let alignmentStr = args["alignment"]?.stringValue,
+              let alignment = SectionVerticalAlignment(rawValue: alignmentStr)
+        else {
+            throw WordError.invalidParameter("alignment", "Must be one of: top / center / bottom / both")
+        }
+        do {
+            try doc.setSectionVerticalAlignment(sectionIndex: sectionIndex, alignment: alignment)
+        } catch WordError.invalidIndex(let i) {
+            return "{ \"error\": \"out_of_bounds\", \"section_index\": \(i) }"
+        }
+        try await storeDocument(doc, for: docId)
+        return "Set vertical_alignment=\(alignment.rawValue) on section \(sectionIndex)"
+    }
+
+    private func setPageNumberFormat(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let sectionIndex = args["section_index"]?.intValue else { throw WordError.missingParameter("section_index") }
+        guard let formatStr = args["format"]?.stringValue,
+              let format = SectionPageNumberFormat(rawValue: formatStr)
+        else {
+            throw WordError.invalidParameter("format", "Must be one of: decimal / lowerRoman / upperRoman / lowerLetter / upperLetter")
+        }
+        let start = args["start"]?.intValue
+        do {
+            try doc.setSectionPageNumberFormat(sectionIndex: sectionIndex, start: start, format: format)
+        } catch WordError.invalidIndex(let i) {
+            return "{ \"error\": \"out_of_bounds\", \"section_index\": \(i) }"
+        }
+        try await storeDocument(doc, for: docId)
+        return "Set page_number_format=\(format.rawValue) on section \(sectionIndex)"
+    }
+
+    private func setSectionBreakType(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let sectionIndex = args["section_index"]?.intValue else { throw WordError.missingParameter("section_index") }
+        guard let typeStr = args["type"]?.stringValue,
+              let type = SectionBreakType(rawValue: typeStr)
+        else {
+            throw WordError.invalidParameter("type", "Must be one of: nextPage / continuous / evenPage / oddPage")
+        }
+        do {
+            try doc.setSectionBreakType(sectionIndex: sectionIndex, type: type)
+        } catch WordError.invalidIndex(let i) {
+            return "{ \"error\": \"out_of_bounds\", \"section_index\": \(i) }"
+        }
+        try await storeDocument(doc, for: docId)
+        return "Set section_break_type=\(type.rawValue) on section \(sectionIndex)"
+    }
+
+    private func setTitlePageDistinct(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let sectionIndex = args["section_index"]?.intValue else { throw WordError.missingParameter("section_index") }
+        guard let enabled = args["enabled"]?.boolValue else { throw WordError.missingParameter("enabled") }
+        do {
+            try doc.setTitlePageDistinct(sectionIndex: sectionIndex, enabled: enabled)
+        } catch WordError.invalidIndex(let i) {
+            return "{ \"error\": \"out_of_bounds\", \"section_index\": \(i) }"
+        }
+        try await storeDocument(doc, for: docId)
+        return "Set title_page_distinct=\(enabled) on section \(sectionIndex)"
+    }
+
+    private func setSectionHeaderFooterReferences(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
+        guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
+        guard let sectionIndex = args["section_index"]?.intValue else { throw WordError.missingParameter("section_index") }
+        guard let refs = args["references"]?.objectValue else { throw WordError.missingParameter("references") }
+
+        do {
+            try doc.setSectionHeaderFooterReferences(
+                sectionIndex: sectionIndex,
+                headerDefault: refs["header_default"]?.stringValue,
+                headerFirst: refs["header_first"]?.stringValue,
+                headerEven: refs["header_even"]?.stringValue,
+                footerDefault: refs["footer_default"]?.stringValue,
+                footerFirst: refs["footer_first"]?.stringValue,
+                footerEven: refs["footer_even"]?.stringValue
+            )
+        } catch WordError.invalidIndex(let i) {
+            return "{ \"error\": \"out_of_bounds\", \"section_index\": \(i) }"
+        }
+        try await storeDocument(doc, for: docId)
+        return "Set header/footer references on section \(sectionIndex)"
+    }
+
+    private func getAllSections(args: [String: Value]) async throws -> String {
+        let doc = try await loadDocumentFromArgs(args)
+        let sections = doc.getAllSections()
+        let entries = sections.map { s -> String in
+            var fields: [String] = [
+                "\"section_index\": \(s.sectionIndex)",
+                "\"paragraph_range\": { \"start\": \(s.paragraphRange.lowerBound), \"end\": \(s.paragraphRange.upperBound) }",
+                "\"page_size\": { \"width\": \(s.pageSize.width), \"height\": \(s.pageSize.height) }",
+                "\"orientation\": \"\(s.orientation.rawValue)\"",
+                "\"columns\": \(s.columns)",
+                "\"title_page_distinct\": \(s.titlePageDistinct)"
+            ]
+            if let ln = s.lineNumbers {
+                fields.append("\"line_numbers\": { \"count_by\": \(ln.countBy), \"restart\": \"\(ln.restart.rawValue)\" }")
+            }
+            if let v = s.verticalAlignment {
+                fields.append("\"vertical_alignment\": \"\(v.rawValue)\"")
+            }
+            if let f = s.pageNumberFormat {
+                fields.append("\"page_number_format\": \"\(f.rawValue)\"")
+            }
+            if let bt = s.sectionBreakType {
+                fields.append("\"section_break_type\": \"\(bt.rawValue)\"")
+            }
+            return "{ " + fields.joined(separator: ", ") + " }"
+        }
+        return "[\(entries.joined(separator: ", "))]"
     }
 }
