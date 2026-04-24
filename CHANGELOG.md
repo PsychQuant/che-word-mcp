@@ -5,6 +5,62 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.8.0] - 2026-04-24
+
+### Added — Header/footer raw-element preservation + counter-isolation flag (closes [#52](https://github.com/PsychQuant/che-word-mcp/issues/52))
+
+Bundles two coordinated features from the `che-word-mcp-header-footer-raw-element-preservation` SDD:
+
+#### 1. VML watermarks / OLE objects survive `update_all_fields` round-trip
+
+ooxml-swift [v0.14.0](https://github.com/PsychQuant/ooxml-swift/releases/tag/v0.14.0) ships `Run.rawElements` carrier (new `RawElement` struct: `name` + `xml`). `DocxReader.parseRun` now collects unknown direct children of `<w:r>` (e.g., `<w:pict>` VML watermarks, `<w:object>` OLE embeds, `<w:ruby>`) into rawElements; `Run.toXML` emits them verbatim after typed children.
+
+Result: document VML watermarks at `w:hdr` → `w:p` → `w:r` → `w:pict` → `v:shape` survive any header round-trip including the v3.7.1 case (`update_all_fields` on doc with header SEQ field).
+
+This **removes the v3.7.1 known-limitation paragraph**: header WITH legitimately-placed SEQ + co-located VML/drawings now byte-preserves correctly. Updated `Header.toXML()` / `Footer.toXML()` declare `xmlns:v` / `xmlns:o` / `xmlns:w10` at root so descendant VML elements resolve when re-read.
+
+#### 2. `update_all_fields` gains `isolate_per_container` opt-in parameter
+
+```json
+{
+  "tool": "update_all_fields",
+  "arguments": {
+    "doc_id": "document",
+    "isolate_per_container": true
+  }
+}
+```
+
+Default `false` preserves prior global-counter-sharing behavior (body 3 Figure + header 1 Figure → header sees count 4). When `true`, each container family (body / each header / each footer / footnotes / endnotes) maintains independent SEQ counter dicts (header sees count 1).
+
+Surfaces the Word F9 per-container semantic for chapter-caption running headers and similar use cases. Returned summary reflects body's final counter state; per-container values inspectable via SEQ runs' rawXML.
+
+### Tests
+
+- 100/100 che-word-mcp tests pass + 11 in-progress adjacent (no regression from dep bump or MCP tool surface change)
+- ooxml-swift v0.14.0 ships **451/451 tests** (was 408 → +43 across this + prior sessions' work)
+
+### Compatibility
+
+- **No removed APIs** — all changes additive
+- **MCP tool surface**: `update_all_fields` gains optional `isolate_per_container` parameter; default `false` preserves v3.7.x behavior
+- **Behavior changes** (from ooxml-swift v0.14.0):
+  - `update_all_fields` (and any code path that re-emits headers/footers) now byte-preserves VML watermarks, OLE objects, and other unknown OOXML constructs in headers/footers — was previously silently stripped at the Run layer
+  - Saved `word/header*.xml` / `word/footer*.xml` declare additional namespaces — observable in byte content
+- Universal binary (x86_64 + arm64) preserved
+
+### Migration from v3.7.x
+
+Existing callers see no behavioral change unless:
+1. They call `update_all_fields` on a doc with VML watermarks in headers — those now survive (was silent data loss)
+2. They explicitly opt into `isolate_per_container: true` for per-container counter semantics
+
+### Refs
+
+- PsychQuant/che-word-mcp#52 — Header.toXML raw-XML preservation
+- Bundles deferred work from PsychQuant/che-word-mcp#54 sub-finding #8 (counter-isolation flag)
+- ooxml-swift v0.14.0 release notes for typed-model details
+
 ## [3.7.2] - 2026-04-24
 
 ### Fixed — 3-issue bundle from #42 verification (closes [#53](https://github.com/PsychQuant/che-word-mcp/issues/53), [#54](https://github.com/PsychQuant/che-word-mcp/issues/54), [#55](https://github.com/PsychQuant/che-word-mcp/issues/55))
