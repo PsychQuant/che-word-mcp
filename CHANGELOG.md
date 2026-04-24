@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.7.2] - 2026-04-24
+
+### Fixed — 3-issue bundle from #42 verification (closes [#53](https://github.com/PsychQuant/che-word-mcp/issues/53), [#54](https://github.com/PsychQuant/che-word-mcp/issues/54), [#55](https://github.com/PsychQuant/che-word-mcp/issues/55))
+
+Pure dep bump (`ooxml-swift` 0.13.4 → [0.13.5](https://github.com/PsychQuant/ooxml-swift/releases/tag/v0.13.5)) consuming three follow-ups that were opened during #42 verification:
+
+#### #55 — Path traversal security baseline (P2 pre-existing)
+
+`isSafeRelativeOOXMLPath()` validator + DocxReader sanitization + Header/Footer setter validation. Defense-in-depth against malicious .docx with `Target="../../../etc/passwd"` style rels (read sink + write sink).
+
+#### #53 — Multi-instance Header/Footer auto-suffix (P3 latent)
+
+`addHeader()` × N with default type now produces `header1.xml`, `header2.xml`, `header3.xml` instead of all colliding to `header1.xml`. Mirror for footers + `*WithPageNumber` variants.
+
+#### #54 — `updateAllFields` coverage extensions (P3 test gaps)
+
+Bundles 4 sub-findings: (a) regex schema-drift stderr warning, (b) cross-container counter-sharing doc-comment, (c) header-SEQ no-op test, (d) footnote/endnote round-trip tests.
+
+### Synergy
+
+- #55's sanitization fallback path benefits from #53's auto-suffix logic (multiple rejected paths can't collapse to `header1.xml`)
+- #54's stderr warning extends #42 + #41's observability infrastructure
+- All 3 bundled in single ooxml-swift release; che-word-mcp consumes via single PATCH bump
+
+### Tests
+
+- 100/100 che-word-mcp tests pass unchanged + 11 new tests from in-progress adjacent work
+- ooxml-swift v0.13.5 ships **444/444 tests** (was 408 → +36)
+
+### Compatibility
+
+- **No che-word-mcp source changes** — fix is entirely in ooxml-swift dep
+- **No MCP API changes** — all 173+ tools work identically
+- Universal binary (x86_64 + arm64) preserved
+- Behavior changes (from ooxml-swift):
+  - DocxReader silently drops headers/footers with unsafe rel.target (with stderr warning)
+  - `addHeader()` × N produces sequential fileNames
+  - `update_all_fields` warns on regex schema drift
+
+### Refs
+
+- PsychQuant/che-word-mcp#53, #54, #55 (all opened during #42 verify on 2026-04-24)
+
 ## [3.7.1] - 2026-04-24
 
 ### Fixed — `update_all_fields` no longer strips headers/footers (closes [#42](https://github.com/PsychQuant/che-word-mcp/issues/42))
