@@ -4224,11 +4224,15 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "update_all_fields",
-                description: "v3.1.0 — F9-equivalent：重算全文 SEQ field counters（body + headers + footers + footnotes + endnotes），支援 chapter-reset。非 SEQ fields (IF/DATE/PAGE/REF) 不動。返回 { identifier → final-count } 摘要。Refs #19.",
+                description: "v3.1.0 — F9-equivalent：重算全文 SEQ field counters（body + headers + footers + footnotes + endnotes），支援 chapter-reset。非 SEQ fields (IF/DATE/PAGE/REF) 不動。返回 { identifier → final-count } 摘要。v3.8.0+ 加 isolate_per_container 選項（預設 false 維持全域共享；設 true 則 body / each header / each footer / footnotes / endnotes 各自獨立計數，符合 Word F9 per-container 語意，Refs #52）。Refs #19 #52.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
-                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼")])
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼")]),
+                        "isolate_per_container": .object([
+                            "type": .string("boolean"),
+                            "description": .string("v3.8.0+ (Refs #52)：true 則每個 container family（body/each header/each footer/footnotes/endnotes）獨立計數；預設 false 維持 v3.1.0 全域共享。")
+                        ])
                     ]),
                     "required": .array([.string("doc_id")])
                 ])

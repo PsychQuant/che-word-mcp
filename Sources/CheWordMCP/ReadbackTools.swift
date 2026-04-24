@@ -189,15 +189,25 @@ extension WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
 
-        let result = doc.updateAllFields()
+        // v3.8.0+ (#52): isolate_per_container opt-in flag. Default false
+        // preserves prior global-counter-sharing behavior. When true, each
+        // container family (body / each header / each footer / footnotes /
+        // endnotes) gets independent SEQ counter dicts.
+        let isolatePerContainer = args["isolate_per_container"]?.boolValue ?? false
+
+        let result = doc.updateAllFields(isolatePerContainer: isolatePerContainer)
         try await storeDocument(doc, for: docId)
 
         if result.isEmpty {
             return "update_all_fields completed: no SEQ fields found."
         }
-        var out = "update_all_fields completed. Updated \(result.values.reduce(0, +)) SEQ field(s):\n"
+        let modeNote = isolatePerContainer ? " (isolation mode — per-container counters)" : ""
+        var out = "update_all_fields completed\(modeNote). Updated \(result.values.reduce(0, +)) SEQ field(s) in body:\n"
         for (id, count) in result.sorted(by: { $0.key < $1.key }) {
             out += "  \(id): \(count)\n"
+        }
+        if isolatePerContainer {
+            out += "Note: header/footer/footnote/endnote container families have independent counters; inspect their SEQ runs' rawXML for cached values.\n"
         }
         return out
     }

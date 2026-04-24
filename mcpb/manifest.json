@@ -1,8 +1,8 @@
 {
   "manifest_version": "0.3",
   "name": "che-word-mcp",
-  "version": "3.7.2",
-  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v3.7.2: 3-issue bundle from #42 verify (closes #53 #54 #55) — ooxml-swift v0.13.5 path traversal hardening + multi-instance Header/Footer auto-suffix + updateAllFields coverage extensions. v3.7.1: update_all_fields header preservation (#42). v3.7.0: autosave Design B + insert crash hardening (#40 #41). v3.6.0: autosave/checkpoint/recover (#37). v3.5.x: keep_bak (#38), actor (#39), atomic-rename save (#36).",
+  "version": "3.8.0",
+  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v3.8.0: header/footer raw-element preservation + counter-isolation (closes #52) — ooxml-swift v0.14.0 Run.rawElements carrier preserves VML watermarks/OLE objects through update_all_fields and overlay-mode round-trip; new update_all_fields(isolate_per_container) opt-in flag for Word F9 per-container counter semantics. v3.7.2: #42 verify follow-ups bundle (#53 #54 #55). v3.7.1: update_all_fields header preservation (#42). v3.7.0: autosave Design B + insert crash hardening (#40 #41). v3.6.0: autosave/checkpoint/recover (#37). v3.5.x: keep_bak (#38), actor (#39), atomic-rename save (#36).",
   "author": {
     "name": "Che Cheng"
   },
