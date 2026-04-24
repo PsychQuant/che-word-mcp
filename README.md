@@ -9,19 +9,23 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 - **Pure Swift Implementation**: No Node.js, Python, or external runtime required
 - **Direct OOXML Manipulation**: Works directly with XML, no Microsoft Word installation needed
 - **Single Binary**: Just one executable file
-- **173+ MCP Tools**: Comprehensive document manipulation capabilities (`checkpoint` + `recover_from_autosave` added in v3.6.0)
-- **Save Durability Stack (v3.5.3+)**: atomic-rename save (#36), actor-based concurrency safety (#39), `keep_bak` opt-in rollback (#38), and `autosave_every` Design B pre-mutation snapshot with explicit `recover_from_autosave` (#37, #40 v3.7.0). Default `autosave_every: 1` (every mutation snapshots prior state). Pass `autosave_every: 0` to opt out.
-- **Dual-Mode Access**: Direct Mode (read-only, one step) and Session Mode (full lifecycle)
-- **Round-trip Fidelity (v3.3.0+)**: `save_document` preserves OOXML parts the typed model doesn't manage (`word/theme/`, `webSettings.xml`, `people.xml`, `commentsExtended/Extensible/Ids`, `glossary/`, `customXml/`) byte-for-byte. Closes the lossy-by-design pipeline that previously stripped headers/footers/theme/fonts on every save.
-- **Theme + Header/Footer/Watermark CRUD (v3.3.0+)**: 12 new tools for `word/theme/theme1.xml` editing, header/footer enumeration + deletion, watermark VML detection. Solves document Chinese font fix path: `update_theme_fonts({ minor: { ea: "DFKai-SB" } })`.
-- **Comment Threads + People + Notes Update + Web Settings (v3.4.0+)**: 13 new tools for collaborative comment metadata, `people.xml` author records, in-place endnote/footnote editing (preserves IDs), and `webSettings.xml` configuration.
+- **218+ MCP Tools**: Comprehensive document manipulation across documents, tables, hyperlinks, headers, sections, styles, numbering, content controls, comments, footnotes, equations, fields, and Track Changes
+- **Office.js OOXML Roadmap P0 = 100%**: All eight P0 sub-issues closed (umbrella [#43](https://github.com/PsychQuant/che-word-mcp/issues/43)). Surface coverage is now competitive with Office.js for the read/write side of every P0 capability.
+- **Programmatic Track Changes (v3.12.0+, [#45](https://github.com/PsychQuant/che-word-mcp/issues/45))**: Generate Word-native reviewable redlines via `insert_text_as_revision` / `delete_text_as_revision` / `move_text_as_revision`, plus `as_revision: true` flag on `format_text` / `set_paragraph_format`. Emits `<w:ins>` / `<w:del>` / `<w:moveFrom>` / `<w:moveTo>` / `<w:rPrChange>` / `<w:pPrChange>` markup. Side-effect contract: `as_revision: true` requires track changes enabled; throws `track_changes_not_enabled` otherwise (no silent auto-enable). Author resolution: explicit arg → `revisions.settings.author` → `"Unknown"`.
+- **Tables / Hyperlinks / Headers extensions (v3.11.0+, [#49](https://github.com/PsychQuant/che-word-mcp/issues/49) [#50](https://github.com/PsychQuant/che-word-mcp/issues/50) [#51](https://github.com/PsychQuant/che-word-mcp/issues/51))**: 16 new tools — table conditional styles (10 region types) / nested tables (max 5 deep) / explicit layout / table indent; three typed hyperlinks (URL / bookmark / email); even/odd header toggle / link-to-previous / `get_section_header_map`.
+- **Styles + Numbering + Sections foundation (v3.10.0+, [#46](https://github.com/PsychQuant/che-word-mcp/issues/46) [#47](https://github.com/PsychQuant/che-word-mcp/issues/47) [#48](https://github.com/PsychQuant/che-word-mcp/issues/48))**: 19 new tools + 6 extended args — `get_style_inheritance_chain`, `link_styles`, `set_latent_styles`, `add_style_name_alias`, full Numbering CRUD lifecycle (definitions / overrides / list continuity / GC), section vertical alignment / page-number format / break-type / title-page distinction / per-section header references.
+- **Content Controls (SDT) read/write (v3.9.0+, [#44](https://github.com/PsychQuant/che-word-mcp/issues/44))**: 7 new tools covering 12-type discrimination (richText / plainText / picture / date / dropDownList / comboBox / checkBox / bibliography / citation / group / repeatingSection / repeatingSectionItem). Nested SDT trees, deterministic max+1 SDT id allocator, `keep_content` unwrap on delete, whitelist-validated XML replacement.
+- **Save Durability Stack (v3.5.3+)**: atomic-rename save ([#36](https://github.com/PsychQuant/che-word-mcp/issues/36)), actor-based concurrency safety ([#39](https://github.com/PsychQuant/che-word-mcp/issues/39)), `keep_bak` opt-in rollback ([#38](https://github.com/PsychQuant/che-word-mcp/issues/38)), `autosave_every` Design B pre-mutation snapshot with explicit `recover_from_autosave` ([#37](https://github.com/PsychQuant/che-word-mcp/issues/37), [#40](https://github.com/PsychQuant/che-word-mcp/issues/40) v3.7.0). Default `autosave_every: 1` (every mutation snapshots prior state). Pass `autosave_every: 0` to opt out.
+- **Dual-Mode Access**: Direct Mode (read-only, one step via `source_path`) and Session Mode (full lifecycle via `doc_id`)
+- **True Byte-preservation Round-trip Fidelity (v3.5.0+)**: `save_document` overlay mode uses `WordDocument.modifiedParts` dirty tracking — untouched typed parts (`document.xml`, `styles.xml`, `fontTable.xml`, `header*.xml`, `footer*.xml`, `comments.xml`, `footnotes.xml`, `endnotes.xml`) and unknown parts (`theme/`, `webSettings.xml`, `people.xml`, `commentsExtended/Extensible/Ids`, `glossary/`, `customXml/`) byte-for-byte preserved. document no-op `save_document` round-trip retains 13 fontTable entries + 6 distinct headers + 4 footers + three-segment PAGE field + `<w15:presenceInfo>` identity.
+- **Theme + Header/Footer/Watermark CRUD (v3.3.0+)**: `word/theme/theme1.xml` editing, header/footer enumeration + deletion, watermark VML detection. document Chinese font fix path: `update_theme_fonts({ minor: { ea: "DFKai-SB" } })`.
+- **Comment Threads + People + Notes Update + Web Settings (v3.4.0+)**: 13 tools for collaborative comment metadata, `people.xml` author records (dual identity: GUID + legacy author), in-place endnote/footnote editing (preserves IDs), `webSettings.xml` configuration.
 - **Full LaTeX Subset for `insert_equation` (v3.2.0+)**: Delegated to [`latex-math-swift`](https://github.com/PsychQuant/latex-math-swift). Supports `\frac`, `\sqrt`, `\hat`/`\bar`/`\tilde` accents, `\left/\right` delimiters, `\sum`/`\int`/`\prod` n-ary with bounds, function names, limits, `\text{}`, all Greek letters (including `\varepsilon` variants), and common operators.
 - **Text-Anchor Insertion**: Insert captions / images relative to matched text (`after_text` / `before_text`), no pre-search call required
 - **Batch Operations**: `replace_text_batch` / `search_text_batch` collapse N round-trips into one
 - **Session State API**: SHA256 + mtime-based disk drift detection, `revert_to_disk` / `reload_from_disk` / `check_disk_drift`
 - **Structural Readback**: `list_captions` / `list_equations` / `update_all_fields` (F9-equivalent) for manuscript review workflows
-- **Complete OOXML Support**: Full support for tables, styles, images, headers/footers, comments, footnotes, and more
-- **Cross-platform**: Works on macOS (and potentially other platforms supporting Swift)
+- **Cross-platform**: Works on macOS (universal binary `x86_64 + arm64` since v3.5.1)
 
 ## Version History
 
@@ -218,7 +222,7 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
   https://raw.githubusercontent.com/PsychQuant/che-word-mcp/main/skills/che-word-mcp/SKILL.md
 ```
 
-## Available Tools (171+ Total)
+## Available Tools (218+ Total)
 
 ### Document Management (6 tools)
 
@@ -262,8 +266,9 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
 | `set_paragraph_format` | Set paragraph formatting (alignment, spacing) |
 | `apply_style` | Apply built-in or custom styles |
 
-### Tables (6 tools)
+### Tables (15 tools, **v3.11.0+ extensions** [#49](https://github.com/PsychQuant/che-word-mcp/issues/49))
 
+Core (6):
 | Tool | Description |
 |------|-------------|
 | `insert_table` | Insert a table with optional data |
@@ -273,25 +278,66 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
 | `merge_cells` | Merge cells horizontally or vertically |
 | `set_table_style` | Set table borders and shading |
 
-### Style Management (4 tools)
-
+Row / column / cell (8):
 | Tool | Description |
 |------|-------------|
-| `list_styles` | List all available styles |
-| `create_style` | Create custom style |
-| `update_style` | Update style definition |
+| `add_row_to_table`, `delete_row_from_table` | Row management |
+| `add_column_to_table`, `delete_column_from_table` | Column management |
+| `set_cell_width`, `set_cell_vertical_alignment` | Cell sizing + alignment |
+| `set_row_height`, `set_table_alignment` | Row height + table alignment |
+
+Advanced (5, **v3.11.0**):
+| Tool | Description |
+|------|-------------|
+| `set_table_conditional_style` | Apply firstRow / lastRow / bandedRows etc. (10 region types) via `<w:tblStylePr>` |
+| `insert_nested_table` | Insert table-in-cell, depth-limited to 5 (throws `nested_too_deep`) |
+| `set_table_layout` | Switch fixed / autofit |
+| `set_header_row` | Mark row as `<w:tblHeader/>` for repeat-on-page-break |
+| `set_table_indent` | Table-level left indent (`<w:tblInd>`) |
+
+### Style Management (8 tools + 6 extended args, **v3.10.0+** [#48](https://github.com/PsychQuant/che-word-mcp/issues/48))
+
+Core (4):
+| Tool | Description |
+|------|-------------|
+| `list_styles` | List all available styles (Direct Mode supported) |
+| `create_style` | Create custom style — extended with 6 v3.10 args: `based_on`, `linked_style_id`, `next_style_id`, `q_format`, `hidden`, `semi_hidden` |
+| `update_style` | Update style definition — same 6 extended args |
 | `delete_style` | Delete custom style |
 
-### Lists (3 tools)
+Inheritance + linkage (4, **v3.10.0**):
+| Tool | Description |
+|------|-------------|
+| `get_style_inheritance_chain` | Traverse `basedOn` chain upward to root with cycle detection |
+| `link_styles` | Bidirectional `<w:link>` between paragraph and character style pair |
+| `set_latent_styles` | Control Quick Style Gallery defaults via `<w:latentStyles>` block |
+| `add_style_name_alias` | Localized `<w:name>` alias per BCP 47 lang code |
 
+### Numbering / Lists (12 tools, **v3.10.0+ definition lifecycle** [#46](https://github.com/PsychQuant/che-word-mcp/issues/46))
+
+Inline list creation (4):
 | Tool | Description |
 |------|-------------|
 | `insert_bullet_list` | Insert bullet list |
 | `insert_numbered_list` | Insert numbered list |
 | `set_list_level` | Set list indentation level |
+| `set_outline_level` | Set paragraph outline level (TOC inclusion) |
 
-### Page Setup (5 tools)
+Definition CRUD (8, **v3.10.0**):
+| Tool | Description |
+|------|-------------|
+| `list_numbering_definitions` | Enumerate every abstractNum + num pair |
+| `get_numbering_definition` | Fetch single num by id |
+| `create_numbering_definition` | New abstractNum + paired num (max 9 levels) |
+| `override_numbering_level` | `<w:lvlOverride>` for per-level start values |
+| `assign_numbering_to_paragraph` | `<w:numPr>` attachment by paragraph index |
+| `continue_list` | Resume numbering across paragraphs |
+| `start_new_list` | Reset numbering to start |
+| `gc_orphan_numbering` | Sweep unreferenced num definitions (abstractNums preserved) |
 
+### Sections / Page Setup (12 tools, **v3.10.0+ extensions** [#47](https://github.com/PsychQuant/che-word-mcp/issues/47))
+
+Basic page setup (5):
 | Tool | Description |
 |------|-------------|
 | `set_page_size` | Set page size (A4, Letter, etc.) |
@@ -300,7 +346,18 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
 | `insert_page_break` | Insert page break |
 | `insert_section_break` | Insert section break |
 
-### Headers & Footers (13 tools)
+Section properties (7, **v3.10.0**):
+| Tool | Description |
+|------|-------------|
+| `get_all_sections` | Return SectionInfo array per section in document order |
+| `set_section_break_type` | `nextPage` / `continuous` / `evenPage` / `oddPage` |
+| `set_section_vertical_alignment` | `<w:vAlign>` for cover pages |
+| `set_page_number_format` | `<w:pgNumType w:fmt>` for Roman numerals etc. |
+| `set_line_numbers_for_section` | `<w:lnNumType>` for legal documents |
+| `set_title_page_distinct` | Toggle `<w:titlePg/>` per section |
+| `set_section_header_footer_references` | Assign per-type rId (default/first/even) |
+
+### Headers & Footers (17 tools, **v3.11.0+ even/odd + section map** [#51](https://github.com/PsychQuant/che-word-mcp/issues/51))
 
 Write tools (5):
 | Tool | Description |
@@ -322,6 +379,14 @@ Read + delete tools (8, **v3.3.0+**, closes #26 #27):
 | `list_footers` | Enumerate footer parts with type + section_id + has_page_number |
 | `get_footer` | Read text + XML + parsed field structure (PAGE / NUMPAGES / REF / STYLEREF) |
 | `delete_footer` | Symmetric with delete_header |
+
+Even/odd + section linkage (4, **v3.11.0**):
+| Tool | Description |
+|------|-------------|
+| `enable_even_odd_headers` | Toggle document-level `<w:evenAndOddHeaders/>` flag |
+| `link_section_header_to_previous` | Word-compat clone semantics |
+| `unlink_section_header_from_previous` | Symmetric unlink |
+| `get_section_header_map` | Return per-section header / footer file assignments |
 
 ### Theme Editing (4 tools, **v3.3.0+**, closes #28)
 
@@ -374,16 +439,25 @@ Read + delete tools (8, **v3.3.0+**, closes #26 #27):
 | `compare_documents_markdown` | **v1.19.0** — multi-document cumulative revision timeline |
 | `export_comment_threads_markdown` | **v1.19.0** — comment threading with author alias normalization |
 
-### Hyperlinks & Bookmarks (6 tools)
+### Hyperlinks & Bookmarks (10 tools, **v3.11.0+ typed variants** [#50](https://github.com/PsychQuant/che-word-mcp/issues/50))
 
+Generic + bookmarks (7):
 | Tool | Description |
 |------|-------------|
 | `insert_hyperlink` | Insert external hyperlink |
 | `insert_internal_link` | Insert link to bookmark |
+| `insert_cross_reference` | Insert cross-reference |
 | `update_hyperlink` | Update hyperlink |
 | `delete_hyperlink` | Delete hyperlink |
 | `insert_bookmark` | Insert bookmark |
 | `delete_bookmark` | Delete bookmark |
+
+Typed hyperlinks (3, **v3.11.0**, auto-create Hyperlink character style):
+| Tool | Description |
+|------|-------------|
+| `insert_url_hyperlink` | External URL with optional tooltip + history flag |
+| `insert_bookmark_hyperlink` | Internal anchor link (`w:anchor`, no rId) |
+| `insert_email_hyperlink` | `mailto:` with optional URL-encoded subject |
 
 ### Comments & Revisions (13 tools)
 
@@ -404,13 +478,29 @@ Comment thread tools (2, **v3.4.0+**, closes #29):
 | `get_comment_thread` | Read root + walk children for full reply tree |
 | `sync_extended_comments` | Report typed comment count for triplet sync planning |
 
-Revision tracking (4):
+Revision tracking — accept/reject side (7):
 | Tool | Description |
 |------|-------------|
-| `enable_track_changes` | Enable track changes |
+| `enable_track_changes` | Enable track changes (sets `revisions.settings.author` for default author resolution) |
 | `disable_track_changes` | Disable track changes |
-| `accept_revision` | Accept revision |
-| `reject_revision` | Reject revision |
+| `get_revisions` | Enumerate all revisions (Direct Mode supported) |
+| `accept_revision` | Accept revision by id |
+| `reject_revision` | Reject revision by id |
+| `accept_all_revisions` | Bulk accept |
+| `reject_all_revisions` | Bulk reject |
+
+Revision tracking — programmatic write side (3, **v3.12.0** [#45](https://github.com/PsychQuant/che-word-mcp/issues/45)):
+| Tool | Description |
+|------|-------------|
+| `insert_text_as_revision` | Insert text wrapped in `<w:ins>` revision markup. Splits straddling runs at `position` (preserves prior + post text + formatting). Args: `doc_id`, `paragraph_index`, `position`, `text`, optional `author`, `date`. |
+| `delete_text_as_revision` | Mark `[start, end)` runs with `<w:del>` and substitute `<w:t>` → `<w:delText>`. Single-paragraph only (cross-paragraph delete out of scope). |
+| `move_text_as_revision` | Emit paired `<w:moveFrom>` / `<w:moveTo>` with adjacent revision ids. Single-paragraph moves rejected (callers should use delete + insert). |
+
+Plus 2 extended args on existing tools (additive, default `false`):
+- `format_text` gains `as_revision: bool` — produces `<w:rPrChange>` revision instead of silent format mutation. Also accepts `run_index`, `author`, `date`.
+- `set_paragraph_format` gains `as_revision: bool` — produces `<w:pPrChange>` revision.
+
+**Side-effect contract**: `as_revision: true` requires `enable_track_changes` to have been called. Disabled track changes throws `track_changes_not_enabled` instead of silent auto-enable. **Author resolution chain**: explicit non-empty `author` arg → `revisions.settings.author` → literal `"Unknown"`.
 
 ### People — Comment Authors (4 tools, **v3.4.0+**, closes #30)
 
@@ -448,7 +538,7 @@ List + read + update (6, **v3.4.0+**, closes #24 #25):
 | `get_web_settings` | Parse `word/webSettings.xml` flag elements (`relyOnVML`, `optimizeForBrowser`, `allowPNG`, `doNotSaveAsSingleFile`); returns `{ error: "no webSettings part" }` when absent |
 | `update_web_settings` | Partial update by key; auto-create part if absent |
 
-### Field Codes (8 tools)
+### Field Codes (7 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -458,29 +548,50 @@ List + read + update (6, **v3.4.0+**, closes #24 #25):
 | `insert_page_field` | Insert page number field |
 | `insert_merge_field` | Insert mail merge field |
 | `insert_sequence_field` | Insert auto-numbering sequence |
-| `insert_content_control` | Insert SDT content control |
 | `update_all_fields` | **v3.1.0** — F9-equivalent SEQ recount across body + headers + footers + footnotes + endnotes. Supports chapter-reset when `pStyle=="Heading N"` matches SEQ `resetLevel` |
 
-### Repeating Sections (1 tool)
+### Content Controls / SDT (10 tools, **v3.9.0+ full read/write** [#44](https://github.com/PsychQuant/che-word-mcp/issues/44))
 
+Insert + form helpers (5):
 | Tool | Description |
 |------|-------------|
-| `insert_repeating_section` | Insert repeating section (Word 2012+) |
+| `insert_content_control` | 12-type discrimination (`richText` / `plainText` / `picture` / `date` / `dropDownList` / `comboBox` / `checkBox` / `bibliography` / `citation` / `group` / `repeatingSection` (rejected — use `insert_repeating_section`) / `repeatingSectionItem`). Optional args: `list_items` (required for dropDown/comboBox), `date_format`, `lock_type`. |
+| `insert_repeating_section` | Insert repeating section (Word 2012+); accepts `allow_insert_delete_sections: bool` (default `true`) |
+| `insert_checkbox` | Insert checkbox SDT |
+| `insert_dropdown` | Insert dropdown SDT |
+| `insert_text_field` | Insert plain-text SDT |
 
-### Advanced Features (8 tools)
+Read tools (3):
+| Tool | Description |
+|------|-------------|
+| `list_content_controls` | Enumerate every SDT, flat (default) or nested tree mode (Direct Mode supported) |
+| `get_content_control` | Fetch single SDT by `id`, `tag`, or `alias`. Returns full metadata + `<w:sdtContent>` XML. Surfaces `not_found` / `multiple_matches` errors. |
+| `list_repeating_section_items` | Enumerate items inside a repeating-section SDT in document order |
+
+Modify tools (4):
+| Tool | Description |
+|------|-------------|
+| `update_content_control_text` | Replace text content of plainText / richText / date / bibliography / citation SDTs. Preserves `<w:sdtPr>` byte-identical. Returns `unsupported_type` for picture / dropdown / combo / checkbox / group / repeatingSection. |
+| `replace_content_control_content` | Replace full `<w:sdtContent>` XML with whitelist validation (rejects input containing `<w:sdt>`, `<w:body>`, `<w:sectPr>`, or XML declaration) |
+| `delete_content_control` | Remove SDT, optionally unwrapping children (`keep_content: true` default) |
+| `update_repeating_section_item` | Replace text of single item by index (`out_of_bounds` for invalid index) |
+
+SDT id allocation uses deterministic max+1 (was random in pre-v3.9.0). `list_custom_xml_parts` ships as empty-list stub for forward compat (real impl in `che-word-mcp-customxml-databinding` Change B).
+
+### Advanced Features (10 tools)
 
 | Tool | Description |
 |------|-------------|
 | `insert_toc` | Insert table of contents |
-| `insert_text_field` | Insert form text field |
-| `insert_checkbox` | Insert form checkbox |
-| `insert_dropdown` | Insert form dropdown |
+| `insert_table_of_figures` | Insert table of figures |
+| `insert_index`, `insert_index_entry` | Index generation |
 | `set_paragraph_border` | Set paragraph border |
 | `set_paragraph_shading` | Set paragraph background color |
 | `set_character_spacing` | Set character spacing |
 | `set_text_effect` | Set text animation effect |
+| `insert_horizontal_line`, `insert_drop_cap`, `insert_symbol` | Decorative elements |
 
-> **Note**: The counts above cover key tool categories. Total surface is **171+ tools** as of v3.4.0 including specialized Document Comparison, Revision Tracking, Content Controls, Field Codes, Theme Editing, Header/Footer/Watermark CRUD, Comment Threads + People, Notes Update, Web Settings, and Formatting helpers. Run the server and call `tools/list` for the complete, authoritative set.
+> **Note**: The counts above cover key tool categories. Total surface is **218+ tools** as of v3.12.0 including Document Comparison, Track Changes (read + programmatic write side via `<w:ins>` / `<w:del>` / `<w:moveFrom>` / `<w:moveTo>` / `<w:rPrChange>` / `<w:pPrChange>`), Content Controls (12-type SDT discrimination), Field Codes, Theme Editing, Header/Footer/Watermark CRUD with even/odd + section linkage, Comment Threads + People (dual identity), Notes Update, Web Settings, Styles (inheritance + linkage + latent + alias), Numbering (full definition lifecycle), Sections (vertical alignment + page-number format + title-page distinct + per-section refs), Tables (conditional / nested / layout / indent), Hyperlinks (typed url/bookmark/email), and Formatting helpers (with `as_revision` flag). Run the server and call `tools/list` for the complete, authoritative set.
 
 ## Usage Examples
 
