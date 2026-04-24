@@ -2819,9 +2819,117 @@ actor WordMCPServer {
                         "items": .object([
                             "type": .string("array"),
                             "description": .string("初始項目內容（字串陣列）")
+                        ]),
+                        "allow_insert_delete_sections": .object([
+                            "type": .string("boolean"),
+                            "description": .string("是否允許 Word UI 新增/刪除區段，預設 true")
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("tag")])
+                ])
+            ),
+
+            // #44 Phase 5–8: Content Control read/write/stub tools (v3.9.0+)
+            Tool(
+                name: "list_content_controls",
+                description: "列出文件中所有的內容控制項（SDT），支援巢狀展開",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼（session 模式）")]),
+                        "source_path": .object(["type": .string("string"), "description": .string("文件路徑（direct 模式）")]),
+                        "nested": .object(["type": .string("boolean"), "description": .string("true=樹狀（含 children），false=扁平（含 parent_sdt_id），預設 false")])
+                    ])
+                ])
+            ),
+            Tool(
+                name: "get_content_control",
+                description: "依 id / tag / alias 取得單一內容控制項，含完整 metadata 與內容 XML",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼（session 模式）")]),
+                        "source_path": .object(["type": .string("string"), "description": .string("文件路徑（direct 模式）")]),
+                        "id": .object(["type": .string("integer"), "description": .string("SDT id")]),
+                        "tag": .object(["type": .string("string"), "description": .string("SDT tag（多筆相符會回傳 multiple_matches）")]),
+                        "alias": .object(["type": .string("string"), "description": .string("SDT alias（多筆相符會回傳 multiple_matches）")])
+                    ])
+                ])
+            ),
+            Tool(
+                name: "list_repeating_section_items",
+                description: "列出指定重複區段 SDT 內所有項目（順序、id、文字內容）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼")]),
+                        "id": .object(["type": .string("integer"), "description": .string("重複區段的 SDT id")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("id")])
+                ])
+            ),
+            Tool(
+                name: "update_content_control_text",
+                description: "修改純文字 SDT 的文字內容（保留 sdtPr）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "id": .object(["type": .string("integer"), "description": .string("SDT id")]),
+                        "text": .object(["type": .string("string"), "description": .string("新文字內容")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("id"), .string("text")])
+                ])
+            ),
+            Tool(
+                name: "replace_content_control_content",
+                description: "替換 SDT 的完整 sdtContent XML（白名單：禁止 w:sdt / w:body / w:sectPr / XML 宣告）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "id": .object(["type": .string("integer"), "description": .string("SDT id")]),
+                        "content_xml": .object(["type": .string("string"), "description": .string("新內容 XML（runs / paragraphs / tables）")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("id"), .string("content_xml")])
+                ])
+            ),
+            Tool(
+                name: "delete_content_control",
+                description: "刪除指定 SDT，可選擇是否保留內容",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "id": .object(["type": .string("integer"), "description": .string("SDT id")]),
+                        "keep_content": .object(["type": .string("boolean"), "description": .string("true=保留內容（unwrap），false=連同內容一起刪，預設 true")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("id")])
+                ])
+            ),
+            Tool(
+                name: "update_repeating_section_item",
+                description: "修改重複區段內單一項目的文字內容",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string")]),
+                        "parent_id": .object(["type": .string("integer"), "description": .string("重複區段的 SDT id")]),
+                        "item_index": .object(["type": .string("integer"), "description": .string("項目索引（從 0 開始）")]),
+                        "text": .object(["type": .string("string"), "description": .string("新文字")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("parent_id"), .string("item_index"), .string("text")])
+                ])
+            ),
+            Tool(
+                name: "list_custom_xml_parts",
+                description: "列出文件的 CustomXml parts（store_item_id / target_namespaces / root_element）— 目前回傳空陣列，待 Change B 實作",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼（session 模式）")]),
+                        "source_path": .object(["type": .string("string"), "description": .string("文件路徑（direct 模式）")])
+                    ])
                 ])
             ),
 
@@ -5167,6 +5275,24 @@ actor WordMCPServer {
             return try await insertContentControl(args: args)
         case "insert_repeating_section":
             return try await insertRepeatingSection(args: args)
+
+        // #44 Phase 5–8: SDT read / write / extension / stub tools
+        case "list_content_controls":
+            return try await listContentControls(args: args)
+        case "get_content_control":
+            return try await getContentControl(args: args)
+        case "list_repeating_section_items":
+            return try await listRepeatingSectionItems(args: args)
+        case "update_content_control_text":
+            return try await updateContentControlText(args: args)
+        case "replace_content_control_content":
+            return try await replaceContentControlContentTool(args: args)
+        case "delete_content_control":
+            return try await deleteContentControlTool(args: args)
+        case "update_repeating_section_item":
+            return try await updateRepeatingSectionItem(args: args)
+        case "list_custom_xml_parts":
+            return try await listCustomXmlParts(args: args)
 
         // 9. 新增功能 (P9)
         case "insert_text":
@@ -8367,6 +8493,9 @@ actor WordMCPServer {
 
     // MARK: - 8.4 Content Controls (SDT)
 
+    /// #44 Phase 7.1: extended types + lock_type / list_items / date_format args.
+    /// #44 Phase 7.3: SDT id allocation now uses doc.allocateSdtId() (max+1).
+    /// repeatingSection type is rejected — callers must use insert_repeating_section.
     private func insertContentControl(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -8389,27 +8518,51 @@ actor WordMCPServer {
         let contentText = args["content"]?.stringValue ?? ""
 
         guard let sdtType = SDTType(rawValue: typeStr) else {
-            throw WordError.invalidParameter("type", "Unknown SDT type: \(typeStr). Valid: richText, text, picture, date, dropDownList, comboBox, checkbox")
+            throw WordError.invalidParameter("type",
+                "Unknown SDT type: '\(typeStr)'. Valid: richText, text, picture, date, dropDownList, comboBox, checkbox, bibliography, citation, group, repeatingSectionItem")
+        }
+        // Phase 7.1: explicit reject for repeatingSection (use insert_repeating_section instead).
+        if sdtType == .repeatingSection {
+            throw WordError.invalidParameter("type",
+                "type='repeatingSection' is rejected — use insert_repeating_section tool for repeating sections")
+        }
+        // Phase 7.1: list_items required for dropDownList / comboBox.
+        if sdtType == .dropDownList || sdtType == .comboBox {
+            guard let items = args["list_items"]?.arrayValue, !items.isEmpty else {
+                throw WordError.missingParameter("list_items (required for \(typeStr))")
+            }
+            _ = items  // list_items currently surfaced via raw XML in placeholder; full schema lands in MCP-Phase 2 of #44.
         }
 
-        // 使用正確的初始化順序
+        let lockType: SDTLockType
+        if let lockStr = args["lock_type"]?.stringValue {
+            guard let parsed = SDTLockType(rawValue: lockStr) else {
+                throw WordError.invalidParameter("lock_type",
+                    "Unknown lock_type: '\(lockStr)'. Valid: unlocked, sdtLocked, contentLocked, sdtContentLocked")
+            }
+            lockType = parsed
+        } else {
+            lockType = .unlocked
+        }
+
         let sdt = StructuredDocumentTag(
-            id: Int.random(in: 100000...999999),
+            id: doc.allocateSdtId(),  // Phase 7.3: deterministic max+1 (was Int.random)
             tag: tag,
             alias: alias,
             type: sdtType,
+            lockType: lockType,
             placeholder: placeholder
         )
 
-        // 使用 ContentControl 包裝
         let contentControl = ContentControl(sdt: sdt, content: contentText)
 
         try doc.insertContentControl(contentControl, at: paragraphIndex)
         try await storeDocument(doc, for: docId)
 
-        return "Inserted \(typeStr) content control '\(tag)' at paragraph \(paragraphIndex)"
+        return "Inserted \(typeStr) content control '\(tag)' (id=\(sdt.id ?? -1)) at paragraph \(paragraphIndex)"
     }
 
+    /// #44 Phase 7.2: allow_insert_delete_sections arg passes through to OOXML.
     private func insertRepeatingSection(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -8424,37 +8577,526 @@ actor WordMCPServer {
         let index = args["index"]?.intValue ?? 0
         let sectionTitle = args["section_title"]?.stringValue
         let itemsArray = args["items"]?.arrayValue ?? []
+        let allowInsertDelete = args["allow_insert_delete_sections"]?.boolValue ?? true
 
-        // 解析初始項目
         var items: [RepeatingSectionItem] = []
         for item in itemsArray {
             if let content = item.stringValue {
-                let rsItem = RepeatingSectionItem(
-                    tag: nil,
-                    content: content
-                )
-                items.append(rsItem)
+                items.append(RepeatingSectionItem(tag: nil, content: content))
             }
         }
-
-        // 如果沒有初始項目，創建一個空的
         if items.isEmpty {
             items.append(RepeatingSectionItem(content: ""))
         }
 
-        // 使用正確的初始化方式
-        let repeatingSection = RepeatingSection(
+        var repeatingSection = RepeatingSection(
             tag: tag,
             alias: sectionTitle,
             items: items,
-            allowInsertDeleteSections: true,
+            allowInsertDeleteSections: allowInsertDelete,
             sectionTitle: sectionTitle
         )
+        // Phase 7.3: assign deterministic id from allocator.
+        repeatingSection.sdt.id = doc.allocateSdtId()
 
         try doc.insertRepeatingSection(repeatingSection, at: index)
         try await storeDocument(doc, for: docId)
 
-        return "Inserted repeating section '\(tag)' with \(items.count) item(s) at index \(index)"
+        return "Inserted repeating section '\(tag)' (id=\(repeatingSection.sdt.id ?? -1)) with \(items.count) item(s) at index \(index)"
+    }
+
+    // MARK: - #44 Phase 5: Content Control Read Tools
+
+    /// Phase 5.1: list_content_controls — flat (default) or nested tree.
+    private func listContentControls(args: [String: Value]) async throws -> String {
+        let doc = try await loadDocumentFromArgs(args)
+        let nested = args["nested"]?.boolValue ?? false
+
+        // Walk all paragraphs (including inside tables and block-level SDTs)
+        // to collect entries in document order with paragraph indices.
+        struct Entry {
+            let id: Int?
+            let tag: String?
+            let alias: String?
+            let type: String
+            let lockType: String
+            let currentText: String
+            let paragraphIndex: Int
+            let parentSdtId: Int?
+            let children: [Entry]
+        }
+
+        func entryFor(_ control: ContentControl, paragraphIndex: Int, parentSdtId: Int?) -> Entry {
+            let kids = control.children.map {
+                entryFor($0, paragraphIndex: paragraphIndex, parentSdtId: control.sdt.id)
+            }
+            return Entry(
+                id: control.sdt.id,
+                tag: control.sdt.tag,
+                alias: control.sdt.alias,
+                type: control.sdt.type.rawValue,
+                lockType: control.sdt.lockType.rawValue,
+                currentText: Self.extractTextFromContentXML(control.content),
+                paragraphIndex: paragraphIndex,
+                parentSdtId: parentSdtId,
+                children: kids
+            )
+        }
+
+        var topLevel: [Entry] = []
+        var paraIndex = 0
+        func walkBody(_ children: [BodyChild]) {
+            for child in children {
+                switch child {
+                case .paragraph(let p):
+                    for c in p.contentControls {
+                        topLevel.append(entryFor(c, paragraphIndex: paraIndex, parentSdtId: nil))
+                    }
+                    paraIndex += 1
+                case .table(let table):
+                    for row in table.rows {
+                        for cell in row.cells {
+                            for cellPara in cell.paragraphs {
+                                for c in cellPara.contentControls {
+                                    topLevel.append(entryFor(c, paragraphIndex: paraIndex, parentSdtId: nil))
+                                }
+                                paraIndex += 1
+                            }
+                        }
+                    }
+                case .contentControl(let outer, children: let inner):
+                    topLevel.append(entryFor(outer, paragraphIndex: paraIndex, parentSdtId: nil))
+                    walkBody(inner)
+                }
+            }
+        }
+        walkBody(doc.body.children)
+
+        // Render as JSON-ish text. MCP responses are strings; structured output
+        // uses readable JSON so callers can re-parse without ambiguity.
+        func render(_ entry: Entry) -> String {
+            var fields: [String] = []
+            if let id = entry.id { fields.append("\"id\": \(id)") }
+            if let tag = entry.tag { fields.append("\"tag\": \"\(Self.jsonEscape(tag))\"") }
+            if let alias = entry.alias { fields.append("\"alias\": \"\(Self.jsonEscape(alias))\"") }
+            fields.append("\"type\": \"\(entry.type)\"")
+            fields.append("\"lock_type\": \"\(entry.lockType)\"")
+            fields.append("\"current_text\": \"\(Self.jsonEscape(entry.currentText))\"")
+            fields.append("\"paragraph_index\": \(entry.paragraphIndex)")
+            if nested {
+                let kidsRendered = entry.children.map { render($0) }.joined(separator: ", ")
+                fields.append("\"children\": [\(kidsRendered)]")
+            } else {
+                if let pid = entry.parentSdtId {
+                    fields.append("\"parent_sdt_id\": \(pid)")
+                } else {
+                    fields.append("\"parent_sdt_id\": null")
+                }
+            }
+            return "{ " + fields.joined(separator: ", ") + " }"
+        }
+
+        if nested {
+            // Tree mode: only top-level controls (children embedded).
+            let topOnly = topLevel.filter { $0.parentSdtId == nil }
+            return "[" + topOnly.map { render($0) }.joined(separator: ", ") + "]"
+        } else {
+            // Flat mode: include every control AND every nested child.
+            var flat: [Entry] = []
+            func collect(_ e: Entry) {
+                flat.append(e)
+                for k in e.children { collect(k) }
+            }
+            for e in topLevel { collect(e) }
+            return "[" + flat.map { render($0) }.joined(separator: ", ") + "]"
+        }
+    }
+
+    /// Phase 5.2: get_content_control — lookup by id / tag / alias (exactly one).
+    private func getContentControl(args: [String: Value]) async throws -> String {
+        let doc = try await loadDocumentFromArgs(args)
+        let id = args["id"]?.intValue
+        let tag = args["tag"]?.stringValue
+        let alias = args["alias"]?.stringValue
+
+        let provided = [id != nil, tag != nil, alias != nil].filter { $0 }.count
+        guard provided == 1 else {
+            throw WordError.invalidParameter("identifier",
+                "Provide exactly one of: id, tag, alias (got \(provided))")
+        }
+
+        // Collect all controls (top-level + nested) with their paragraph index.
+        var all: [(control: ContentControl, paragraphIndex: Int, parentSdtId: Int?)] = []
+        func recordControl(_ c: ContentControl, paraIndex: Int, parentId: Int?) {
+            all.append((c, paraIndex, parentId))
+            for kid in c.children {
+                recordControl(kid, paraIndex: paraIndex, parentId: c.sdt.id)
+            }
+        }
+        var paraIndex = 0
+        func walkBody(_ children: [BodyChild]) {
+            for child in children {
+                switch child {
+                case .paragraph(let p):
+                    for c in p.contentControls { recordControl(c, paraIndex: paraIndex, parentId: nil) }
+                    paraIndex += 1
+                case .table(let table):
+                    for row in table.rows {
+                        for cell in row.cells {
+                            for cp in cell.paragraphs {
+                                for c in cp.contentControls { recordControl(c, paraIndex: paraIndex, parentId: nil) }
+                                paraIndex += 1
+                            }
+                        }
+                    }
+                case .contentControl(let outer, children: let inner):
+                    recordControl(outer, paraIndex: paraIndex, parentId: nil)
+                    walkBody(inner)
+                }
+            }
+        }
+        walkBody(doc.body.children)
+
+        let matches: [(control: ContentControl, paragraphIndex: Int, parentSdtId: Int?)]
+        if let id = id {
+            matches = all.filter { $0.control.sdt.id == id }
+        } else if let tag = tag {
+            matches = all.filter { $0.control.sdt.tag == tag }
+        } else if let alias = alias {
+            matches = all.filter { $0.control.sdt.alias == alias }
+        } else {
+            matches = []
+        }
+
+        if matches.isEmpty {
+            return "{ \"error\": \"not_found\", \"query\": { \"id\": \(id.map(String.init) ?? "null"), \"tag\": \(tag.map { "\"\(Self.jsonEscape($0))\"" } ?? "null"), \"alias\": \(alias.map { "\"\(Self.jsonEscape($0))\"" } ?? "null") } }"
+        }
+        if matches.count > 1 {
+            let ids = matches.compactMap { $0.control.sdt.id }
+            return "{ \"error\": \"multiple_matches\", \"matching_ids\": [\(ids.map(String.init).joined(separator: ", "))] }"
+        }
+
+        let m = matches[0]
+        var fields: [String] = []
+        if let mid = m.control.sdt.id { fields.append("\"id\": \(mid)") }
+        if let mtag = m.control.sdt.tag { fields.append("\"tag\": \"\(Self.jsonEscape(mtag))\"") }
+        if let malias = m.control.sdt.alias { fields.append("\"alias\": \"\(Self.jsonEscape(malias))\"") }
+        fields.append("\"type\": \"\(m.control.sdt.type.rawValue)\"")
+        fields.append("\"lock_type\": \"\(m.control.sdt.lockType.rawValue)\"")
+        fields.append("\"current_text\": \"\(Self.jsonEscape(Self.extractTextFromContentXML(m.control.content)))\"")
+        fields.append("\"paragraph_index\": \(m.paragraphIndex)")
+        if let pid = m.parentSdtId {
+            fields.append("\"parent_sdt_id\": \(pid)")
+        } else {
+            fields.append("\"parent_sdt_id\": null")
+        }
+        fields.append("\"content_xml\": \"\(Self.jsonEscape(m.control.content))\"")
+        return "{ " + fields.joined(separator: ", ") + " }"
+    }
+
+    /// Phase 5.3: list_repeating_section_items — items inside a repeating-section SDT.
+    /// Note: ooxml-swift v0.15.0 still stores RepeatingSection as Run.rawXML (legacy
+    /// path; #44 Phase 3 covered ContentControl SDTs but RepeatingSection write path
+    /// is unchanged). We surface items by parsing the rawXML where the SDT lives.
+    private func listRepeatingSectionItems(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+        guard let id = args["id"]?.intValue else {
+            throw WordError.missingParameter("id")
+        }
+
+        // Locate the repeating section's rawXML in any paragraph.
+        for paragraph in doc.getAllParagraphs() {
+            for run in paragraph.runs {
+                guard let raw = run.rawXML,
+                      raw.contains("<w15:repeatingSection"),
+                      raw.contains("w:id w:val=\"\(id)\"")
+                else { continue }
+                let items = Self.parseRepeatingSectionItems(rawXML: raw)
+                let rendered = items.enumerated().map { (i, text) in
+                    "{ \"index\": \(i), \"text\": \"\(Self.jsonEscape(text))\" }"
+                }.joined(separator: ", ")
+                return "[\(rendered)]"
+            }
+        }
+        return "{ \"error\": \"not_found\", \"id\": \(id) }"
+    }
+
+    // MARK: - #44 Phase 6: Content Control Write Tools
+
+    /// Phase 6.1: update_content_control_text — text replacement.
+    private func updateContentControlText(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard var doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+        guard let id = args["id"]?.intValue else {
+            throw WordError.missingParameter("id")
+        }
+        guard let text = args["text"]?.stringValue else {
+            throw WordError.missingParameter("text")
+        }
+
+        do {
+            try doc.updateContentControl(id: id, newText: text)
+        } catch WordError.unsupportedSDTType(let type) {
+            return "{ \"error\": \"unsupported_type\", \"type\": \"\(type.rawValue)\" }"
+        } catch WordError.contentControlNotFound(let nid) {
+            return "{ \"error\": \"not_found\", \"id\": \(nid) }"
+        }
+
+        try await storeDocument(doc, for: docId)
+        return "Updated content control id=\(id) text"
+    }
+
+    /// Phase 6.2: replace_content_control_content — full XML replacement with whitelist.
+    private func replaceContentControlContentTool(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard var doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+        guard let id = args["id"]?.intValue else {
+            throw WordError.missingParameter("id")
+        }
+        guard let xml = args["content_xml"]?.stringValue else {
+            throw WordError.missingParameter("content_xml")
+        }
+
+        do {
+            try doc.replaceContentControlContent(id: id, contentXML: xml)
+        } catch WordError.disallowedElement(let name) {
+            return "{ \"error\": \"disallowed_element\", \"element\": \"\(name)\" }"
+        } catch WordError.contentControlNotFound(let nid) {
+            return "{ \"error\": \"not_found\", \"id\": \(nid) }"
+        }
+
+        try await storeDocument(doc, for: docId)
+        return "Replaced content control id=\(id) content"
+    }
+
+    /// Phase 6.3: delete_content_control — remove SDT, optionally keep content.
+    private func deleteContentControlTool(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard var doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+        guard let id = args["id"]?.intValue else {
+            throw WordError.missingParameter("id")
+        }
+        let keepContent = args["keep_content"]?.boolValue ?? true
+
+        do {
+            try doc.deleteContentControl(id: id, keepContent: keepContent)
+        } catch WordError.contentControlNotFound(let nid) {
+            return "{ \"error\": \"not_found\", \"id\": \(nid) }"
+        }
+
+        try await storeDocument(doc, for: docId)
+        return "Deleted content control id=\(id) (keep_content=\(keepContent))"
+    }
+
+    /// Phase 6.4: update_repeating_section_item — modify single item text.
+    /// Currently operates on the rawXML carrier (RepeatingSection is still written
+    /// via Run.rawXML). Surfaces out_of_bounds when item_index is invalid.
+    private func updateRepeatingSectionItem(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard var doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+        guard let parentId = args["parent_id"]?.intValue else {
+            throw WordError.missingParameter("parent_id")
+        }
+        guard let itemIndex = args["item_index"]?.intValue else {
+            throw WordError.missingParameter("item_index")
+        }
+        guard let text = args["text"]?.stringValue else {
+            throw WordError.missingParameter("text")
+        }
+
+        // Mutate paragraphs in body (top-level only for now — repeating sections
+        // are not nested in this SDD's scope). Locate by id substring in raw XML.
+        let needle = "w:id w:val=\"\(parentId)\""
+        var found = false
+        for childIdx in 0..<doc.body.children.count {
+            guard case .paragraph(var para) = doc.body.children[childIdx] else { continue }
+            for runIdx in 0..<para.runs.count {
+                guard let raw = para.runs[runIdx].rawXML,
+                      raw.contains("<w15:repeatingSection"),
+                      raw.contains(needle)
+                else { continue }
+
+                let items = Self.parseRepeatingSectionItems(rawXML: raw)
+                guard itemIndex >= 0 && itemIndex < items.count else {
+                    return "{ \"error\": \"out_of_bounds\", \"index\": \(itemIndex), \"count\": \(items.count) }"
+                }
+                let updated = Self.updateRepeatingSectionItemXML(
+                    rawXML: raw, itemIndex: itemIndex, newText: text
+                )
+                para.runs[runIdx].rawXML = updated
+                doc.body.children[childIdx] = .paragraph(para)
+                found = true
+                break
+            }
+            if found { break }
+        }
+        guard found else {
+            return "{ \"error\": \"not_found\", \"parent_id\": \(parentId) }"
+        }
+
+        try await storeDocument(doc, for: docId)
+        return "Updated repeating section parent_id=\(parentId) item_index=\(itemIndex)"
+    }
+
+    // MARK: - #44 Phase 8.1: list_custom_xml_parts stub
+    // TODO: replace with real implementation in Change B
+    // (`che-word-mcp-customxml-databinding`).
+
+    private func listCustomXmlParts(args: [String: Value]) async throws -> String {
+        // Validate doc_id / source_path is at least present (so we surface
+        // bad-path errors consistently with future implementation).
+        if args["doc_id"] == nil && args["source_path"] == nil {
+            throw WordError.missingParameter("doc_id or source_path")
+        }
+        return "[]"
+    }
+
+    // MARK: - SDT helpers
+
+    /// Load the document either from openDocuments (doc_id) or by reading
+    /// the source_path directly. Used by read-only tools that support both modes.
+    private func loadDocumentFromArgs(_ args: [String: Value]) async throws -> WordDocument {
+        if let docId = args["doc_id"]?.stringValue {
+            guard let doc = openDocuments[docId] else {
+                throw WordError.documentNotFound(docId)
+            }
+            return doc
+        }
+        if let path = args["source_path"]?.stringValue {
+            return try DocxReader.read(from: URL(fileURLWithPath: path))
+        }
+        throw WordError.missingParameter("doc_id or source_path")
+    }
+
+    /// Extract human-readable text from a ContentControl.content field.
+    /// The content can be:
+    /// - Plain text (no XML tags) — returned as-is
+    /// - XML fragment with `<w:t>` runs — text content is concatenated
+    /// MCP callers see "Acme Corp" regardless of how the SDT was inserted.
+    static func extractTextFromContentXML(_ xml: String) -> String {
+        guard !xml.isEmpty else { return "" }
+        // Plain text fast path: no XML tags at all.
+        if !xml.contains("<") {
+            return xml
+        }
+        // Concatenate every <w:t ...>TEXT</w:t> body in document order.
+        var out = ""
+        let pattern = #"<w:t[^>]*>([^<]*)</w:t>"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return xml }
+        let range = NSRange(xml.startIndex..., in: xml)
+        regex.enumerateMatches(in: xml, range: range) { match, _, _ in
+            guard let m = match, let r = Range(m.range(at: 1), in: xml) else { return }
+            out += xml[r]
+        }
+        return out
+    }
+
+    /// Parse the items inside a `<w15:repeatingSection>` rawXML blob and
+    /// return their text contents in document order.
+    static func parseRepeatingSectionItems(rawXML: String) -> [String] {
+        // Each item is `<w:sdt>...<w15:repeatingSectionItem.../>...<w:sdtContent>...</w:sdtContent></w:sdt>`.
+        // We extract the innermost `<w:t>...</w:t>` of each item.
+        var items: [String] = []
+        // Each item: `<w:sdt>...<w15:repeatingSectionItem ... />...</w:sdt>`.
+        // The marker tag has `xmlns:w15="...//.../wordml"` attribute — URL slashes
+        // mean we cannot use `[^/]*`, so we use a non-greedy `[^>]*?` up to `/>`.
+        let itemPattern = #"<w:sdt>(?:(?!</w:sdt>).)*?<w15:repeatingSectionItem[^>]*?/>(?:(?!</w:sdt>).)*?</w:sdt>"#
+        guard let itemRegex = try? NSRegularExpression(pattern: itemPattern, options: [.dotMatchesLineSeparators]) else {
+            return []
+        }
+        let range = NSRange(rawXML.startIndex..., in: rawXML)
+        let textPattern = #"<w:t[^>]*>([^<]*)</w:t>"#
+        let textRegex = try? NSRegularExpression(pattern: textPattern)
+        itemRegex.enumerateMatches(in: rawXML, range: range) { match, _, _ in
+            guard let m = match, let r = Range(m.range, in: rawXML) else { return }
+            let itemXml = String(rawXML[r])
+            var text = ""
+            let itemRange = NSRange(itemXml.startIndex..., in: itemXml)
+            textRegex?.enumerateMatches(in: itemXml, range: itemRange) { tm, _, _ in
+                guard let tm = tm, let tr = Range(tm.range(at: 1), in: itemXml) else { return }
+                text += itemXml[tr]
+            }
+            items.append(text)
+        }
+        return items
+    }
+
+    /// Replace the text content of the Nth `<w15:repeatingSectionItem>` inside
+    /// a rawXML blob. Used by `update_repeating_section_item`.
+    static func updateRepeatingSectionItemXML(rawXML: String, itemIndex: Int, newText: String) -> String {
+        // Each item: `<w:sdt>...<w15:repeatingSectionItem ... />...</w:sdt>`.
+        // The marker tag has `xmlns:w15="...//.../wordml"` attribute — URL slashes
+        // mean we cannot use `[^/]*`, so we use a non-greedy `[^>]*?` up to `/>`.
+        let itemPattern = #"<w:sdt>(?:(?!</w:sdt>).)*?<w15:repeatingSectionItem[^>]*?/>(?:(?!</w:sdt>).)*?</w:sdt>"#
+        guard let itemRegex = try? NSRegularExpression(pattern: itemPattern, options: [.dotMatchesLineSeparators]) else {
+            return rawXML
+        }
+        let range = NSRange(rawXML.startIndex..., in: rawXML)
+        let matches = itemRegex.matches(in: rawXML, range: range)
+        guard itemIndex >= 0 && itemIndex < matches.count else { return rawXML }
+
+        let itemMatchRange = matches[itemIndex].range
+        guard let itemRange = Range(itemMatchRange, in: rawXML) else { return rawXML }
+        let itemXml = String(rawXML[itemRange])
+
+        // Replace the first <w:t...>...</w:t> in this item with the new text.
+        let escaped = newText
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+        let replacement = "<w:t xml:space=\"preserve\">\(escaped)</w:t>"
+        let textPattern = #"<w:t[^>]*>[^<]*</w:t>"#
+        guard let textRegex = try? NSRegularExpression(pattern: textPattern) else { return rawXML }
+        let updatedItem = textRegex.stringByReplacingMatches(
+            in: itemXml,
+            range: NSRange(itemXml.startIndex..., in: itemXml),
+            withTemplate: replacement
+        )
+
+        return rawXML.replacingOccurrences(of: itemXml, with: updatedItem)
+    }
+
+    /// Minimal JSON string escaper — handles the cases that appear in SDT
+    /// metadata (quotes, backslashes, control characters under ASCII 0x20).
+    static func jsonEscape(_ s: String) -> String {
+        var out = ""
+        for scalar in s.unicodeScalars {
+            switch scalar {
+            case "\"": out += "\\\""
+            case "\\": out += "\\\\"
+            case "\n": out += "\\n"
+            case "\r": out += "\\r"
+            case "\t": out += "\\t"
+            default:
+                if scalar.value < 0x20 {
+                    out += String(format: "\\u%04x", scalar.value)
+                } else {
+                    out += String(scalar)
+                }
+            }
+        }
+        return out
     }
 
     // MARK: - P9 新增功能
@@ -8536,22 +9178,30 @@ actor WordMCPServer {
         // 搜尋頂層段落和表格內的段落
         var paraIndex = 0
         var tableIndex = 0
-        for child in doc.body.children {
-            switch child {
-            case .paragraph(let para):
-                searchInParagraph(para, location: "Paragraph \(paraIndex)")
-                paraIndex += 1
-            case .table(let table):
-                for (rowIdx, row) in table.rows.enumerated() {
-                    for (cellIdx, cell) in row.cells.enumerated() {
-                        for para in cell.paragraphs {
-                            searchInParagraph(para, location: "Table \(tableIndex), row \(rowIdx), col \(cellIdx)")
+        // Recursive walker so block-level SDT wrappers (#44) are transparent
+        // for search purposes — matches inside SDT children appear with the
+        // same paragraph/table index numbering as plain body siblings.
+        func walk(_ children: [BodyChild]) {
+            for child in children {
+                switch child {
+                case .paragraph(let para):
+                    searchInParagraph(para, location: "Paragraph \(paraIndex)")
+                    paraIndex += 1
+                case .table(let table):
+                    for (rowIdx, row) in table.rows.enumerated() {
+                        for (cellIdx, cell) in row.cells.enumerated() {
+                            for para in cell.paragraphs {
+                                searchInParagraph(para, location: "Table \(tableIndex), row \(rowIdx), col \(cellIdx)")
+                            }
                         }
                     }
+                    tableIndex += 1
+                case .contentControl(_, children: let inner):
+                    walk(inner)
                 }
-                tableIndex += 1
             }
         }
+        walk(doc.body.children)
 
         if results.isEmpty {
             return "No matches found for '\(query)'"
