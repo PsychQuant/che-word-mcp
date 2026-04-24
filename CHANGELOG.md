@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.12.0] - 2026-04-25
+
+### Added — Programmatic Track Changes generation: 3 new tools + 2 extended args (Closes PsychQuant/che-word-mcp#45)
+
+Closes the last P0 of the Office.js OOXML Roadmap (#43). v3.11.x had read-side Track Changes (`enable_track_changes`, `accept_revision`, `reject_revision`, `get_revisions`) but no WRITE-side surface — mutation tools rewrote silently, never producing `<w:ins>` / `<w:del>` markup. v3.12.0 adds the missing write side so AI assistants can produce auditable redline edits.
+
+**3 new tools:**
+
+- `insert_text_as_revision(doc_id, paragraph_index, position, text, author?, date?)` — inserts text wrapped in `<w:ins>` revision markup. Splits straddling runs at `position` (preserves prior + post text + formatting).
+- `delete_text_as_revision(doc_id, paragraph_index, start, end, author?, date?)` — marks `[start, end)` runs with `<w:del>` and substitutes `<w:t>` → `<w:delText>`. Single-paragraph only (cross-paragraph delete out of scope).
+- `move_text_as_revision(doc_id, from_paragraph_index, from_start, from_end, to_paragraph_index, to_position, author?, date?)` — emits paired `<w:moveFrom>` / `<w:moveTo>` with adjacent revision ids. Single-paragraph moves rejected (callers should use delete + insert).
+
+**2 extended args (additive, default `false`):**
+
+- `format_text` gains `as_revision: bool` — when `true`, produces `<w:rPrChange>` revision instead of silent format mutation. Also accepts `run_index`, `author`, `date` for revision-mode invocations.
+- `set_paragraph_format` gains `as_revision: bool` — when `true`, produces `<w:pPrChange>` revision.
+
+**Side-effect avoidance:** All revision-tracked operations require `enable_track_changes` to have been called first. When `as_revision: true` is passed but track changes is off, the tool returns `track_changes_not_enabled` error WITHOUT auto-enabling track changes. Avoids hidden state mutation per design decision.
+
+**Author resolution:** 3-tier fallback — explicit non-empty `author` arg → `revisions.settings.author` (set by `enable_track_changes`) → literal `"Unknown"`.
+
+### Built on ooxml-swift v0.18.0
+
+This release pulls ooxml-swift v0.18.0 which adds 6 new `WordDocument` methods (`allocateRevisionId`, `insertTextAsRevision`, `deleteTextAsRevision`, `moveTextAsRevision`, `applyRunPropertiesAsRevision`, `applyParagraphPropertiesAsRevision`) and writer-side `Paragraph.toXML()` extensions that emit revision markup correctly (groups consecutive runs sharing `revisionId`, substitutes `<w:t>` → `<w:delText>` for deletions, embeds `<w:rPrChange>` / `<w:pPrChange>` properties).
+
+### Tests
+
+- 156 baseline + 13 net new = **169/169 tests pass**, 9 skipped (test scaffolds for future expansion):
+  - 3 `ContractRedlineE2ETests` covering full redline workflow (insert + delete + format change), multi-author interleaving (settings vs explicit override), and side-effect avoidance guard
+  - 24 `RevisionGenerationTests` at the ooxml-swift layer (multi-run wrapping, delText substitution, allocator semantics, all 5 generators)
+
+### Migration
+
+Additive — no breaking changes. `format_text` and `set_paragraph_format` defaults preserve v3.11.x behavior exactly.
+
 ## [3.11.0] - 2026-04-25
 
 ### Added — Tables / Hyperlinks / Headers extensions (closes [#49](https://github.com/PsychQuant/che-word-mcp/issues/49) [#50](https://github.com/PsychQuant/che-word-mcp/issues/50) [#51](https://github.com/PsychQuant/che-word-mcp/issues/51))

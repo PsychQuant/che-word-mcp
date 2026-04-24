@@ -1,8 +1,8 @@
 {
   "manifest_version": "0.3",
   "name": "che-word-mcp",
-  "version": "3.11.0",
-  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v3.11.0: Tables / Hyperlinks / Headers extensions (closes #49 #50 #51) — 16 new MCP tools (table conditional formatting + nested + layout + header row + indent + 3 typed hyperlinks with auto-style + even/odd headers + section header map). Built on ooxml-swift v0.17.0. v3.10.0: Styles + Numbering + Sections foundation (#46 #47 #48). v3.9.0: Content Controls (SDT) read/write (#44). v3.8.0: header/footer raw-element preservation (#52).",
+  "version": "3.12.0",
+  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v3.12.0: Programmatic Track Changes generation (closes #45) — 3 new tools (insert_text_as_revision / delete_text_as_revision / move_text_as_revision) + 2 extended args (format_text / set_paragraph_format gain as_revision: bool). Closes Office.js OOXML Roadmap P0 set (100%). Built on ooxml-swift v0.18.0. v3.11.0: Tables / Hyperlinks / Headers extensions (#49 #50 #51). v3.10.0: Styles + Numbering + Sections foundation (#46 #47 #48). v3.9.0: Content Controls (SDT) read/write (#44).",
   "author": {
     "name": "Che Cheng"
   },

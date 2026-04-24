@@ -881,6 +881,22 @@ actor WordMCPServer {
                         "color": .object([
                             "type": .string("string"),
                             "description": .string("文字顏色（RGB 十六進位，如 FF0000 表示紅色）")
+                        ]),
+                        "as_revision": .object([
+                            "type": .string("boolean"),
+                            "description": .string("以追蹤修訂方式套用格式（預設 false）。為 true 時需先 enable_track_changes，否則回傳 track_changes_not_enabled 錯誤。")
+                        ]),
+                        "run_index": .object([
+                            "type": .string("integer"),
+                            "description": .string("（僅 as_revision=true 使用）目標 run 索引，預設 0")
+                        ]),
+                        "author": .object([
+                            "type": .string("string"),
+                            "description": .string("（僅 as_revision=true 使用）修訂作者")
+                        ]),
+                        "date": .object([
+                            "type": .string("string"),
+                            "description": .string("（僅 as_revision=true 使用）修訂日期 ISO 8601")
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("paragraph_index")])
@@ -915,6 +931,18 @@ actor WordMCPServer {
                         "space_after": .object([
                             "type": .string("integer"),
                             "description": .string("段後間距（點數）")
+                        ]),
+                        "as_revision": .object([
+                            "type": .string("boolean"),
+                            "description": .string("以追蹤修訂方式套用段落格式（預設 false）。為 true 時需先 enable_track_changes。")
+                        ]),
+                        "author": .object([
+                            "type": .string("string"),
+                            "description": .string("（僅 as_revision=true 使用）修訂作者")
+                        ]),
+                        "date": .object([
+                            "type": .string("string"),
+                            "description": .string("（僅 as_revision=true 使用）修訂日期 ISO 8601")
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("paragraph_index")])
@@ -2148,6 +2176,62 @@ actor WordMCPServer {
                         ])
                     ]),
                     "required": .array([.string("doc_id")])
+                ])
+            ),
+
+            // 程式化產生 Track Changes 修訂標記 (#45)
+            Tool(
+                name: "insert_text_as_revision",
+                description: "在指定段落位置插入文字並包覆 <w:ins> 修訂標記（需先 enable_track_changes）。位置為段落內字元偏移；超出範圍會 split 既有 run。",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼")]),
+                        "paragraph_index": .object(["type": .string("integer"), "description": .string("段落索引")]),
+                        "position": .object(["type": .string("integer"), "description": .string("插入位置（段落內字元偏移）")]),
+                        "text": .object(["type": .string("string"), "description": .string("要插入的文字")]),
+                        "author": .object(["type": .string("string"), "description": .string("修訂作者（可選；預設沿用 enable_track_changes 的 author）")]),
+                        "date": .object(["type": .string("string"), "description": .string("修訂日期 ISO 8601（可選；預設為當下時間）")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("paragraph_index"), .string("position"), .string("text")])
+                ])
+            ),
+            Tool(
+                name: "delete_text_as_revision",
+                description: "刪除指定段落 [start, end) 範圍的文字並包覆 <w:del> 修訂標記（需先 enable_track_changes）。跨段落刪除不支援。",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼")]),
+                        "paragraph_index": .object(["type": .string("integer"), "description": .string("段落索引")]),
+                        "start": .object(["type": .string("integer"), "description": .string("起始字元偏移（包含）")]),
+                        "end": .object(["type": .string("integer"), "description": .string("結束字元偏移（不包含）")]),
+                        "author": .object(["type": .string("string"), "description": .string("修訂作者（可選）")]),
+                        "date": .object(["type": .string("string"), "description": .string("修訂日期 ISO 8601（可選）")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("paragraph_index"), .string("start"), .string("end")])
+                ])
+            ),
+            Tool(
+                name: "move_text_as_revision",
+                description: "將文字從來源段落 [from_start, from_end) 移到目標段落 to_position，產生成對的 <w:moveFrom>/<w:moveTo> 修訂（需先 enable_track_changes）。同段落移動不支援。",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼")]),
+                        "from_paragraph_index": .object(["type": .string("integer"), "description": .string("來源段落索引")]),
+                        "from_start": .object(["type": .string("integer"), "description": .string("來源起始字元偏移（包含）")]),
+                        "from_end": .object(["type": .string("integer"), "description": .string("來源結束字元偏移（不包含）")]),
+                        "to_paragraph_index": .object(["type": .string("integer"), "description": .string("目標段落索引（必須不同於 from）")]),
+                        "to_position": .object(["type": .string("integer"), "description": .string("目標插入位置（字元偏移）")]),
+                        "author": .object(["type": .string("string"), "description": .string("修訂作者（可選）")]),
+                        "date": .object(["type": .string("string"), "description": .string("修訂日期 ISO 8601（可選）")])
+                    ]),
+                    "required": .array([
+                        .string("doc_id"), .string("from_paragraph_index"),
+                        .string("from_start"), .string("from_end"),
+                        .string("to_paragraph_index"), .string("to_position")
+                    ])
                 ])
             ),
 
@@ -5638,6 +5722,12 @@ actor WordMCPServer {
             return try await acceptRevision(args: args)
         case "reject_revision":
             return try await rejectRevision(args: args)
+        case "insert_text_as_revision":
+            return try await insertTextAsRevision(args: args)
+        case "delete_text_as_revision":
+            return try await deleteTextAsRevision(args: args)
+        case "move_text_as_revision":
+            return try await moveTextAsRevision(args: args)
 
         // 腳註/尾註
         case "insert_footnote":
@@ -6733,6 +6823,20 @@ actor WordMCPServer {
         if let fontName = args["font_name"]?.stringValue { format.fontName = fontName }
         if let color = args["color"]?.stringValue { format.color = color }
 
+        // v3.12.0+ (#45): per-call opt-in for revision-tracked formatting.
+        let asRevision = args["as_revision"]?.boolValue ?? false
+        if asRevision {
+            let runIndex = args["run_index"]?.intValue ?? 0
+            let author = args["author"]?.stringValue
+            let date = parseISODate(args["date"]?.stringValue)
+            let revId = try doc.applyRunPropertiesAsRevision(
+                atParagraph: paragraphIndex, atRunIndex: runIndex,
+                newProperties: format, author: author, date: date
+            )
+            try await storeDocument(doc, for: docId)
+            return "Applied formatting to paragraph \(paragraphIndex) run \(runIndex) as revision \(revId)"
+        }
+
         try doc.formatParagraph(at: paragraphIndex, with: format)
         try await storeDocument(doc, for: docId)
 
@@ -6766,10 +6870,119 @@ actor WordMCPServer {
             props.spacing?.after = spaceAfter * 20
         }
 
+        let asRevision = args["as_revision"]?.boolValue ?? false
+        if asRevision {
+            let author = args["author"]?.stringValue
+            let date = parseISODate(args["date"]?.stringValue)
+            let revId = try doc.applyParagraphPropertiesAsRevision(
+                atParagraph: paragraphIndex, newProperties: props,
+                author: author, date: date
+            )
+            try await storeDocument(doc, for: docId)
+            return "Applied paragraph format to index \(paragraphIndex) as revision \(revId)"
+        }
+
         try doc.setParagraphFormat(at: paragraphIndex, properties: props)
         try await storeDocument(doc, for: docId)
 
         return "Applied paragraph format to index \(paragraphIndex)"
+    }
+
+    // MARK: - Programmatic Track Changes (#45)
+
+    /// Parse an optional ISO 8601 timestamp string into a Date. Nil input
+    /// returns nil (callers default to `Date()`).
+    private func parseISODate(_ s: String?) -> Date? {
+        guard let s = s, !s.isEmpty else { return nil }
+        return ISO8601DateFormatter().date(from: s)
+    }
+
+    private func insertTextAsRevision(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+            throw WordError.missingParameter("paragraph_index")
+        }
+        guard let position = args["position"]?.intValue else {
+            throw WordError.missingParameter("position")
+        }
+        guard let text = args["text"]?.stringValue else {
+            throw WordError.missingParameter("text")
+        }
+        guard var doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        let author = args["author"]?.stringValue
+        let date = parseISODate(args["date"]?.stringValue)
+        let revId = try doc.insertTextAsRevision(
+            text: text, atParagraph: paragraphIndex, position: position,
+            author: author, date: date
+        )
+        try await storeDocument(doc, for: docId)
+        return "Inserted text as revision id \(revId)"
+    }
+
+    private func deleteTextAsRevision(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+            throw WordError.missingParameter("paragraph_index")
+        }
+        guard let start = args["start"]?.intValue else {
+            throw WordError.missingParameter("start")
+        }
+        guard let end = args["end"]?.intValue else {
+            throw WordError.missingParameter("end")
+        }
+        guard var doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        let author = args["author"]?.stringValue
+        let date = parseISODate(args["date"]?.stringValue)
+        let revId = try doc.deleteTextAsRevision(
+            atParagraph: paragraphIndex, start: start, end: end,
+            author: author, date: date
+        )
+        try await storeDocument(doc, for: docId)
+        return "Deleted text as revision id \(revId)"
+    }
+
+    private func moveTextAsRevision(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let fromPara = args["from_paragraph_index"]?.intValue else {
+            throw WordError.missingParameter("from_paragraph_index")
+        }
+        guard let fromStart = args["from_start"]?.intValue else {
+            throw WordError.missingParameter("from_start")
+        }
+        guard let fromEnd = args["from_end"]?.intValue else {
+            throw WordError.missingParameter("from_end")
+        }
+        guard let toPara = args["to_paragraph_index"]?.intValue else {
+            throw WordError.missingParameter("to_paragraph_index")
+        }
+        guard let toPos = args["to_position"]?.intValue else {
+            throw WordError.missingParameter("to_position")
+        }
+        guard var doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        let author = args["author"]?.stringValue
+        let date = parseISODate(args["date"]?.stringValue)
+        let result = try doc.moveTextAsRevision(
+            fromParagraph: fromPara, fromStart: fromStart, fromEnd: fromEnd,
+            toParagraph: toPara, toPosition: toPos,
+            author: author, date: date
+        )
+        try await storeDocument(doc, for: docId)
+        return "Moved text as revisions: from_id=\(result.fromId) to_id=\(result.toId)"
     }
 
     private func applyStyle(args: [String: Value]) async throws -> String {
