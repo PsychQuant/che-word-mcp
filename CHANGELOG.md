@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.10.0] - 2026-04-24
+
+### Added — Styles + Numbering + Sections foundation (closes [#46](https://github.com/PsychQuant/che-word-mcp/issues/46) [#47](https://github.com/PsychQuant/che-word-mcp/issues/47) [#48](https://github.com/PsychQuant/che-word-mcp/issues/48))
+
+Implements the `che-word-mcp-styles-sections-numbering-foundations` SDD. Brings 19 new MCP tools + 6 extended args completing the Office.js Roadmap P0 foundation triplet.
+
+#### 1. Style tools (4 new + 6 extended args)
+
+- `get_style_inheritance_chain` — traverse `basedOn` chain upward to root with cycle detection
+- `link_styles` — bidirectional `<w:link>` between paragraph and character style pair
+- `set_latent_styles` — control Quick Style Gallery defaults via `<w:latentStyles>` block
+- `add_style_name_alias` — localized `<w:name>` alias per BCP 47 lang code
+- `create_style` / `update_style` extended with: `based_on`, `linked_style_id`, `next_style_id`, `q_format`, `hidden`, `semi_hidden`
+
+#### 2. Numbering tools (8 new)
+
+- `list_numbering_definitions` — enumerate every abstractNum + num pair
+- `get_numbering_definition` — fetch single num by id
+- `create_numbering_definition` — new abstractNum + paired num (max 9 levels)
+- `override_numbering_level` — `<w:lvlOverride>` for per-level start values
+- `assign_numbering_to_paragraph` — `<w:numPr>` attachment by paragraph index
+- `continue_list` / `start_new_list` — manage list continuity
+- `gc_orphan_numbering` — sweep unreferenced num definitions (abstractNums preserved)
+
+#### 3. Section tools (7 new)
+
+- `set_line_numbers_for_section` — `<w:lnNumType>` for legal documents
+- `set_section_vertical_alignment` — `<w:vAlign>` for cover pages
+- `set_page_number_format` — `<w:pgNumType w:fmt>` for Roman numerals etc.
+- `set_section_break_type` — `nextPage` / `continuous` / `evenPage` / `oddPage`
+- `set_title_page_distinct` — toggle `<w:titlePg/>` per section
+- `set_section_header_footer_references` — assign per-type rId (default/first/even)
+- `get_all_sections` — return SectionInfo array per section in document order
+
+### Foundation: ooxml-swift v0.16.0
+
+- Style model gains `linkedStyleId` / `hidden` / `semiHidden` / `aliases` + new `WordDocument.latentStyles`
+- Numbering model gains `Num.lvlOverrides` + 3 new `NumberFormat` cases (ordinal / cardinalText / decimalZero)
+- Section model gains 8 new fields on SectionProperties + 5 new types (HeaderFooterReferences / LineNumbers / LineNumberRestart / SectionVerticalAlignment / SectionPageNumberFormat)
+- WordDocument: 16 new mutation methods, all explicitly marking the relevant XML part dirty
+- WordError additions: `styleNotFound`, `typeMismatch`, `numIdNotFound`, `abstractNumIdNotFound`
+
+### Tests
+
+- ooxml-swift: 491/491 pass (+26 new across StylesInheritanceTests / NumberingLifecycleTests / SectionPropertiesExtendedTests)
+- che-word-mcp: 143/143 pass (+21 new StylesNumberingSectionsToolsTests, +3 new CorporateTemplateE2ETests covering corporate template / academic preface / tiered list scenarios)
+
+### Backwards compatibility
+
+All new tools are additive. Existing `create_style` / `update_style` callers see no breaking changes (new args are all optional). One internal note: ooxml-swift v0.16.0 introduces `SectionVerticalAlignment` and `SectionPageNumberFormat` as new types (not renames — `Image.VerticalAlignment` and `Footer.PageNumberFormat` are unchanged).
+
 ## [3.9.0] - 2026-04-24
 
 ### Added — Content Controls (SDT) read/write tool suite (closes [#44](https://github.com/PsychQuant/che-word-mcp/issues/44))

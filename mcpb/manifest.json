@@ -1,8 +1,8 @@
 {
   "manifest_version": "0.3",
   "name": "che-word-mcp",
-  "version": "3.9.0",
-  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v3.9.0: Content Controls (SDT) read/write tool suite (closes #44) — 8 new tools (list_content_controls / get_content_control / list_repeating_section_items / update_content_control_text / replace_content_control_content / delete_content_control / update_repeating_section_item / list_custom_xml_parts stub) + insert_content_control extensions (4 new types, list_items / date_format / lock_type args). Built on ooxml-swift v0.15.1 SDTParser + WordDocument mutation methods. v3.8.0: header/footer raw-element preservation + counter-isolation (#52). v3.7.2: #42 verify follow-ups (#53 #54 #55). v3.7.1: update_all_fields header preservation (#42). v3.7.0: autosave Design B + insert crash hardening (#40 #41). v3.6.0: autosave/checkpoint/recover (#37).",
+  "version": "3.10.0",
+  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v3.10.0: Styles + Numbering + Sections foundation (closes #46 #47 #48) — 19 new MCP tools (style inheritance chain / link / latentStyles / alias + numbering definition lifecycle + section sectPr completeness) + 6 extended args on create_style/update_style. Built on ooxml-swift v0.16.0. v3.9.0: Content Controls (SDT) read/write (#44). v3.8.0: header/footer raw-element preservation (#52). v3.7.2: #42 verify follow-ups. v3.7.1: update_all_fields header preservation (#42). v3.7.0: autosave Design B + insert crash hardening (#40 #41).",
   "author": {
     "name": "Che Cheng"
   },
