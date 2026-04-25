@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.13.1] - 2026-04-25
+
+### Fixed — `pPr` double-emission silent regression on sort-by-position round-trip (ooxml-swift v0.19.1)
+
+Hot-fix bumping the `ooxml-swift` dependency from `0.19.0` → `0.19.1`. No che-word-mcp source changes.
+
+**Symptom (caught during document verification of #56):** After v3.13.0 round-trip, paragraph properties were emitted twice — once via `parseParagraphProperties` and once via the position-sorted writer's `unrecognizedChildren` path. `xmllint --noout` accepted the output (legal XML), but `<w:p>` element size grew ~1 KB per round-trip and unrecognized-child counts climbed from 799 → 1333 (+67%) on the same fixture.
+
+**Root cause (ooxml-swift):** `parseParagraph` consumed `<w:pPr>` via `parseParagraphProperties` BEFORE the child walker, but the child walker had no explicit `case "pPr"` — so on the second pass the same `<w:pPr>` node fell into the `default` branch and got re-captured into `unrecognizedChildren`. The sort-by-position writer then emitted both copies in source order.
+
+**Fix:** 1-line `case "pPr": break` skip in `DocxReader.parseParagraph` child walker (PsychQuant/ooxml-swift@73629cd). Added regression test `testParseParagraphSkipsPPrInChildWalker`.
+
+**Verification (document, 169 KB, 570 paragraphs):**
+
+| Metric | v3.13.0 (broken) | v3.13.1 (fixed) |
+|---|---|---|
+| Unrecognized children | 799 → 1333 | 229 → 229 |
+| `<w:p>` byte growth per round-trip | ~1 KB | 0 |
+| `xmllint --noout` | clean | clean |
+| Bookmark / hyperlink / fldSimple count parity | ✓ | ✓ |
+| Text SHA256 parity | ✓ | ✓ |
+
+**No source changes** in che-word-mcp itself. Only `Package.swift` dependency bump and re-build. 173 che-word-mcp tests + 548 ooxml-swift tests pass.
+
+## [3.13.0] - 2026-04-25
+
+### Fixed — `document.xml` lossless round-trip + tool-mediated wrapper edits (Closes PsychQuant/che-word-mcp#56, P0)
+
+Critical bug fix. Pre-v3.13.0, `save_document` silently corrupted `word/document.xml` on every body-mutating MCP call:
+
+- **Strip 32 of 34 namespace declarations** from the `<w:document>` root → libxml2 reports "unbound prefix" on every body element that referenced `mc:`, `wp:`, `w14:`, etc.
+- **Wipe 100% of `<w:bookmarkStart>` bookmarks** (a typical academic document loses all 45 cross-reference anchors).
+- **Drop 354 `<w:t>` text nodes / 191 unique strings** — every text node living inside `<w:hyperlink>` (TOC entries, cross-refs), `<w:fldSimple>` (SEQ Table captions, REF), or `<mc:AlternateContent>` (math fallbacks) was silently dropped along with its wrapper.
+- **`replace_text` silently failed** for any text inside the above wrappers — returned "Replaced 0 occurrence(s)" when the text was right there in the visible document.
+
+Reporter (#56) caught the bug while attempting `open → insert_paragraph → save` on an document (169 KB, 42 OOXML parts, 45 bookmarks, 13 fonts including DFKai-SB).
+
+### How v3.13.0 fixes it (built on ooxml-swift v0.19.0)
+
+- **Document root namespace preservation** — Reader captures every source `xmlns:*` + `mc:Ignorable`; Writer rebuilds the root open tag verbatim.
+- **Bookmark Reader parsing** — `<w:bookmarkStart>` / `<w:bookmarkEnd>` populate `Paragraph.bookmarks` + `Paragraph.bookmarkMarkers` (position-indexed for source-order Writer emit).
+- **Wrapper hybrid model** — `Hyperlink` / `FieldSimple` / `AlternateContent` gain typed editable surfaces (`runs` / `fallbackRuns`) so MCP tools find content inside, plus raw passthrough fields (`rawAttributes` / `rawChildren` / `rawXML`) so unrecognized attributes / non-Run children survive byte-equivalent.
+- **`<w:p>` schema completeness** — 6 raw-carrier types (`CommentRangeMarker`, `PermissionRangeMarker`, `ProofErrorMarker`, `SmartTagBlock`, `CustomXmlBlock`, `BidiOverrideBlock`) plus a fallback `unrecognizedChildren` collection ensure every legal `<w:p>` direct child round-trips.
+- **Sort-by-position Writer emit** — `Paragraph.toXML()` collects `(position, xml)` tuples from every parallel array and emits in source order. Triggered when any source-loaded marker collection is non-empty; API-built paragraphs use the legacy emit path (zero breaking changes).
+- **Tool-mediated wrapper edits** — `replace_text` / `replace_text_batch` now walk `Hyperlink.runs`, `FieldSimple.runs`, `AlternateContent.fallbackRuns`. Edits inside structural wrappers SHALL apply (no silent failure).
+
+### New tests
+
+- **`ToolMediatedWrapperEditTests`** (2 tests) — verifies `replace_text` finds text inside `<w:hyperlink>` and `<w:fldSimple>` and persists changes through save / reload while wrapper attributes (`w:anchor`, `w:instr` whitespace) are preserved.
+- **`RealWorldDocxRoundTripSmokeTests`** — iterates `mcp/che-word-mcp/test-files/*.docx` (gitignored) and runs `xmllint --noout` + bookmark/hyperlink/fldSimple/AlternateContent count parity + SHA256 of concatenated `<w:t>` content per fixture. Silently `XCTSkip`s when the directory is empty (clean-clone CI safe).
+
+### Breaking changes
+
+None. `Hyperlink.text` is now a computed property but observationally equivalent for read access; the setter collapses to single-Run (matching pre-fix multi-run-overwrite behavior). 218 existing MCP tools unchanged.
+
+### Built on ooxml-swift v0.19.0
+
 ## [3.12.0] - 2026-04-25
 
 ### Added — Programmatic Track Changes generation: 3 new tools + 2 extended args (Closes PsychQuant/che-word-mcp#45)

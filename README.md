@@ -668,6 +668,24 @@ document.docx (ZIP)
 - [markdown-swift](https://github.com/PsychQuant/markdown-swift) (v0.2.0+) — Markdown generation
 - [word-to-md-swift](https://github.com/PsychQuant/word-to-md-swift) (v0.4.0+) — Word to Markdown conversion
 
+### Developer Notes — Real-World Fixture Testing
+
+`Tests/CheWordMCPTests/RealWorldDocxRoundTripSmokeTests.swift` validates the
+ooxml-swift Reader / Writer pair against real-world Word output (e.g., academic
+theses, contracts) rather than synthesized fixtures. Drop confidential `.docx`
+files into `test-files/` (gitignored — they never reach version control), then:
+
+```bash
+cd mcp/che-word-mcp
+swift test --filter RealWorldDocxRoundTripSmokeTests
+```
+
+Per-fixture assertions: `xmllint --noout` clean, bookmark / hyperlink /
+fldSimple / AlternateContent count parity, SHA256 of concatenated `<w:t>`
+content matches. The test silently `XCTSkip`s when `test-files/` is empty so
+clean clones / CI do not false-fail. Mirrors the `.note` smoke pattern from
+[PsychQuant/macdoc#81](https://github.com/PsychQuant/macdoc/issues/81).
+
 ## Comparison with Other Solutions
 
 | Feature | Anthropic Word MCP | python-docx | docx npm | **che-word-mcp** |

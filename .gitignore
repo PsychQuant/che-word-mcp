@@ -23,7 +23,8 @@ xcuserdata/
 *.swo
 *~
 
-# Test files
+# Test files (also covers test-files/*.docx — real-world fixtures for
+# RealWorldDocxRoundTripSmokeTests; populated locally, not committed).
 *.docx
 *.md
 !README.md

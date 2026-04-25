@@ -1,8 +1,8 @@
 {
   "manifest_version": "0.3",
   "name": "che-word-mcp",
-  "version": "3.12.0",
-  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v3.12.0: Programmatic Track Changes generation (closes #45) — 3 new tools (insert_text_as_revision / delete_text_as_revision / move_text_as_revision) + 2 extended args (format_text / set_paragraph_format gain as_revision: bool). Closes Office.js OOXML Roadmap P0 set (100%). Built on ooxml-swift v0.18.0. v3.11.0: Tables / Hyperlinks / Headers extensions (#49 #50 #51). v3.10.0: Styles + Numbering + Sections foundation (#46 #47 #48). v3.9.0: Content Controls (SDT) read/write (#44).",
+  "version": "3.13.1",
+  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v3.13.1: hot-fix bumping ooxml-swift to v0.19.1 — fixes pPr double-emission silent regression on sort-by-position round-trip (caught during document verification, no source changes). v3.13.0: document.xml lossless round-trip (closes #56, P0) — preserves all source xmlns:* + mc:Ignorable on root, parses bookmarks / hyperlinks / fldSimple / AlternateContent, sort-by-position Writer emit, replace_text walks wrapper-internal runs (no silent failure). v3.12.0: Programmatic Track Changes generation (#45). v3.11.0: Tables / Hyperlinks / Headers (#49 #50 #51). v3.10.0: Styles + Numbering + Sections (#46 #47 #48). v3.9.0: Content Controls (SDT) read/write (#44).",
   "author": {
     "name": "Che Cheng"
   },
