@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.13.2] - 2026-04-26
+
+### Fixed — 4 blocking findings from #56 verification (ooxml-swift v0.19.2)
+
+Bumps the `ooxml-swift` dependency from `0.19.1` → `0.19.2`. **No che-word-mcp source changes.**
+
+The v3.13.1 release went through 6-AI cross-verification ([report](https://github.com/PsychQuant/che-word-mcp/issues/56#issuecomment-4319691177)). Five reviewers initially marked all four #56 Expected requirements as FULLY addressed; the Devil's Advocate reviewer downgraded all four to PARTIAL after surfacing 4 blocking sub-issues:
+
+- **F1** — `Hyperlink.toXML()` ignored Reader-collected `runs` / `rawAttributes` / `rawChildren` (multi-run formatting + vendor attrs + nested children silently dropped on every round-trip)
+- **F2** — `addBookmark` / `deleteBookmark` didn't sync `bookmarkMarkers` (new bookmarks silently dropped on save for source-loaded paragraphs; deletes left zombie `<w:bookmarkStart w:name=""/>` markers)
+- **F3** — `<w:ins>` / `<w:moveFrom>` / `<w:moveTo>` Reader didn't assign `position` or `revisionId` to inner runs (sort-by-position emit collapsed all wrapper-internal runs to paragraph front; revision wrappers themselves dropped because sort path didn't regroup runs by `revisionId`)
+- **F4** — Namespace preservation only covered `word/document.xml` (headers/footers/footnotes/endnotes still used hardcoded namespace templates; document-class headers with VML watermarks declaring `mc`/`wp`/`w14`/`w15` beyond the 5-namespace template silently regressed to the original #56 unbound-prefix bug)
+
+All four fixes ship in `ooxml-swift` v0.19.2. che-word-mcp consumes them transparently via the dependency bump — no Server.swift changes.
+
+### Test coverage
+
+172 che-word-mcp tests pass + 557 ooxml-swift tests pass (548 from v0.19.1 + 9 new in `Issue56FollowupTests` covering each F1–F4 fix and their fallback behaviors).
+
+### No breaking changes
+
+233 existing MCP tools unchanged. All ooxml-swift v0.19.2 changes are additive (new fields default to empty; API-built objects produce byte-identical pre-fix output).
+
 ## [3.13.1] - 2026-04-25
 
 ### Fixed — `pPr` double-emission silent regression on sort-by-position round-trip (ooxml-swift v0.19.1)

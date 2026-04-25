@@ -1,8 +1,8 @@
 {
   "manifest_version": "0.3",
   "name": "che-word-mcp",
-  "version": "3.13.1",
-  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v3.13.1: hot-fix bumping ooxml-swift to v0.19.1 — fixes pPr double-emission silent regression on sort-by-position round-trip (caught during document verification, no source changes). v3.13.0: document.xml lossless round-trip (closes #56, P0) — preserves all source xmlns:* + mc:Ignorable on root, parses bookmarks / hyperlinks / fldSimple / AlternateContent, sort-by-position Writer emit, replace_text walks wrapper-internal runs (no silent failure). v3.12.0: Programmatic Track Changes generation (#45). v3.11.0: Tables / Hyperlinks / Headers (#49 #50 #51). v3.10.0: Styles + Numbering + Sections (#46 #47 #48). v3.9.0: Content Controls (SDT) read/write (#44).",
+  "version": "3.13.2",
+  "description": "Swift-native MCP server for Microsoft Word document (.docx) manipulation. v3.13.2: bumps ooxml-swift to v0.19.2 — fixes 4 blocking findings from #56 verification: F1 Hyperlink.toXML() preserves multi-run formatting + rawAttributes + rawChildren, F2 addBookmark/deleteBookmark sync bookmarkMarkers, F3 ins/del/moveFrom/moveTo round-trip with position+revisionId so revision wrappers survive, F4 namespace preservation extended from document.xml to header/footer/footnote/endnote (no source changes). v3.13.1: pPr double-emission hot-fix. v3.13.0: document.xml lossless round-trip (closes #56, P0) — preserves all source xmlns:* + mc:Ignorable, parses bookmarks / hyperlinks / fldSimple / AlternateContent, sort-by-position Writer emit, replace_text walks wrapper-internal runs. v3.12.0: Programmatic Track Changes generation (#45). v3.11.0: Tables / Hyperlinks / Headers (#49 #50 #51). v3.10.0: Styles + Numbering + Sections (#46 #47 #48). v3.9.0: Content Controls (SDT) read/write (#44).",
   "author": {
     "name": "Che Cheng"
   },
