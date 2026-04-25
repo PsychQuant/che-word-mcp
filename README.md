@@ -9,7 +9,7 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 - **Pure Swift Implementation**: No Node.js, Python, or external runtime required
 - **Direct OOXML Manipulation**: Works directly with XML, no Microsoft Word installation needed
 - **Single Binary**: Just one executable file
-- **218+ MCP Tools**: Comprehensive document manipulation across documents, tables, hyperlinks, headers, sections, styles, numbering, content controls, comments, footnotes, equations, fields, and Track Changes
+- **233 MCP Tools**: Comprehensive document manipulation across documents, tables, hyperlinks, headers, sections, styles, numbering, content controls, comments, footnotes, equations, fields, and Track Changes
 - **Office.js OOXML Roadmap P0 = 100%**: All eight P0 sub-issues closed (umbrella [#43](https://github.com/PsychQuant/che-word-mcp/issues/43)). Surface coverage is now competitive with Office.js for the read/write side of every P0 capability.
 - **Programmatic Track Changes (v3.12.0+, [#45](https://github.com/PsychQuant/che-word-mcp/issues/45))**: Generate Word-native reviewable redlines via `insert_text_as_revision` / `delete_text_as_revision` / `move_text_as_revision`, plus `as_revision: true` flag on `format_text` / `set_paragraph_format`. Emits `<w:ins>` / `<w:del>` / `<w:moveFrom>` / `<w:moveTo>` / `<w:rPrChange>` / `<w:pPrChange>` markup. Side-effect contract: `as_revision: true` requires track changes enabled; throws `track_changes_not_enabled` otherwise (no silent auto-enable). Author resolution: explicit arg → `revisions.settings.author` → `"Unknown"`.
 - **Tables / Hyperlinks / Headers extensions (v3.11.0+, [#49](https://github.com/PsychQuant/che-word-mcp/issues/49) [#50](https://github.com/PsychQuant/che-word-mcp/issues/50) [#51](https://github.com/PsychQuant/che-word-mcp/issues/51))**: 16 new tools — table conditional styles (10 region types) / nested tables (max 5 deep) / explicit layout / table indent; three typed hyperlinks (URL / bookmark / email); even/odd header toggle / link-to-previous / `get_section_header_map`.
@@ -222,7 +222,7 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
   https://raw.githubusercontent.com/PsychQuant/che-word-mcp/main/skills/che-word-mcp/SKILL.md
 ```
 
-## Available Tools (218+ Total)
+## Available Tools (233 Total)
 
 ### Document Management (6 tools)
 
@@ -591,7 +591,7 @@ SDT id allocation uses deterministic max+1 (was random in pre-v3.9.0). `list_cus
 | `set_text_effect` | Set text animation effect |
 | `insert_horizontal_line`, `insert_drop_cap`, `insert_symbol` | Decorative elements |
 
-> **Note**: The counts above cover key tool categories. Total surface is **218+ tools** as of v3.12.0 including Document Comparison, Track Changes (read + programmatic write side via `<w:ins>` / `<w:del>` / `<w:moveFrom>` / `<w:moveTo>` / `<w:rPrChange>` / `<w:pPrChange>`), Content Controls (12-type SDT discrimination), Field Codes, Theme Editing, Header/Footer/Watermark CRUD with even/odd + section linkage, Comment Threads + People (dual identity), Notes Update, Web Settings, Styles (inheritance + linkage + latent + alias), Numbering (full definition lifecycle), Sections (vertical alignment + page-number format + title-page distinct + per-section refs), Tables (conditional / nested / layout / indent), Hyperlinks (typed url/bookmark/email), and Formatting helpers (with `as_revision` flag). Run the server and call `tools/list` for the complete, authoritative set.
+> **Note**: The counts above cover key tool categories. Total surface is **233 tools** as of v3.13.1 including Document Comparison, Track Changes (read + programmatic write side via `<w:ins>` / `<w:del>` / `<w:moveFrom>` / `<w:moveTo>` / `<w:rPrChange>` / `<w:pPrChange>`), Content Controls (12-type SDT discrimination), Field Codes, Theme Editing, Header/Footer/Watermark CRUD with even/odd + section linkage, Comment Threads + People (dual identity), Notes Update, Web Settings, Styles (inheritance + linkage + latent + alias), Numbering (full definition lifecycle), Sections (vertical alignment + page-number format + title-page distinct + per-section refs), Tables (conditional / nested / layout / indent), Hyperlinks (typed url/bookmark/email), and Formatting helpers (with `as_revision` flag). Run the server and call `tools/list` for the complete, authoritative set.
 
 ## Usage Examples
 
@@ -695,7 +695,7 @@ clean clones / CI do not false-fail. Mirrors the `.note` smoke pattern from
 | Requires Word | Yes | No | No | **No** |
 | Runtime | Node.js | Python | Node.js | **None** |
 | Single Binary | No | No | No | **Yes** |
-| Tools Count | ~10 | N/A | N/A | **171+** |
+| Tools Count | ~10 | N/A | N/A | **233** |
 | Images | Limited | Yes | Yes | **Yes** |
 | Comments | No | Limited | Limited | **Yes** |
 | Track Changes | No | No | No | **Yes** |

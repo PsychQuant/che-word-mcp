@@ -200,7 +200,7 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
 cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 ```
 
-## 可用工具（共 171+ 個）
+## 可用工具（共 233 個）
 
 ### 文件管理 (6 個)
 
@@ -462,7 +462,7 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `set_character_spacing` | 設定字元間距 |
 | `set_text_effect` | 設定文字動畫效果 |
 
-> **備註**：上述分類涵蓋主要工具。截至 v3.4.0 總工具面共 **171+ 個**，包含 Document Comparison、Revision Tracking、Content Controls、Field Codes、Theme Editing、Header/Footer/Watermark CRUD、Comment Threads + People、Notes Update、Web Settings、Formatting 等其他專門工具。啟動 server 後呼叫 `tools/list` 可取得完整清單。
+> **備註**：上述分類涵蓋主要工具。截至 v3.13.1 總工具面共 **233 個**，包含 Content Controls (SDT)、Styles + Numbering + Sections (v3.10.0+)、Tables + Hyperlinks + Headers extensions (v3.11.0+)、Programmatic Track Changes (v3.12.0+)、Document Comparison、Revision Tracking、Field Codes、Theme Editing、Header/Footer/Watermark CRUD、Comment Threads + People、Notes Update、Web Settings、Formatting 等其他專門工具。啟動 server 後呼叫 `tools/list` 可取得完整清單。
 
 ## 使用範例
 
@@ -548,7 +548,7 @@ document.docx (ZIP)
 | 需要 Word | 是 | 否 | 否 | **否** |
 | 執行環境 | Node.js | Python | Node.js | **無** |
 | 單一執行檔 | 否 | 否 | 否 | **是** |
-| 工具數量 | ~10 | N/A | N/A | **171+** |
+| 工具數量 | ~10 | N/A | N/A | **233** |
 | 圖片支援 | 有限 | 是 | 是 | **是** |
 | 註解 | 否 | 有限 | 有限 | **是** |
 | 追蹤修訂 | 否 | 否 | 否 | **是** |
