@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.13.3] - 2026-04-26
+
+### Fixed — 8 P0 + 3 must-fix P1 from #56 round 2 verify (ooxml-swift v0.19.3)
+
+Bumps the `ooxml-swift` dependency from `0.19.2` → `0.19.3`. **No che-word-mcp source changes.**
+
+The v3.13.2 release went through a second 6-AI cross-verification round ([report](https://github.com/PsychQuant/che-word-mcp/issues/56#issuecomment-4320157395)). Five of six reviewers (codex / logic / regression / security / devil's advocate) returned BLOCK — the requirements reviewer's PASS was overturned on every F1–F4 with concrete refutations. v3.13.3 ships the fixes for the 8 P0 + 3 must-fix P1 in four batches.
+
+#### Batch A — Hyperlink suite
+
+- **P0-1** — All 5 MCP `insert_*hyperlink` tools again render with blue + underline + Hyperlink character style. v0.19.2's writer rewrite walked `runs` directly without applying the legacy hardcoded `<w:rStyle Hyperlink>` / color / underline; new `RunProperties.rStyle` field carries the style.
+- **P0-2** — Hyperlinks with `w:tgtFrame` / `w:docLocation` now round-trip these vendor / browser-target attributes (Reader's `recognizedAttrs` previously filtered them but no typed field stored them).
+- **P0-3** — New ordered `HyperlinkChild` preserves source-document order between `<w:r>` and non-run children. `<w:hyperlink><w:r>A</w:r><w:sdt>X</w:sdt><w:r>B</w:r></w:hyperlink>` round-trips A→SDT→B (was A→B→SDT).
+- **P1-7** — `Hyperlink.id` is unique per source position (`<rId-or-anchor>@<position>`) so MCP find / edit / delete by id no longer misroutes when two hyperlinks share a relationship id.
+
+#### Batch B — Sort path completeness
+
+- **P0-4** — Source paragraphs with `<w:sdt>` + any positioned child no longer drop the SDT on save (sort path now emits `contentControls`).
+- **P0-5** — `insert_comment` / `insert_footnote` on a bookmarked source paragraph no longer silently lost: sort path emits the legacy `commentIds` / `footnoteIds` / `endnoteIds` / `hasPageBreak` / legacy `bookmarks` collections (skipped per-collection only when their positioned variants are populated, to avoid double-emit).
+- **P0-8** — Source paragraphs with `<w:r>A</w:r><w:hyperlink>L</w:hyperlink><w:r>B</w:r>` round-trip with the visible text in source order; the legacy path's "all runs first then all hyperlinks" reordering is gone.
+
+#### Batch C — Revision wrapper coverage
+
+- **P0-6** — Track Changes insertion of pure non-text content (`<w:tab/>`, `<w:br/>`, `<w:drawing>`, `<w:fldChar>`) no longer drops the `<w:ins>` / `<w:del>` wrapper — Reader always creates the `Revision` entry regardless of inner text.
+- **P0-7** — Track Changes insertion of nested `<w:hyperlink>` / `<w:sdt>` / `<w:fldSimple>` / `<mc:AlternateContent>` round-trips byte-equivalent (Reader captures the whole wrapper verbatim into `unrecognizedChildren` at the wrapper position; trade-off: per-run editing lost for these mixed wrappers).
+
+#### Batch D — Bookmark hardening
+
+- **P1-1** — `insert_bookmark` on a source-loaded document no longer collides with existing source bookmark ids; `DocxReader` calibrates `nextBookmarkId` past the max source id on load.
+- **P1-4** — `insert_bookmark` on a pure API-built paragraph again wraps the existing run text (legacy `<w:bookmarkStart/><w:r>Hello</w:r><w:bookmarkEnd/>`), restoring v3.12.0 semantics. F2 had downgraded API-path bookmarks to zero-width point bookmarks at paragraph end.
+
+### Test coverage
+
+172 che-word-mcp tests pass + 570 ooxml-swift tests pass (557 from v0.19.2 + 13 new in `Issue56RoundtripCompletenessTests`). New cases are end-to-end Reader → Writer round-trip (vs v0.19.2's API-only construction), so Reader-side filter bugs are now exercised.
+
+### Follow-up items deferred
+
+The round 2 verify also surfaced 5 non-must-fix P1 + 9 P2 + 8 P3 items (devil's advocate NEW-A through NEW-G plus security defense-in-depth and pre-existing non-blocking items). These are filed as separate follow-up issues for staged remediation; v3.13.3 ships only the must-fix subset to land #56's lossless round-trip contract on the v3.13.x line.
+
 ## [3.13.2] - 2026-04-26
 
 ### Fixed — 4 blocking findings from #56 verification (ooxml-swift v0.19.2)
