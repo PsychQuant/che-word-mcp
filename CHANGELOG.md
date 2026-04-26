@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.13.6] - 2026-04-27
+
+### Fixed — Sub-stack A of #58/#59/#60 document-content-preservation
+
+Bumps `ooxml-swift` v0.19.5 → v0.19.6 + `word-to-md-swift` v0.6.0 → v0.6.1. Closes [PsychQuant/che-word-mcp#58](https://github.com/PsychQuant/che-word-mcp/issues/58) — body-level `<w:bookmarkStart>` / `<w:bookmarkEnd>` (e.g., TOC `_Toc<digits>` anchors) now survive body-mutating save. Reproduced on the document fixture pre-fix: 1 of 45 bookmarks lost on round-trip.
+
+**No che-word-mcp source changes** — fix architecture lives entirely in `ooxml-swift` (`BodyChild` enum extension under "if not typed, preserve as raw" principle). Three internal switch sites in `Server.swift` got new no-op cases for `.bookmarkMarker` / `.rawBlockElement` to satisfy compiler exhaustiveness.
+
+#### What MCP users see
+
+- `list_bookmarks` now returns the full bookmark count on docs with body-level (multi-paragraph-spanning) bookmarks. Previously TOC anchors going through Word's `_Toc<digits>` pattern were silently lost on save.
+- All `replace_text` / `insert_paragraph` / `format_text` / etc. body-mutating tools preserve body-level bookmark structure across the save.
+
+### Tests
+
+172 tests pass / 9 skipped / 0 failures (against released ooxml-swift v0.19.6 + word-to-md-swift v0.6.1).
+
+### Spectra change
+
+This release implements sub-stack A of `che-word-mcp-issue-58-59-60-document-content-preservation`. Sub-stacks B (#59 whitespace overlay) and C (#60 RunProperties audit) ship as v3.13.7 / v3.14.0 in subsequent releases under the same Spectra change.
+
 ## [3.13.5] - 2026-04-27
 
 ### Fixed — R5 stack-completion (6 P0 + 5 P1 + R5-CONT 7 P0 + 5 P1 + R5-CONT-2 5 P0 + 4 P1 + R5-CONT-3 1 P0 + 4 P1 + R5-CONT-4 1 P0 + 3 P1 from #56 rounds 4-8 verify)

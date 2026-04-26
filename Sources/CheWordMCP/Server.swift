@@ -9390,6 +9390,10 @@ actor WordMCPServer {
                 case .contentControl(let outer, children: let inner):
                     topLevel.append(entryFor(outer, paragraphIndex: paraIndex, parentSdtId: nil))
                     walkBody(inner)
+                case .bookmarkMarker, .rawBlockElement:
+                    // ooxml-swift v0.19.6+ (#58): body-level markers carry no
+                    // content controls — skip.
+                    continue
                 }
             }
         }
@@ -9475,6 +9479,10 @@ actor WordMCPServer {
                 case .contentControl(let outer, children: let inner):
                     recordControl(outer, paraIndex: paraIndex, parentId: nil)
                     walkBody(inner)
+                case .bookmarkMarker, .rawBlockElement:
+                    // ooxml-swift v0.19.6+ (#58): body-level markers carry no
+                    // content controls — skip.
+                    continue
                 }
             }
         }
@@ -9921,6 +9929,10 @@ actor WordMCPServer {
                     tableIndex += 1
                 case .contentControl(_, children: let inner):
                     walk(inner)
+                case .bookmarkMarker, .rawBlockElement:
+                    // ooxml-swift v0.19.6+ (#58): body-level markers carry no
+                    // searchable text — skip.
+                    continue
                 }
             }
         }
