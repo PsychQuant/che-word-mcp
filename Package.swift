@@ -6,7 +6,7 @@ let package = Package(
     platforms: [.macOS(.v13)],
     dependencies: [
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.0"),
-        .package(url: "https://github.com/PsychQuant/ooxml-swift.git", from: "0.19.6"),
+        .package(url: "https://github.com/PsychQuant/ooxml-swift.git", from: "0.19.7"),
         .package(url: "https://github.com/PsychQuant/markdown-swift.git", from: "0.2.0"),
         .package(url: "https://github.com/PsychQuant/word-to-md-swift.git", from: "0.6.1"),
         .package(url: "https://github.com/PsychQuant/latex-math-swift.git", from: "0.1.0"),

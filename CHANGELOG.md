@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.13.7] - 2026-04-27
+
+### Fixed — Sub-stack A-CONT mini-cycle of #58 (parser asymmetry)
+
+Bumps `ooxml-swift` v0.19.6 → v0.19.7. Closes 2 P0 + 1 P1 + 1 P2 from the [sub-stack A 6-AI verify](https://github.com/PsychQuant/che-word-mcp/issues/58#issuecomment-4323205184) which returned BLOCK with the sub-stack A v3.13.6 release shipping a partial fix.
+
+**No che-word-mcp source changes** — fix architecture lives entirely in `ooxml-swift`. Same convergence-cycle pattern as the #56 R5-CONT-4 stack: per-task gate caught the body.xml parser entry point; 6-AI verify caught the symmetric sibling in the container parser entry point that the per-task gate missed.
+
+#### What MCP users see
+
+- **`list_bookmarks` now returns body-level TOC anchors** (e.g., `_Toc<digits>` patterns). Previously: preserved on disk by v3.13.6 but invisible to MCP discovery.
+- **Body-level bookmarks in headers / footers / footnotes / endnotes survive body-mutating saves on those parts.** Previously: silently dropped on save (same data-loss class #58 was meant to close, just in a different parser entry point).
+
+### Tests
+
+172 tests pass / 9 skipped / 0 failures (against released ooxml-swift v0.19.7).
+
+### Spectra change
+
+Sub-stack A-CONT mini-cycle. Re-numbers planned sub-stack B → v3.13.8 (sub-stack C unchanged at v3.14.0).
+
 ## [3.13.6] - 2026-04-27
 
 ### Fixed — Sub-stack A of #58/#59/#60 document-content-preservation
