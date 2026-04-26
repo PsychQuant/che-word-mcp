@@ -5,6 +5,84 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.13.5] - 2026-04-27
+
+### Fixed — R5 stack-completion (6 P0 + 5 P1 + R5-CONT 7 P0 + 5 P1 + R5-CONT-2 5 P0 + 4 P1 + R5-CONT-3 1 P0 + 4 P1 + R5-CONT-4 1 P0 + 3 P1 from #56 rounds 4-8 verify)
+
+Bumps `ooxml-swift` dependency from `0.19.3` → `0.19.5` (v0.19.4 was held back per verify-gate; see [ooxml-swift v0.19.5 release notes](https://github.com/PsychQuant/ooxml-swift/releases/tag/v0.19.5)). **No che-word-mcp source changes** — the regressions and their fixes all live in ooxml-swift.
+
+The R3 stack landed in `ooxml-swift` v0.19.4 but each subsequent 6-AI verify round caught additional structural-pattern findings (walker asymmetry, sentinel collision, attribute-escape gaps, block-level SDT propagation, container-symmetric `replace_text`, container `<w:tbl>` capture in round 4 → bodyChildren canonical container storage migration in round 5 → paragraphIndex semantics + accept/reject + update/delete mirror invariants in round 6 → `reject_revision` typed-case clearMarker in round 7 → `accept_revision` typed-case clearMarker + matrix-pin asymmetry-guard removal in round 8). v3.13.5 ships the entire stack as a single coordinated bump.
+
+#### R5 round-by-round summary
+
+| Round | Verify ID | Findings | What it fixed for MCP users |
+|-------|-----------|----------|------------------------------|
+| 4 | R5 stack | 6 P0 + 5 P1 | `accept_revision` / `reject_revision` / `accept_all_revisions` / `reject_all_revisions` now find wrappers in headers/footers/footnotes/endnotes (not body-only); `get_hyperlinks` walks all parts; `replace_text` recurses into container bodyChildren; SDT children in container tables / nested tables / contentControls no longer silently dropped on save |
+| 5 | R5-CONT | 7 P0 + 5 P1 | Per-container relationships round-trip (`update_hyperlink` URL sync targets owning part rels, not document-scope); container `toXML()` emits `.contentControl` arm; `getHyperlinks` walks all parts; readers populate typed `Revision` for container-scoped wrappers |
+| 6 | R5-CONT-2 | 5 P0 + 4 P1 | `delete_hyperlink` targets owning part rels (mirror of update side); `reject_revision` typed `.insertion` routes by source; container `<w:tbl>` capture preserved through round-trip; per-paragraph counter unifies writer's `paragraphIndex` vs lookup helper's flat-counter semantics |
+| 7 | R5-CONT-3 | 1 P0 + 4 P1 | `reject_revision` typed cases (`.deletion` / `.formatting` / `.paragraphChange` / `.formatChange` / `.moveFrom` / `.moveTo`) clear paragraph-level + run-level revision state — file persistence converges with API state; `sourceToPartKey` throws on orphan container source; multi-instance same-type container collision repair |
+| 8 | R5-CONT-4 | 1 P0 + 3 P1 | `accept_revision` typed cases mirror the reject-side clearMarker pattern across all 7 typed branches; matrix-pin tightening removes the asymmetry guard + ternary anti-pattern that hid prior P0s; `Document.repairContainerFileNames()` marks `word/_rels/document.xml.rels` + `[Content_Types].xml` dirty after rename — Word can open the saved file |
+
+#### Convergence
+
+R5-CONT-4 closes the cycle. The matrix-pin tightening removes the `if operation == "reject"` guard and `XCTAssertNil(<bool> ? 1000 : nil)` ternary anti-pattern that hid prior P0s. Devil's Advocate wrote 5 adversarial tests targeting the convergence-cycle pattern; all PASSED. Verify report: https://github.com/PsychQuant/che-word-mcp/issues/56#issuecomment-4322610741
+
+### Tests
+
+172 tests pass / 9 skipped / 0 failures (vs v3.13.4 baseline; no test additions since this release is pure dep bump).
+
+### Caveats
+
+- `ooxml-swift` R5-CONT-4 deferred §17.5 (legacy doc-scope sweep in `removeHyperlinkRelTarget`) per Codex disagreement with one Logic reviewer's "over-aggressive" assessment. Documented in [ooxml-swift CHANGELOG.md](https://github.com/PsychQuant/ooxml-swift/blob/v0.19.5/CHANGELOG.md) Caveats section. No MCP-tool-visible behavior change either way.
+- 3 R2-Logic MEDIUM findings tracked as R6 follow-ups in the verify report: matrix-pin text-preservation coverage, `accept .deletion` `replacingOccurrences` scope (pre-existing pattern from reject side), 3+ header same-fileName collision edge case in `repairContainerFileNames`.
+
+## [3.13.4] - 2026-04-26
+
+### Fixed — 6 P0 + 2 P1 from #56 round 3 verify (ooxml-swift v0.19.4)
+
+Bumps `ooxml-swift` dependency from `0.19.3` → `0.19.4`. **No che-word-mcp source changes** — the regressions and their fixes all live in ooxml-swift.
+
+The v3.13.3 release went through a third 6-AI cross-verification round ([report](https://github.com/PsychQuant/che-word-mcp/issues/56#issuecomment-4321007538)). Five of six reviewers (logic / regression / security / codex / devil's advocate) returned BLOCK — the R2 fixes themselves introduced 6 new P0 regressions (anti-pattern: "fixes that save absence but break preserve-order / sync mutation paths"). v3.13.4 closes those 6 P0 plus 2 P1 follow-ups via the spectra change `che-word-mcp-issue-56-r3-stack-completion`. Each fix shipped as an independent commit with its own failing-test → fix → scoped Codex verify gate, breaking the bundle-and-regress cycle.
+
+#### R3-NEW-1 — `replace_text` / `update_hyperlink` round-trip on source-loaded hyperlinks
+
+The MCP `replace_text` tool's edits inside source-loaded `<w:hyperlink>` were silently lost on save (writer prioritized cached `children` over mutated `runs`). v0.19.4 makes the writer mutation-aware (compares run-text from both surfaces). The pre-existing canary `testReplaceTextInsideHyperlinkAppliesAndPersists` (added in v3.13.1) now passes — was failing in v3.13.3.
+
+#### R3-NEW-2 — `<w:sdt>` (content control) round-trips at source position
+
+Paragraph-level `<w:sdt>` always emitted at end-of-paragraph regardless of source order. v0.19.4 adds `ContentControl.position` and routes through positioned-entry sort. Affects MCP `list_content_controls` / `update_content_control_text` / `replace_content_control_content` users whose source documents have inline SDTs between runs.
+
+#### R3-NEW-3 — `insert_comment` emits anchor markers on source paragraphs
+
+`insert_comment` on a paragraph that already had source comment ranges (e.g., `<w:commentRangeStart w:id="3"/>`) silently dropped the new commentId's anchor markers — comment side-bar showed the comment but no scope highlight. v0.19.4 changes the writer's gate from blanket `commentRangeMarkers.isEmpty` to per-id covered-set check.
+
+#### R3-NEW-4 — Mixed-content revision wrappers visible to MCP revision tools
+
+`<w:ins>` / `<w:del>` / `<w:moveFrom>` / `<w:moveTo>` wrappers containing non-run children (e.g., a hyperlink inside `<w:ins>`) were captured as raw XML but invisible to MCP `get_revisions` / `accept_revision` / `reject_revision` / `accept_all_revisions` / `reject_all_revisions` tools. v0.19.4 publishes a typed `Revision` alongside the raw capture and adds accept/reject support for the wrapper case.
+
+#### R3-NEW-5 — `insert_bookmark` no longer collides with source ids in tables / headers / footers / notes
+
+`nextBookmarkId` calibration only saw body top-level paragraphs and ran before headers/footers/notes were even loaded. A document with bookmark id 99 inside a table cell or header → calibration false-success → `insert_bookmark` allocates id 1 → silent collision with the source id. v0.19.4 calibration recursively walks all bookmark-bearing parts (body + tables + nested tables + content controls + headers + footers + footnotes + endnotes).
+
+#### R3-NEW-6 — XML attribute escape closes injection sink
+
+`RunProperties.toXML` (and the parallel `toChangeXML` for `<w:rPrChange>`) interpolated `rStyle` / `color` / `fontName` String values directly into XML attributes. A malicious source `<w:rStyle w:val='x"/><inj/>'/>` round-tripped as additional sibling elements → Word schema reject. v0.19.4 routes all three through a 5-character escape (`& < > " '`). Audit table in ooxml-swift's R3 test suite enumerates every direct-emit site across both packages.
+
+### Fixed — 1 P1 follow-up
+
+- **D-3 (vendor xmlns)** — `<w:hyperlink xmlns:vendor="..." vendor:custom="x">` round-trips with the namespace declaration intact (was losing `xmlns:vendor` while keeping `vendor:custom` → Word schema reject of unbound prefix).
+
+### Breaking changes
+
+- **D-8 / Hyperlink.id format change introduced in v3.13.3 (P1-7)** — `Hyperlink.id` follows `<rId-or-anchor-or-hl>@<position>` (e.g. `rId5@7`) instead of the v3.13.2 format `<rId-or-anchor-or-hl>` (e.g. `rId5`). Callers of MCP tools that find / edit / delete hyperlinks by id and stored pre-v3.13.3 ids will get not-found errors after upgrade. Mitigation: re-call `list_hyperlinks` to refresh the id cache.
+
+### Tests
+
+- 12 new ooxml-swift tests in `Issue56R3StackTests.swift` covering each P0 / P1 fix
+- ooxml-swift suite: 582 tests pass / 1 skipped / 0 failures (570 v3.13.3 baseline + 12 new R3 tests)
+- che-word-mcp suite: 172 tests pass / 9 skipped / **0 failures** (was 172 / 9 / **1** in v3.13.3 — the R3-NEW-1 canary `testReplaceTextInsideHyperlinkAppliesAndPersists` is now green)
+- Codex CLI scoped verify after each P0 fix; flagged P1s fixed inline before commit (R3-NEW-4 nested w:id substring match, R3-NEW-5 nested-table walker, R3-NEW-6 toChangeXML color escape parity)
+
 ## [3.13.3] - 2026-04-26
 
 ### Fixed — 8 P0 + 3 must-fix P1 from #56 round 2 verify (ooxml-swift v0.19.3)
