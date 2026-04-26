@@ -9,7 +9,8 @@
 - **純 Swift 實作**：不需要 Node.js、Python 或其他執行環境
 - **直接操作 OOXML**：直接處理 XML，不需要安裝 Microsoft Word
 - **單一執行檔**：只有一個 binary 檔案
-- **173+ MCP 工具**：完整的文件操作功能（v3.6.0 新增 `checkpoint` + `recover_from_autosave`）
+- **233 MCP 工具**：完整的文件操作功能（涵蓋 documents / tables / hyperlinks / headers / sections / styles / numbering / content controls / comments / footnotes / equations / fields / Track Changes）
+- **Round-trip 靜默損毀已修正（v3.13.5，[#56](https://github.com/PsychQuant/che-word-mcp/issues/56)）**：5 個 sub-stack-completion rounds（R5 / R5-CONT / R5-CONT-2 / R5-CONT-3 / R5-CONT-4）關掉了 6-AI 跨驗證 rounds 4-8 找到的 30 個 findings（16 P0 + 21 P1）。`ooxml-swift` 升到 v0.19.5（v0.19.4 因 verify-gate 暫不發布）。**MCP 端零 source 變更** — fix 全在 ooxml-swift。Round 4 walker symmetry 跨 headers/footers/footnotes/endnotes（`accept_revision` / `reject_revision` / `get_hyperlinks` / `replace_text` 在所有 part 都能找到目標）。Round 5 per-container relationships round-trip（`update_hyperlink` URL sync 對應 owning part 的 rels 檔）。Round 6 `delete_hyperlink` mirror + container `<w:tbl>` capture 保留。Round 7 `reject_revision` typed clearMarker（file/API state 收斂）。Round 8 `accept_revision` typed clearMarker（mirror）+ matrix-pin asymmetry-guard 移除 + `Document.repairContainerFileNames` 將 `document.xml.rels` + `[Content_Types].xml` 標記 dirty。Convergence: Devil's Advocate 寫了 5 個 adversarial tests，全部 PASSED。詳見 [closing summary](https://github.com/PsychQuant/che-word-mcp/issues/56#issuecomment-4322638865) 與 [v3.13.5 release notes](https://github.com/PsychQuant/che-word-mcp/releases/tag/v3.13.5)。
 - **Save Durability Stack（v3.5.3+）**：atomic-rename save（#36）、actor-based 並行安全（#39）、`keep_bak` opt-in rollback（#38）、`autosave_every` Design B pre-mutation snapshot + 顯式 `recover_from_autosave`（#37、#40 v3.7.0）。預設 `autosave_every: 1`（每次 mutation 前 snapshot 上一個 state）；想完全關閉請傳 `autosave_every: 0`。
 - **Dual-Mode 存取**：Direct Mode（唯讀、一步完成）與 Session Mode（完整生命週期）
 - **Round-trip Fidelity（v3.3.0+）**：`save_document` 保留 typed model 不管理的 OOXML parts（`word/theme/`、`webSettings.xml`、`people.xml`、`commentsExtended/Extensible/Ids`、`glossary/`、`customXml/`）byte-for-byte。修復先前 lossy-by-design pipeline 每次儲存都會 strip 頁首/頁尾/theme/字體的問題。
@@ -462,7 +463,7 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `set_character_spacing` | 設定字元間距 |
 | `set_text_effect` | 設定文字動畫效果 |
 
-> **備註**：上述分類涵蓋主要工具。截至 v3.13.1 總工具面共 **233 個**，包含 Content Controls (SDT)、Styles + Numbering + Sections (v3.10.0+)、Tables + Hyperlinks + Headers extensions (v3.11.0+)、Programmatic Track Changes (v3.12.0+)、Document Comparison、Revision Tracking、Field Codes、Theme Editing、Header/Footer/Watermark CRUD、Comment Threads + People、Notes Update、Web Settings、Formatting 等其他專門工具。啟動 server 後呼叫 `tools/list` 可取得完整清單。
+> **備註**：上述分類涵蓋主要工具。截至 v3.13.5 總工具面共 **233 個**，包含 Content Controls (SDT)、Styles + Numbering + Sections (v3.10.0+)、Tables + Hyperlinks + Headers extensions (v3.11.0+)、Programmatic Track Changes (v3.12.0+)、Document Comparison、Revision Tracking、Field Codes、Theme Editing、Header/Footer/Watermark CRUD、Comment Threads + People、Notes Update、Web Settings、Formatting 等其他專門工具。啟動 server 後呼叫 `tools/list` 可取得完整清單。
 
 ## 使用範例
 
