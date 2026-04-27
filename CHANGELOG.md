@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.14.0] - 2026-04-27
+
+### Added — Sub-stack C of #58/#59/#60 (closes #60 RunProperties field-loss audit)
+
+Bumps `ooxml-swift` v0.19.13 → v0.20.0. Closes [#60](https://github.com/PsychQuant/che-word-mcp/issues/60). **Architectural completion of the "if not typed, preserve as raw" principle** that started in sub-stack A (#58 BodyChild) and continued in sub-stack B (#59 WhitespaceOverlay).
+
+**No che-word-mcp source changes** — fix architecture lives entirely in `ooxml-swift`. See [PsychQuant/ooxml-swift v0.20.0 release notes](https://github.com/PsychQuant/ooxml-swift/releases/tag/v0.20.0) for the architectural deep-dive.
+
+#### What MCP users see (vs v3.13.13)
+
+- **`<w:rFonts>` 4-axis preservation** — Chinese theses, multi-script documents, and any file using different fonts for Latin / High-ANSI / East-Asian / Complex Script axes round-trip correctly. Pre-fix `eastAsia="DFKai-SB"` (traditional Chinese) was silently replaced with the `ascii` value on save.
+- **`<w:noProof/>`** (suppress spell/grammar check) preserved through round-trip — any tool that opens + saves a document with no-proof runs no longer enables Word's red squigglies on previously-suppressed text.
+- **`<w:kern w:val="N"/>`** (font kerning threshold) preserved — Office.js-emitted documents with kerning settings round-trip correctly.
+- **`<w:lang>` 3-axis preservation** (Latin val + East-Asian eastAsia + Bidi bidi) — multi-script language tags survive intact.
+- **`<w14:*>` namespace effects** preserved as raw rPr children — `<w14:textOutline>`, `<w14:textFill>`, `<w14:glow>`, `<w14:shadow>`, `<w14:reflection>`, `<w14:scene3d>`, `<w14:props3d>`, `<w14:ligatures>`, etc. Pre-fix silently dropped on read.
+
+#### Architectural recap (from ooxml-swift v0.20.0)
+
+- New typed structs `RFontsProperties` (4 axes + hint) and `LanguageProperties` (3 axes)
+- New `RunProperties.rFonts`, `noProof`, `kern`, `lang`, `rawChildren` fields
+- `parseRunProperties` extended with extraction + recognized-rPr-children Set covering 30+ typed kinds
+- `RunProperties.toXML()` emits new typed fields then replays rawChildren in source-document order
+- Backward compat: legacy `fontName` retained; mirrors `rFonts.ascii`
+
+#### Matrix-pin extension (LOAD-BEARING)
+
+`testDocumentContentEqualityInvariant` gains preservation-class-3 ratio-floor assertions. Any regression in run-level rPr preservation trips the matrix-pin before the bug class can ship.
+
+#### Round-trip size impact
+
+Document fixture `document.xml`:
+- Pre-fix (v3.13.x): 32% loss
+- Post-sub-stack-C: 17.75% loss (improvement of 14.25 percentage points)
+- Future paragraph-mark rPr fix (separate follow-up SDD) should drop loss to < 5%
+
+#### Out-of-scope (revealed by matrix-pin, separate follow-up)
+
+The matrix-pin uncovered two pre-existing bugs NOT in #60 scope:
+
+1. `ParagraphProperties` lacks `markRunProperties` field — `<w:pPr><w:rPr>` paragraph-mark formatting silently dropped at parse time
+2. `Paragraph` parser doesn't preserve `w14:paraId`/`w14:textId` attributes on `<w:p>`
+
+Both tracked as follow-up SDD.
+
+### Spectra change
+
+This release closes the cross-cutting `che-word-mcp-issue-58-59-60-document-content-preservation` Spectra change (sub-stacks A/B/B-CONT/B-CONT-2/B-CONT-2-CONT/C complete) and the cross-cutting matrix-pin (`testDocumentContentEqualityInvariant`).
+
 ## [3.13.13] - 2026-04-27
 
 ### CRITICAL HOTFIX — Sub-stack B-CONT-2-CONT of #58/#59/#60 (reverts v3.13.12 TIER-0 over-fix)
