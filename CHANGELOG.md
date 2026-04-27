@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.13.11] - 2026-04-27
+
+### Fixed — Sub-stack B-CONT of #58/#59/#60 (closes 4 P0 + 3 P1 from sub-stack B 6-AI verify)
+
+Bumps `ooxml-swift` v0.19.10 → v0.19.11. Closes 4 P0 + 3 P1 from the [sub-stack B 6-AI verify](https://github.com/PsychQuant/che-word-mcp/issues/59#issuecomment-4323956207) — 4-reviewer convergence (R2 Logic + R5 Devil's Advocate + Codex; R1 PASS-WITH-WARNINGS) on a counter-desync class with two root causes.
+
+**No che-word-mcp source changes** — fix architecture lives entirely in `ooxml-swift`. See [PsychQuant/ooxml-swift v0.19.11 release notes](https://github.com/PsychQuant/ooxml-swift/releases/tag/v0.19.11) for the architectural deep-dive.
+
+#### What MCP users see (vs v3.13.10)
+
+- **Whitespace recovery now works in real-world documents** — pre-fix v3.13.10 worked only for documents WITHOUT tables, tabs, mc:AlternateContent, or tracked-change wrappers (i.e., almost no real Word file). v3.13.10's tests passed because matrix-pin fixtures were sterile (bare `<w:r><w:t>` with no surrounding OOXML). v3.13.11's prefix-match boundary fix + raw-capture counter sync correctly handle all document types.
+- **`get_paragraph_runs` for tables, tracked-change documents, and Office.js-emitted content** now returns whitespace-only runs intact. Pre-fix returned `""` for whitespace-only `<w:t xml:space="preserve">` whenever the surrounding XML contained any `<w:tab>` / `<w:tbl>` / etc. — silently dropped indentation in dialogue, alignment runs, leading/trailing whitespace.
+- **Tracked-deletion of whitespace** (`<w:delText xml:space="preserve">`) now round-trips. Pre-fix `accept_revision` would commit the deletion correctly but `reject_revision` couldn't restore the deleted whitespace bytes.
+- **Whitespace-only comments preserved verbatim** — pre-fix `parseComments` trimmed recovered overlay text, destroying whitespace-only comment annotations.
+- **Entity-encoded whitespace** (`&#x09;`, `&nbsp;`, etc.) now decoded and recovered correctly — pre-fix scanner ran whitespace check on raw entity bytes which fail `Character.isWhitespace`.
+
+#### Architectural recap
+
+Two root causes triple-confirmed by sub-stack B 6-AI verify:
+
+1. **Prefix-match collision** — `WhitespaceOverlay.swift:54`'s `xml.range(of: "<w:t")` was a prefix match. Also fired on `<w:tab>`, `<w:tbl>`, `<w:tc>`, `<w:tr>`, `<w:tblPr>`, `<w:tcPr>`, `<w:trPr>`, etc. DOM walker is exact-match. Counter desynced immediately in any document with tables or tabs. **Fix**: tag-name boundary check (next char must be `>`, ` `, `\t`, `\n`, `\r`, or `/`).
+
+2. **Skipped raw subtrees** — scanner counted `<w:t>` inside raw-captured wrappers but parseRun never visited them. Affected sites: `parseAlternateContent` `<mc:Choice>` skip; `parseInsRevisionWrapper` non-run-child paths × 4; `parseBodyChildren` `.rawBlockElement` capture; `parseParagraph` unrecognized-child catch-all; `parseRun` `rawElements` capture for nested `<mc:AlternateContent>` etc. **Fix**: parser-side counter advance via new `DocxReader.advanceWhitespaceCounter(forSkippedXML:)` at 7 sites.
+
+Plus 3 SHOULD-tier P1 closures: `<w:delText>` overlay coverage (R5), comments trimming removed (Codex), entity-encoded whitespace decoded (R5).
+
+#### Methodology lesson refined
+
+Sub-stack A taught: matrix-pin needs symmetric assertions baked in from design (across container variants). Sub-stack B taught: matrix-pin baked in from design ≠ matrix-pin fixtures with real content (sterile fixtures hid every P0). Sub-stack B-CONT confirms: real-world OOXML content classes (tables, alternate-content, revision wrappers, entity-encoded chars) must be IN the fixtures.
+
+### Deferred (B-CONT MAY-tier)
+
+- Static state concurrency hazard (R5 + Codex P1) — `currentWhitespaceContext` is unsynchronized process-wide state. Documented; works only because DocxReader is single-threaded by convention. Tracked for follow-up.
+- Single-quoted `xml:space='preserve'` (R5 P2) — Word doesn't emit, accepted limitation.
+- Performance gate (Codex P2) — no benchmark.
+
+### Spectra change
+
+Ships sub-stack B-CONT of `che-word-mcp-issue-58-59-60-document-content-preservation`. Sub-stack C (#60 RunProperties audit) ships next as v3.14.0.
+
 ## [3.13.10] - 2026-04-27
 
 ### Fixed — Sub-stack B of #58/#59/#60 (closes #59 whitespace preservation)
