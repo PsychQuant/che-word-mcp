@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.13.9] - 2026-04-27
+
+### Fixed — Sub-stack A-CONT-3 mini-cycle of #58 (silent correctness regression + API symmetry)
+
+Bumps `ooxml-swift` v0.19.8 → v0.19.9. Closes 3 P0 from the [sub-stack A-CONT-2 6-AI verify](https://github.com/PsychQuant/che-word-mcp/issues/58#issuecomment-4323715199), **including a critical silent-correctness fix** for v3.13.8.
+
+**No che-word-mcp source changes** — fix architecture lives entirely in `ooxml-swift`. Sub-cycle 4 for #58 (A → A-CONT → A-CONT-2 → A-CONT-3). Same convergence-cycle pattern as R5 → R5-CONT-4 (5 sub-cycles for #56).
+
+#### What MCP users see (vs v3.13.8)
+
+- **`delete_bookmark` for header/footer bookmarks ACTUALLY PERSISTS to disk.** v3.13.8 silently lost the deletion: in-memory model showed bookmark gone, `getBookmarks()` returned no match, but the saved `.docx` still contained the bookmark. Triple-confirmed by R2 + R5 + Codex during A-CONT-2 verify. Critical correctness regression — must-upgrade for any v3.13.8 user calling `delete_bookmark` on container bookmarks.
+- **`list_bookmarks` returns paragraph-level bookmarks inside header/footer paragraphs**, not just body-level container markers. Pre-A-CONT-3 only the rarer body-level case was surfaced.
+- **`insert_bookmark` rejects names that already exist anywhere** — including in headers, footers, footnotes, endnotes. Pre-A-CONT-3 a TOC anchor in a header survived `insert_bookmark(name: ...)` and produced silent duplicate-name violations.
+
+### Tests
+
+172 tests pass / 9 skipped / 0 failures (against released ooxml-swift v0.19.9).
+
+### Spectra change
+
+Sub-stack A-CONT-3 mini-cycle. Re-numbers planned sub-stack B → v3.13.10 (sub-stack C unchanged at v3.14.0).
+
 ## [3.13.8] - 2026-04-27
 
 ### Fixed — Sub-stack A-CONT-2 mini-mini-cycle of #58 (API-layer + SDT recursion + matrix-pin fixture)
