@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.13.10] - 2026-04-27
+
+### Fixed — Sub-stack B of #58/#59/#60 (closes #59 whitespace preservation)
+
+Bumps `ooxml-swift` v0.19.9 → v0.19.10. Closes [#59](https://github.com/PsychQuant/che-word-mcp/issues/59) — Foundation `XMLDocument` strips whitespace-only `<w:t xml:space="preserve">[whitespace]</w:t>` text node `stringValue` to `""` regardless of the `xml:space` attribute or `nodePreserveWhitespace` parse option. Structural Foundation/libxml2 limitation, not a configuration bug.
+
+**No che-word-mcp source changes** — fix architecture lives entirely in `ooxml-swift`. See [PsychQuant/ooxml-swift v0.19.10 release notes](https://github.com/PsychQuant/ooxml-swift/releases/tag/v0.19.10) for the architectural deep-dive.
+
+#### What MCP users see (vs v3.13.9)
+
+- **Whitespace-only text now survives `get_paragraph_runs`, `get_text`, `export_markdown`** — pre-fix the run text came back as `""` for any whitespace-only `<w:t xml:space="preserve">` (5+ space indents in dialogue, alignment runs, leading/trailing whitespace). Post-fix the recovered whitespace bytes are returned verbatim.
+- **Round-trip preservation** — opening a `.docx`, mutating something, and saving no longer silently strips whitespace runs. Document-fixture probe: source has 346 whitespace-only `<w:t>` elements totalling 683 chars; pre-fix Reader recovered 190 (349 chars) — **334 chars silently lost on read alone**. Post-fix: 100% recovery.
+- **Coverage extends across all 6 `<w:t>`-bearing parts**: `document.xml`, `header*.xml`, `footer*.xml`, `footnotes.xml`, `endnotes.xml`, `comments.xml`. Each gets its own `WhitespaceParseContext` (overlay + monotonic counter) — applies to every operation that traverses runs in any of those parts.
+
+#### Architectural approach (recap from ooxml-swift v0.19.10)
+
+Pre-parse byte-stream scan via new internal `WhitespaceOverlay`. Records whitespace content keyed by element sequence index in DOM document order. `parseRun` consults the overlay when `t.stringValue.isEmpty`. Same shape as the v0.13.0 `WordDocument.modifiedParts` byte-preservation overlay — contained, surgical, no parser swap.
+
+**Why not switch parsers**: 1-2 weeks of work + new dependency + affects all 10 `XMLDocument(data:)` call sites in DocxReader.swift. Whitespace overlay is contained, surgical, follows existing patterns.
+
+#### Methodology — comprehensive matrix-pin from design
+
+Sub-stack A's 4 sub-cycles (A → A-CONT → A-CONT-2 → A-CONT-3, mirroring R5→R5-CONT-4 for #56) demonstrated that matrix-pins added reactively to verify findings always lag the bug by one round. Sub-stack B's matrix-pin (`testWhitespacePreservedAcrossAllSixPartTypes`) exercises ALL 6 part types in 1 fixture from design — symmetric assertions baked in, not added after the fact. The next-round verify can't surface symmetric-sibling regressions because all 6 are exercised by the same test.
+
+### Spectra change
+
+Ships sub-stack B of `che-word-mcp-issue-58-59-60-document-content-preservation`. Sub-stack C (#60 RunProperties audit) ships next as v3.14.0. Sub-stack A's deferred A-CONT-4 follow-ups (paragraph-level container delete state-inconsistency + body SDT recursion asymmetry + insertBookmark perf) tracked but out of scope for sub-stack B/C.
+
 ## [3.13.9] - 2026-04-27
 
 ### Fixed — Sub-stack A-CONT-3 mini-cycle of #58 (silent correctness regression + API symmetry)
