@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.14.4] - 2026-04-27
+
+### Fixed — `replace_text` reaches text inside inline `<w:sdt>` content controls (closes #63)
+
+Bumps `ooxml-swift` v0.20.3 → v0.20.4. Closes GitHub issue #63 (`replace_text` / `replace_text_batch` / `before_text` / `after_text` silently 0-matched on text wrapped in inline SDT content controls).
+
+**No che-word-mcp source changes** — fix architecture lives in `ooxml-swift`. See [PsychQuant/ooxml-swift v0.20.4 release notes](https://github.com/PsychQuant/ooxml-swift/releases/tag/v0.20.4) for full details.
+
+#### What this fixes for MCP users
+
+Pre-fix v3.14.3 `Document.replaceInParagraphSurfaces` covered `paragraph.runs` / `hyperlinks` / `fieldSimples` / `alternateContents` but **not** `paragraph.contentControls`. Text wrapped in inline `<w:sdt>` (common in docx output from external converters: pandoc / Quarto / LaTeX→docx wrap cross-ref placeholders `[tab:foo]` / `[fig:bar]` / `[Smith 2020]` in inline SDTs by convention) was silently 0-matched.
+
+User-visible symptoms (issue body `Repro` table):
+- `replace_text(find: "[tab:foo]")` returned `"Replaced 0 occurrence(s)"` even though the text was visually present in the document
+- `insert_image_from_path(after_text: "[tab:foo]")` raised "text '[tab:foo]' not found"
+- Bracket-free needle (`tab:foo`) also failed — confirming the bug was the SDT wrapper, not bracket characters
+- Workaround required anchoring on bracketless prose suffix (less stable across docx revisions)
+
+Post-fix v3.14.4: all 4 inline wrappers (`<w:fldChar>` paired field / `<w:fldSimple>` REF / `<w:hyperlink>` / **`<w:sdt>` inline SDT**) yield 1 match for the same payload. Differential test in [Issue63InlineSDTReplaceTests.swift](https://github.com/PsychQuant/ooxml-swift/blob/v0.20.4/Tests/OOXMLSwiftTests/Issue63InlineSDTReplaceTests.swift) covers all 4 wrappers × 4 needles + nested SDT recursion + round-trip wrapper preservation.
+
+#### Root-cause clarification (issue title was misleading)
+
+Issue title called out "literal `[ ]` brackets". The brackets are **coincidence** — external converters happen to wrap bracketed cross-refs in inline SDTs. The actual trigger is the SDT wrapping itself; bracket-free text inside inline SDTs failed too. Fix architecture targets the wrapper coverage gap, not bracket-as-regex-char escaping.
+
+#### Implementation
+
+`ooxml-swift` adds:
+1. `TextReplacementEngine.replaceInContentXML` — XML DOM walker that parses `ContentControl.content` (raw inline-XML fragment), flattens `<w:t>` descendants in document order with offset map (mirroring `flattenRuns`), runs the same literal/regex find logic, splices replacements back into `<w:t>` string content.
+2. `Document.replaceInContentControl` — recursive helper covering `cc.content` + `cc.children` (nested SDT).
+3. Wired into `Document.replaceInParagraphSurfaces` after the `alternateContents` loop.
+
+Skipped during the walk (correct by design):
+- `<w:delText>` (TC deletion text — not displayed)
+- `<w:instrText>` (field instruction code — not display)
+- nested `<w:sdt>` subtrees (typed `cc.children`, handled by outer recursion to avoid double-replacement)
+
+Round-trip discipline: only `<w:t>` element string content is mutated; `xml:space="preserve"` and other attributes survive verbatim because attribute sets are never touched.
+
+#### Test coverage
+
+| Suite | Tests | Status |
+|---|---|---|
+| `OOXMLSwiftPackageTests` | 690 → **693** | pass / 0 fail / 1 skip |
+| `CheWordMCPPackageTests` | 172 → **174** | pass / 0 fail / 9 skip |
+
+#### Backward compatibility
+
+Surgical fix — adds new code paths only. No existing behavior changed:
+- `paragraph.runs` / `hyperlinks` / `fieldSimples` / `alternateContents` replacement paths untouched.
+- `ContentControl` model unchanged (`content: String` storage preserved). Future SDD-warranted refactor toward typed inner runs tracked separately.
+
+#### Out of scope (separate follow-ups)
+
+- `ContentControl` model upgrade from `content: String` (raw XML) to typed `[Run]` / mixed-element list. SDD-warranted refactor; current surgical fix maintains model invariant.
+- `paragraph.smartTags` / `bidiOverrides` / `customXmlBlocks` / `unrecognizedChildren` (raw-carriers) — designed to be byte-equivalent passthrough, must not be modified by `replace_text`.
+
+---
+
 ## [3.14.3] - 2026-04-27
 
 ### Added — Sub-stack E of paragraph-level content-equality (closes #66)
