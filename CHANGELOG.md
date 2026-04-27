@@ -5,6 +5,65 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.14.1] - 2026-04-27
+
+### Fixed — Sub-stack C-CONT of #58/#59/#60 (closes triple-confirmed P0 from sub-stack C verify)
+
+Bumps `ooxml-swift` v0.20.0 → v0.20.1. Closes triple-confirmed P0 from R2 + R5 + Codex independent verify of v0.20.0.
+
+**No che-word-mcp source changes** — fix architecture lives entirely in `ooxml-swift`. See [PsychQuant/ooxml-swift v0.20.1 release notes](https://github.com/PsychQuant/ooxml-swift/releases/tag/v0.20.1) for full details.
+
+#### What MCP users see (vs v3.14.0)
+
+The following common Word-document elements were silently lost on round-trip in v3.14.0; v3.14.1 restores them:
+
+- **`<w:spacing>`** (character spacing — typeset documents)
+- **`<w:caps>` / `<w:smallCaps>`** (small-caps formatting)
+- **`<w:position>`** (vertical position offset)
+- **`<w:shd>`** (run-level shading / highlighting)
+- **`<w:bdr>`** (run-level border)
+- **`<w:em>`** (CJK emphasis marks)
+- **`<w:effect>`** (text effects: shimmer, blink, etc.)
+- **`<w:vanish>` / `<w:specVanish>` / `<w:webHidden>`** (visibility flags)
+- **`<w:outline>` / `<w:shadow>` / `<w:emboss>` / `<w:imprint>`** (legacy text effects)
+- **`<w:bCs>` / `<w:iCs>` / `<w:dstrike>`** (complex-script + double-strikethrough)
+
+Any tool that opens + saves a document with these elements (e.g., `delete_text`, `replace_text`, `format_text`, `insert_paragraph`) no longer silently strips them.
+
+#### Bug
+
+`parseRunProperties` had a `recognizedRprChildren` Set that listed 16+ rPr child kinds as "recognized" — meaning rawChildren capture would skip them. But parseRunProperties had NO typed extraction for those kinds → they neither become typed fields NOR get captured into rawChildren → silent drop.
+
+#### Fix
+
+Trimmed Set to ONLY actually-typed-extracted-or-emitted kinds. Everything else falls through to rawChildren and round-trips byte-equivalent.
+
+#### Round-trip size impact
+
+Document fixture `document.xml`:
+- Pre-fix v3.13.x: 32% loss
+- v3.14.0: 17.75% loss (+14.25 pp from typed-rPr extraction)
+- **v3.14.1: 16.66% loss** (additional 1.09 pp from rawChildren capture of previously-silent-dropped elements)
+
+Matrix-pin floor tightened from 0.19 → 0.175.
+
+#### Methodology lesson (6th refinement)
+
+R2 found this as P2 ('inline comment is false; pre-existing parity gap'). R5 escalated to P0 by recognizing the affected elements are common. Codex confirmed the P0 + identified 3 additional P1 (deferred to follow-up SDD).
+
+**P2 from one reviewer can become P0 when another applies real-world impact lens.** Severity = bug presence + blast radius. Use 6-AI verify diversity to surface maximum blast radius for each bug class.
+
+### Deferred (Codex P1, separate follow-up SDD)
+
+- Schema-order rawChildren tail-append (CT_RPr order constraints)
+- `characterSpacing` / `textEffect` parser-side extraction gap
+- Static `recognizedRprChildren` Set allocation (perf optimization)
+- Ratio-floor maintenance burden
+
+### Spectra change
+
+Ships sub-stack C-CONT of `che-word-mcp-issue-58-59-60-document-content-preservation`. After this hotfix, sub-stack C's #60 closure is verified clean for the ACTUAL field-loss audit scope.
+
 ## [3.14.0] - 2026-04-27
 
 ### Added — Sub-stack C of #58/#59/#60 (closes #60 RunProperties field-loss audit)
