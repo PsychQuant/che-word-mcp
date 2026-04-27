@@ -5,7 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.13.12] - 2026-04-27
+## [3.13.13] - 2026-04-27
+
+### CRITICAL HOTFIX — Sub-stack B-CONT-2-CONT of #58/#59/#60 (reverts v3.13.12 TIER-0 over-fix)
+
+Bumps `ooxml-swift` v0.19.12 → v0.19.13. **CRITICAL**: v3.13.12 silently stripped `<w:del>` deleted-text content on every round-trip. Triple-confirmed by R2 + R5 + Codex 6-AI verify on v0.19.12.
+
+**Affected version: v3.13.12** (DO NOT USE in production for any document with tracked-change deletions).
+
+**No che-word-mcp source changes** — fix architecture lives entirely in `ooxml-swift`. See [PsychQuant/ooxml-swift v0.19.13 release notes](https://github.com/PsychQuant/ooxml-swift/releases/tag/v0.19.13) for full deep-dive.
+
+#### What MCP users see (vs v3.13.12 — MANDATORY UPGRADE)
+
+- **`<w:del>` round-trip preserves deleted text content**. Pre-v3.13.13 (i.e., v3.13.12), opening any `.docx` with tracked deletions, mutating any part to mark it dirty, then saving → all `<w:delText>` content silently destroyed (only the opening/closing tags remained, with empty content). `accept_revision` would commit nothing; `reject_revision` would have nothing to restore.
+- **Affected workflows**: any tool sequence that touches a tracked-change document — `delete_text` / `replace_text` / `format_text` / `insert_paragraph` etc. on documents with prior `<w:del>` revisions.
+
+#### Bug analysis
+
+v3.13.12 added `"delText"` to `parseRun`'s `recognizedRunChildren` Set to fix the v3.13.11 counter-desync (R5 P0-1). Mechanically correct for the desync, but broke a load-bearing invariant in the writer:
+
+- Pre-v3.13.12: parseRun captured `<w:delText>` into `Run.rawElements`. Writer's gate at `Paragraph.swift:787` skipped synthetic emission because rawElements covered it; rawElements loop emitted `<w:delText>content</w:delText>` verbatim.
+- v3.13.12 (BROKEN): rawElements stayed empty; writer's gate fired synthetic emission with run.text="" → empty `<w:delText></w:delText>` written.
+
+The §2.33 test only counted opening tags (1=1 pre/post), and §2.34 only checked in-memory `Revision.originalText` (populated independently). Both passed falsely.
+
+#### Fix
+
+Reverted `"delText"` from `recognizedRunChildren`. Added `includeDelText: Bool = true` parameter to `advanceWhitespaceCounter(forSkippedXML:)`. parseRun's rawElements loop passes `includeDelText: false` when capturing `<w:delText>` — explicit `<w:del>` loop already advances delTextCounter, preventing double-advance without removing delText from rawElements (which writer needs).
+
+New test `testDelTextContentPreservedThroughRoundTrip` is a **payload-parity** test (asserts actual content survives) — distinguishes from the prior counter-parity tests that missed this regression.
+
+#### Methodology lesson (5th refinement, Codex insight)
+
+Operationalize 6-AI verify cycle by splitting predictions into **counter-parity** tests (opening-tag counts) AND **payload-parity** tests (actual content). Future predictions about duplicate/loss scenarios should require a payload-parity test before the prediction is accepted as falsified.
+
+### Spectra change
+
+Ships sub-stack B-CONT-2-CONT of `che-word-mcp-issue-58-59-60-document-content-preservation`. Sub-stack C (#60 RunProperties audit) ships next as v3.14.0.
+
+## [3.13.12] - 2026-04-27 — DO NOT USE (silently strips <w:del> content)
 
 ### Fixed — Sub-stack B-CONT-2 of #58/#59/#60 (closes 6 P0 + 3 P1 from sub-stack B-CONT 6-AI verify)
 
