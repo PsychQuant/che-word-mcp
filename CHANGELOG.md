@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.13.12] - 2026-04-27
+
+### Fixed — Sub-stack B-CONT-2 of #58/#59/#60 (closes 6 P0 + 3 P1 from sub-stack B-CONT 6-AI verify)
+
+Bumps `ooxml-swift` v0.19.11 → v0.19.12. Closes 6 P0 + 3 P1 from the [sub-stack B-CONT 6-AI verify](https://github.com/PsychQuant/che-word-mcp/issues/59#issuecomment-4324076688) — 4-reviewer convergence.
+
+**No che-word-mcp source changes** — fix architecture lives entirely in `ooxml-swift`. See [PsychQuant/ooxml-swift v0.19.12 release notes](https://github.com/PsychQuant/ooxml-swift/releases/tag/v0.19.12) for the architectural deep-dive.
+
+#### What MCP users see (vs v3.13.11)
+
+- **Tracked-deletion of whitespace across multiple `<w:del>` blocks** now round-trips correctly. Pre-fix v3.13.11 silently lost the second (and subsequent) deletion's whitespace because `parseRun`'s `recognizedRunChildren` Set didn't include `"delText"` — `delTextCounter` advanced twice per delText (once via rawElements path's `countDelTextElements`, once via explicit loop), so the second deletion's overlay-recovery query landed at the wrong index.
+- **Whitespace recovery now works in documents containing**: unrecognized container body-level elements (vendor extensions in headers/footers), hyperlinks with nested `<w:fldSimple>` / `<mc:AlternateContent>` / `<w:smartTag>`, fieldSimple containing non-`<w:r>` children, smart-tagged paragraphs, customXml wrappers, bidirectional override blocks. Pre-fix all 5+ sites missed `advanceWhitespaceCounter` and silently corrupted post-element whitespace.
+
+#### Important note on R5 finding
+
+R5 Devil's Advocate predicted a CRITICAL data corruption bug in v3.13.11 (`<w:delText>` duplicate emission via writer-side amplification of the parseRun rawElements path). **This prediction was FALSIFIED** by code trace + targeted regression test (§2.33): `Paragraph.swift:787` gate (`!run.text.isEmpty || (run.rawElements?.isEmpty ?? true)`) skips explicit `<w:delText>` emission when rawElements covers it. v3.13.11 was NOT corrupting `<w:del>` round-trips — the fix is for the underlying counter desync (R5 P0-1) which DID exist. v3.13.12 retains the test as a regression guard for the writer-gate invariant.
+
+**Methodology refinement**: adversarial reviewers can correctly identify a bug class but mis-grade severity by missing protective gates elsewhere in the codebase. Verify-cycle response should TEST predictions, not assume them — this saved us from a misframed BLOCK and added a regression guard for the writer-gate behavior.
+
+#### Architectural recap (sub-stack B-CONT-2 changes)
+
+- TIER-0 (R5 P0-1): added `"delText"` to `recognizedRunChildren` Set at `DocxReader.swift:1847`. parseRun's rawElements loop now skips delText (already captured by explicit `<w:del>` loop). Eliminates double-count.
+- TIER-1 (R2 + Codex 5 P0): `Self.advanceWhitespaceCounter(forSkippedXML: ...)` call added at parseContainerChildBodyChildren raw fallback, parseHyperlink rawChildren else-branch, parseFieldSimple non-`<w:r>` else-branch (also documents independent content-loss bug for non-run fldSimple children), parseParagraph smartTag/customXml/dir/bdo (4 raw-carrier blocks).
+
+### Deferred (B-CONT-2 TIER-2)
+
+- §2.43 central raw-capture helper refactor — high-value but adds touchpoint risk; future raw-capture additions still require manual `advanceWhitespaceCounter` call. Tracked.
+- §2.44 `buildAllPartsWhitespaceFixture` upgrade with real-world content classes — sterile fixture remains; per-test class coverage suffices for now. Long-term consolidation tracked.
+- §2.45/§2.46 container-part + delText parity in matrix-pin — sub-stack C scope addition.
+- B-CONT MAY-tier carries forward (concurrency, single-quoted attr, perf gate).
+
+### Spectra change
+
+Ships sub-stack B-CONT-2 of `che-word-mcp-issue-58-59-60-document-content-preservation`. Sub-stack C (#60 RunProperties audit) ships next as v3.14.0.
+
 ## [3.13.11] - 2026-04-27
 
 ### Fixed — Sub-stack B-CONT of #58/#59/#60 (closes 4 P0 + 3 P1 from sub-stack B 6-AI verify)
