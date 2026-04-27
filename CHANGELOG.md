@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.14.2] - 2026-04-27
+
+### Added — Sub-stack D of paragraph-level content-equality (closes #65)
+
+Bumps `ooxml-swift` v0.20.1 → v0.20.2. Closes GitHub issue #65 (paragraph-mark `<w:pPr><w:rPr>` silently dropped at parse time).
+
+**No che-word-mcp source changes** — fix architecture lives entirely in `ooxml-swift`. See [PsychQuant/ooxml-swift v0.20.2 release notes](https://github.com/PsychQuant/ooxml-swift/releases/tag/v0.20.2) for full details.
+
+#### What this fixes for MCP users
+
+Pre-fix v3.14.1 silently dropped paragraph-mark formatting — the `<w:rPr>` nested inside `<w:pPr>` that controls the pilcrow ¶ glyph appearance (font, size, color, language tag, kerning). User-visible symptoms: traditional Chinese pilcrow font (DFKai-SB) being replaced with Latin font on round-trip; document language tags being silently lost; w14:* paragraph-mark effects (textOutline, glow, etc.) disappearing.
+
+Post-fix v3.14.2:
+- `<w:lang>` retention: 50% → **98.89%**
+- `<w:rFonts>` retention: 88% → 98.77%
+- `<w:noProof>` retention: 92% → 100%
+- `<w:kern>` retention: 84% → 99.93%
+- `document.xml` size loss: 16.66% → **10.95%**
+
+#### Architecture
+
+Sub-stack D of the `che-word-mcp-paragraph-level-content-equality` Spectra change. Reuses `parseRunProperties` verbatim — `<w:rPr>` schema inside `<w:pPr>` is identical to run-level CT_RPr per ECMA-376 §17.3.1.27, so all of sub-stack C's typed extraction (4-axis rFonts, noProof, kern, 3-axis lang) and `rawChildren` passthrough (w14:* effects) come for free.
+
+The cross-cutting matrix-pin `testDocumentContentEqualityInvariant` ratchets in lockstep: `<w:lang>` floor 0.45→0.95; `<w:rFonts>`/`<w:noProof>`/`<w:kern>` 0.95; sizeLossRatio ceiling 0.175→0.12. Any future regression in run-level OR paragraph-level `RunProperties` handling now fails the matrix-pin.
+
+#### Backward compatibility
+
+`ParagraphProperties.markRunProperties` is optional (default nil). All pre-existing API consumers continue to work — paragraphs without source `<w:pPr><w:rPr>` emit no synthetic empty wrappers.
+
+#### Coming next
+
+Sub-stack E (#66 w14:paraId/textId on `<w:p>`) ships as v3.14.3 — completes the path to `< 5%` round-trip loss and enables the strong demo claim「edit 一個字 → document.xml shrinks <1%」.
+
 ## [3.14.1] - 2026-04-27
 
 ### Fixed — Sub-stack C-CONT of #58/#59/#60 (closes triple-confirmed P0 from sub-stack C verify)
