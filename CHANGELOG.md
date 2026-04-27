@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.14.3] - 2026-04-27
+
+### Added — Sub-stack E of paragraph-level content-equality (closes #66)
+
+Bumps `ooxml-swift` v0.20.2 → v0.20.3. Closes GitHub issue #66 (paragraph `w14:paraId` / `w14:textId` attributes silently dropped at parse time).
+
+**No che-word-mcp source changes** — fix architecture lives entirely in `ooxml-swift`. See [PsychQuant/ooxml-swift v0.20.3 release notes](https://github.com/PsychQuant/ooxml-swift/releases/tag/v0.20.3) for full details.
+
+#### What this fixes for MCP users
+
+Pre-fix v3.14.2 silently dropped Word's revision-tracking GUIDs (`w14:paraId` / `w14:textId`) on `<w:p>` opening tags. User-visible symptoms:
+- Paragraph identity lost across collaborative-edit sessions
+- Comment threading anchors broken on round-trip (Word uses w14:paraId to bind comments to specific paragraphs)
+- Document revision history annotations not preserved
+
+Post-fix v3.14.3:
+- `w14:` retention: 10.55% → **93.98%**
+- `document.xml` size loss: 10.95% → **8.02%**
+
+#### Combined sub-stack D + E impact (since v3.14.1)
+
+| Preservation class | v3.14.1 | v3.14.3 | Total |
+|---|---|---|---|
+| `<w:lang>` retention | 50% | 98.89% | (D) +48.89 pp |
+| `w14:` retention | 5% | 93.98% | (E) +88.98 pp |
+| `document.xml` size loss | 16.66% | 8.02% | (D+E) -8.64 pp |
+
+#### Architecture
+
+Sub-stack E of the `che-word-mcp-paragraph-level-content-equality` Spectra change. Plain attribute passthrough — two new optional `String?` fields on `Paragraph`. Word's GUIDs are 8-character hex tokens (NOT RFC 4122 UUIDs), so opaque-string round-trip is correct.
+
+The cross-cutting matrix-pin `testDocumentContentEqualityInvariant` is now LOAD-BEARING across **5 preservation classes** (rFonts / noProof / lang / kern / w14:) spanning run-level + paragraph-level + paragraph-mark scope. Any future regression in any class fails CI.
+
+#### Defensive design (R2 review fixes)
+
+- **XML attribute escaping**: `openingPTag()` helper routes attribute values through `escapeXMLAttribute` even though Word's GUIDs are constrained to hex.
+- **Empty-string-as-absent guard**: `parseParagraph` rejects `w14:paraId=""` source attrs (schema-invalid per ECMA-376 ST_LongHexNumber; Word's repair path silently drops them).
+
+#### Backward compatibility
+
+`Paragraph.w14ParaId` and `Paragraph.w14TextId` are optional (default nil). All pre-existing API consumers continue to work unchanged.
+
 ## [3.14.2] - 2026-04-27
 
 ### Added — Sub-stack D of paragraph-level content-equality (closes #65)
