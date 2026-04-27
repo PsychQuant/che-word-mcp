@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.13.8] - 2026-04-27
+
+### Fixed — Sub-stack A-CONT-2 mini-mini-cycle of #58 (API-layer + SDT recursion + matrix-pin fixture)
+
+Bumps `ooxml-swift` v0.19.7 → v0.19.8. Closes 2 P0 + 1 P1 from the [sub-stack A-CONT 6-AI verify](https://github.com/PsychQuant/che-word-mcp/issues/58#issuecomment-4323658377) which returned BLOCK with v3.13.7 shipping a partial fix (parser-side mirror landed but API-layer + SDT recursion gaps remained).
+
+**No che-word-mcp source changes** — fix architecture lives entirely in `ooxml-swift`. Sub-cycle 3 for #58 (A → A-CONT → A-CONT-2). Same convergence-cycle pattern as R5 → R5-CONT-4 (5 sub-cycles for #56).
+
+#### What MCP users see (vs v3.13.7)
+
+- **`list_bookmarks` returns body-level TOC anchors inside headers / footers / footnotes / endnotes** (not just body). v3.13.7 preserved them on disk but only surfaced body-scope ones to MCP.
+- **`delete_bookmark` can delete those names successfully**. v3.13.7 threw `notFound` despite `list_bookmarks` returning them — state inconsistency now resolved.
+- **Block-level SDTs (Structured Document Tags) inside headers are visible to typed-model walkers** (incl. `nextBookmarkId` calibration on nested bookmark ids). v3.13.7 captured them as `.rawBlockElement` — XML byte-preserved but typed-model invisible.
+
+### Tests
+
+172 tests pass / 9 skipped / 0 failures (against released ooxml-swift v0.19.8).
+
+### Spectra change
+
+Sub-stack A-CONT-2 mini-mini-cycle. Re-numbers planned sub-stack B → v3.13.9 (sub-stack C unchanged at v3.14.0).
+
 ## [3.13.7] - 2026-04-27
 
 ### Fixed — Sub-stack A-CONT mini-cycle of #58 (parser asymmetry)
