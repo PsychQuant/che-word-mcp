@@ -2480,7 +2480,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（行內模式時指定插入位置）。display mode 下若搭配 anchor，anchor 優先")
+                            "description": .string("body.children 索引（從 0 開始；計入 tables / SDTs / bookmarkMarker / rawBlockElement，**不**等同於 get_paragraphs 回傳的 paragraph-only count）。display mode 下若搭配 anchor，anchor 優先；inline 模式直接以此索引插入。lib API 在 #61 / #69 系列已對齊到 body.children index；參數命名沿用「paragraph_index」是歷史遺留，跨工具語意統一見 PsychQuant/ooxml-swift#10。")
                         ]),
                         "into_table_cell": .object([
                             "type": .string("object"),
@@ -4778,7 +4778,7 @@ actor WordMCPServer {
             // 12.1 insert_caption - 插入圖表標號
             Tool(
                 name: "insert_caption",
-                description: "為圖表/公式插入自動編號 caption（emit 真 SEQ field，Word F9 自動重算）。v2.1+ 支援中文 label（圖/表/公式）+ 三種 anchor（paragraph_index / after_image_id / after_table_index，擇一）。include_chapter_number 會 emit STYLEREF field 產生「圖 2-1」式章節編號。",
+                description: "為圖表/公式插入自動編號 caption（emit 真 SEQ field，Word F9 自動重算）。v2.1+ 支援中文 label（圖/表/公式）+ 5 種 anchor（paragraph_index / after_image_id / after_table_index / after_text / before_text，擇一）。include_chapter_number 會 emit STYLEREF field 產生「圖 2-1」式章節編號。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
