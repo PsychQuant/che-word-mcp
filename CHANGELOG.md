@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.15.2] - 2026-04-28
+
+### Fixed — Bundle A polish from v3.15.1 R2 verify (Refs #69 #73 #74 #75)
+
+Cleanup release for the four P3-level findings left over from #61's R2 verify (codex + devil's advocate) plus #69 (pre-existing index mis-report exposed by #61 follow-ups). All trivial; no behavior change in normal call paths; `194 → 196` tests.
+
+#### #69 (bug) — `insert_paragraph` append message reports `body.children` index
+
+`Server.swift:6659` reported `getParagraphs().count - 1` for the append branch. `getParagraphs()` is recursive over `body.children` but skips tables and SDT markers (`Document.swift:205-228`), so in a doc with body `[para, table, para]` + appended para, it reported `at index 2` while `body.children.count - 1` was `3`. Since `Document.insertParagraph(_:at:Int)` interprets its int as a `body.children` index (`Document.swift:266-270`), the reported number was not round-trippable as `paragraph_index` for subsequent inserts. Now uses `body.children.count - 1`, matching the convention `insert_equation` already used at `Server.swift:8799`.
+
+#### #74 (bug) — `insert_image_from_path` debug log mis-labeled `after_image_id`
+
+v3.15.1 wired `after_image_id` into `insert_image_from_path`'s dispatch (`Server.swift:7891`) but the structured-entry log's `anchorKind` detection (`Server.swift:7844-7848`) only checked `into_table_cell` / `after_text` / `before_text`. Calls using `after_image_id` were silently labeled `index` in debug output. Detection priority now mirrors dispatch priority. Debug-log only; no behavior change.
+
+#### #73 (test) — `insert_equation` F5 partial-dict regression pin
+
+v3.15.1 added F5 partial-dict guards to all three insert tools at `Server.swift:8762` (equation), but the test sweep only covered paragraph + image_from_path. Adds `testInsertEquationMalformedIntoTableCellReportsError` to pin the equation guard.
+
+#### #75 (docs) — `'3 insert tools'` wording precision
+
+CHANGELOG / manifest / marketplace.json / plugin.json described scope as `'across the 3 insert tools'` / `'across all 3 tools'`, but the repo has a 4th insert tool (`insert_caption`) with its own anchor set including `after_table_index`. v3.15.1's anchor unification scope was the 3 #61-target tools (`insert_paragraph` / `insert_equation` / `insert_image_from_path`). Replaced ambiguous phrasing with explicit enumeration.
+
+### Tests
+
+`swift test --disable-sandbox` — `185 → 194 → 196` (+2 from this release: `testInsertEquationMalformedIntoTableCellReportsError` for #73 + `testInsertParagraphAppendMessageUsesBodyChildrenIndex` for #69). 0 fail / 9 pre-existing skips.
+
+### Backward compatibility
+
+- `insert_paragraph` append message changed from `'at index N'` (where N counted via `getParagraphs().count - 1`) to `'at index M'` (where M = `body.children.count - 1`). For docs without tables/SDTs, N == M (no observable change). For docs with tables/SDTs, M is the correct value to round-trip as `paragraph_index` — this is the bug being fixed; pre-fix N was already wrong.
+- `insert_image_from_path` debug-log label change is observable only when `CHE_WORD_MCP_LOG_LEVEL=debug`.
+- All other changes are docs / tests; no behavioral surface affected.
+
+### No ooxml-swift dep bump
+
+Still v0.20.5 (unchanged).
+
+---
+
 ## [3.15.1] - 2026-04-28
 
 ### Added / Fixed — Verify findings F1+F2+F3+F5 closed (Refs #61)
