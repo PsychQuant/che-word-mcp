@@ -5,6 +5,87 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.17.0] - 2026-04-28
+
+### Added — wrap_caption_seq MCP tool (Refs #62)
+
+Phase 2 of the cross-repo `wrap_caption_seq` work — exposes the lib API (ooxml-swift v0.21.0 `WordDocument.wrapCaptionSequenceFields`) as an MCP tool. Phase 1 shipped the lib in v3.16.2. This release wires the MCP wrapper.
+
+#### Real-world need
+
+Documents pasted from external sources (LaTeX-converted Word, Google Docs, Pandoc) carry caption numbering as **plain text** instead of real Word SEQ fields. As a result, `insert_table_of_figures` / `insert_table_of_tables` produce empty TOFs because there are no SEQ fields to scan. `wrap_caption_seq` rescues these documents in one bulk pass: regex-match the caption text, replace the numeric portion with a real SEQ field whose `cachedResult` preserves the user-typed numeral.
+
+#### Tool surface
+
+```jsonc
+{
+  "name": "wrap_caption_seq",
+  "args": {
+    "doc_id":            "p1",                         // required
+    "pattern":           "圖 4-(\\d+)：",                // required — regex with EXACTLY ONE capture group
+    "sequence_name":     "Figure",                     // required — SEQ identifier (matches insert_caption / list_captions)
+    "format":            "ARABIC",                     // optional — ARABIC | ROMAN | ALPHABETIC (default ARABIC)
+    "scope":             "body",                       // optional — body | all (default body; all → scope_not_implemented in v3.17.0)
+    "insert_bookmark":   false,                        // optional — opt-in bookmark wrap
+    "bookmark_template": "fig${number}"                // required when insert_bookmark=true; must contain literal ${number}
+  }
+}
+```
+
+Returns JSON with snake_case keys:
+
+```json
+{
+  "matched_paragraphs":  3,
+  "fields_inserted":     3,
+  "paragraphs_modified": [0, 1, 2],
+  "skipped":             []
+}
+```
+
+Each `skipped` entry carries `paragraph_index` + `reason` (e.g. `"already wraps SEQ Figure"`). Top-level `paragraphs_modified` indices are body.children-relative — same convention as `insert_paragraph`.
+
+#### Idempotency contract
+
+Re-running on the same document reports already-wrapped paragraphs in `skipped` with `reason: "already wraps SEQ <name>"` and never double-wraps. Detection covers BOTH typed `FieldSimple` SEQ emissions AND `Run.rawXML`-embedded 5-run `<w:fldChar>` blocks. The lib's match-counter inlines existing SEQ `cachedResult` digits when matching, so the regex still recognizes wrapped captions on re-runs.
+
+#### Pre-mutation validation (Error: wrap_caption_seq: ...)
+
+All preconditions checked BEFORE document mutation, returning `"Error: wrap_caption_seq: <body>"` per #70 tool-prefix convention:
+
+- `pattern failed to compile: <NSError reason>`
+- `pattern must contain exactly one capture group, got <N>`
+- `format '<X>' not recognized. Valid: ARABIC / ROMAN / ALPHABETIC.`
+- `scope '<X>' not recognized. Valid: body / all.`
+- `bookmark_template required when insert_bookmark is true`
+- `bookmark_template must contain literal '${number}' placeholder, got '<X>'`
+- `scope_not_implemented: all (Phase 1 ships .body only; .all lands in v3.17.x)`
+
+`doc_id` not opened throws `WordError.documentNotFound` per existing convention.
+
+#### Phase 1 scope deferral
+
+`scope: "all"` (cross-container — headers/footers/footnotes/endnotes) returns `Error: wrap_caption_seq: scope_not_implemented: all` and lands in v3.17.x alongside an integration test. The Phase 1 `body` walk does already recurse into `.table` (rows × cells × paragraphs + nestedTables) and `.contentControl(_, children:)` (recursive).
+
+#### Bookmark wrap (opt-in)
+
+Default off — passing 23 plain captions through with `insert_bookmark: false` adds zero bookmarks (avoids polluting `list_bookmarks`). When on, `bookmark_template` MUST contain literal `${number}` placeholder; the captured numeric replaces it (e.g. `fig${number}` → `fig7` for `Figure 7.`).
+
+#### Tests
+
+5 sub-tests in `Issue62WrapCaptionSeqTests`:
+- `testWrapCaptionSeqEndToEndOnThreeFigureCaptions` (Scenario 1)
+- `testWrapCaptionSeqIdempotentReRun` (Scenario 2)
+- `testWrapCaptionSeqRejectsZeroCaptureGroupPattern` (Scenario 3, exact error string)
+- `testWrapCaptionSeqRejectsBookmarkTrueWithoutTemplate` (Scenario 5)
+- `testWrapCaptionSeqAfterCallEnablesUpdateAllFieldsAndTOF` (end-to-end value test)
+
+Suite: `231 → 236` (+5, 0 fail / 9 skip). No ooxml-swift dep bump (still v0.21.0 from v3.16.2).
+
+#### Backward compatibility
+
+Pure addition. No tool removed, no schema change to existing tools, no error-message format change. New tool name `wrap_caption_seq`; dispatcher chain unchanged for all other cases.
+
 ## [3.16.2] - 2026-04-28
 
 ### Changed — bump ooxml-swift dep 0.20.5 → 0.21.0 (Refs #62 #68)

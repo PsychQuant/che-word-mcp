@@ -4894,6 +4894,51 @@ actor WordMCPServer {
                 ])
             ),
 
+            // v3.17.0 wrap_caption_seq (Refs #62) — bulk-wrap plain-text caption
+            // numbers into SEQ fields so insert_table_of_figures /
+            // insert_table_of_tables produce populated TOFs after pasting docs
+            // from external sources (LaTeX-converted Word, Google Docs, Pandoc).
+            Tool(
+                name: "wrap_caption_seq",
+                description: "v3.17.0+ (Refs #62) — bulk-wrap plain-text caption number portions in SEQ field runs across body paragraphs whose flattened text matches `pattern` (regex with EXACTLY ONE numeric capture group). Captured digit becomes the SEQ field's cachedResult so Word's first-open render preserves user-typed numbering before F9. Idempotent: paragraphs already wrapping a SEQ field for `sequence_name` are reported in `skipped` and never double-wrapped. Phase 1 ships scope:\"body\" only (recurses into table cells + nestedTables + block-level SDT children); scope:\"all\" returns Error: scope_not_implemented for now (cross-container path lands in v3.17.x). Bookmark wrap is opt-in (insert_bookmark + bookmark_template with literal `${number}` placeholder) so default 23-caption rescue does NOT pollute list_bookmarks. Returns JSON: {matched_paragraphs, fields_inserted, paragraphs_modified:[idx,...], skipped:[{paragraph_index, reason},...]} for downstream caller verification. All preconditions (pattern compile + capture-group count + format / scope enums + bookmark_template invariant + doc_id opened) checked BEFORE document mutation.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ]),
+                        "pattern": .object([
+                            "type": .string("string"),
+                            "description": .string("Regex string with EXACTLY ONE numeric capture group (e.g. `圖 4-(\\d+)：`, `Figure (\\d+)\\.`). Captured group becomes SEQ field cachedResult.")
+                        ]),
+                        "sequence_name": .object([
+                            "type": .string("string"),
+                            "description": .string("SEQ identifier (e.g. \"Figure\", \"Table\", custom). Same identifier used by insert_caption / list_captions / update_all_fields.")
+                        ]),
+                        "format": .object([
+                            "type": .string("string"),
+                            "enum": .array([.string("ARABIC"), .string("ROMAN"), .string("ALPHABETIC")]),
+                            "description": .string("SEQ field number format (default ARABIC). One of ARABIC / ROMAN / ALPHABETIC.")
+                        ]),
+                        "scope": .object([
+                            "type": .string("string"),
+                            "enum": .array([.string("body"), .string("all")]),
+                            "description": .string("Walk scope (default `body`). `body` = body.children only (recurses into table cells + block-level SDT); `all` = body + headers + footers + footnotes + endnotes (NOT YET IMPLEMENTED in v3.17.0; returns Error: scope_not_implemented).")
+                        ]),
+                        "insert_bookmark": .object([
+                            "type": .string("boolean"),
+                            "description": .string("Default false. When true, wraps each SEQ run in `<w:bookmarkStart>`/`<w:bookmarkEnd>` for downstream cross-references; requires `bookmark_template`.")
+                        ]),
+                        "bookmark_template": .object([
+                            "type": .string("string"),
+                            "description": .string("Required when `insert_bookmark` is true. Must contain literal `${number}` placeholder; the captured numeric replaces it (e.g. `fig${number}` → `fig7` for `Figure 7.`). Without `${number}` the bookmark name would collide across captions (violates `<w:bookmarkStart>` name uniqueness).")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("pattern"), .string("sequence_name")])
+                ])
+            ),
+
             // 12.1.1 v3.1.0 Caption CRUD (Refs #17)
             Tool(
                 name: "list_captions",
@@ -6131,6 +6176,8 @@ actor WordMCPServer {
         // Phase 3: 學術功能
         case "insert_caption":
             return try await insertCaption(args: args)
+        case "wrap_caption_seq":
+            return try await wrapCaptionSeq(args: args)
         // v3.1.0 Caption CRUD + update_all_fields + Equation CRUD (Refs #17 #19 #21)
         case "list_captions":
             return try await listCaptionsHandler(args: args)
@@ -12277,6 +12324,120 @@ actor WordMCPServer {
         } catch let InsertLocationError.textNotFound(text, instance) {
             return "Error: insert_caption: text '\(text)' not found (instance \(instance))"
         }
+    }
+
+    // v3.17.0+ #62 — wrap_caption_seq MCP tool. Thin pass-through over the
+    // ooxml-swift v0.21.0 lib API `WordDocument.wrapCaptionSequenceFields`.
+    // Pre-mutation validation (regex compile + capture-group count + format /
+    // scope enums + bookmark_template invariant) runs BEFORE we touch the
+    // document — same discipline as insert_caption + lib-side validation in
+    // wrapCaptionSequenceFields. All error returns use "Error: wrap_caption_seq:
+    // ..." per #70 tool-prefix convention. Returns a JSON string with
+    // snake_case keys (matched_paragraphs / fields_inserted / paragraphs_modified
+    // / skipped) so LLM callers can verify "did all N captions get fields?".
+    private func wrapCaptionSeq(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let patternStr = args["pattern"]?.stringValue else {
+            throw WordError.missingParameter("pattern")
+        }
+        guard let sequenceName = args["sequence_name"]?.stringValue else {
+            throw WordError.missingParameter("sequence_name")
+        }
+        guard var doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        // 1. Compile regex.
+        let regex: NSRegularExpression
+        do {
+            regex = try NSRegularExpression(pattern: patternStr, options: [])
+        } catch {
+            return "Error: wrap_caption_seq: pattern failed to compile: \(error.localizedDescription)"
+        }
+
+        // 2. Capture-group count check (lib also validates, but we surface a
+        // tool-prefixed error matching the spec scenario string verbatim).
+        let groupCount = regex.numberOfCaptureGroups
+        guard groupCount == 1 else {
+            return "Error: wrap_caption_seq: pattern must contain exactly one capture group, got \(groupCount)"
+        }
+
+        // 3. Format enum (default ARABIC).
+        let formatStr = args["format"]?.stringValue ?? "ARABIC"
+        let format: SequenceField.SequenceFormat
+        switch formatStr {
+        case "ARABIC":     format = .arabic
+        case "ROMAN":      format = .roman
+        case "ALPHABETIC": format = .alphabetic
+        default:
+            return "Error: wrap_caption_seq: format '\(formatStr)' not recognized. Valid: ARABIC / ROMAN / ALPHABETIC."
+        }
+
+        // 4. Scope enum (default body).
+        let scopeStr = args["scope"]?.stringValue ?? "body"
+        let scope: TextScope
+        switch scopeStr {
+        case "body": scope = .body
+        case "all":  scope = .all
+        default:
+            return "Error: wrap_caption_seq: scope '\(scopeStr)' not recognized. Valid: body / all."
+        }
+
+        // 5. Bookmark invariant — checked here AND in lib for defense in depth.
+        let insertBookmark = args["insert_bookmark"]?.boolValue ?? false
+        let bookmarkTemplate = args["bookmark_template"]?.stringValue
+        if insertBookmark {
+            guard let template = bookmarkTemplate, !template.isEmpty else {
+                return "Error: wrap_caption_seq: bookmark_template required when insert_bookmark is true"
+            }
+            guard template.contains("${number}") else {
+                return "Error: wrap_caption_seq: bookmark_template must contain literal '${number}' placeholder, got '\(template)'"
+            }
+        }
+
+        // 6. Call lib API.
+        let result: WrapCaptionResult
+        do {
+            result = try doc.wrapCaptionSequenceFields(
+                pattern: regex,
+                sequenceName: sequenceName,
+                format: format,
+                scope: scope,
+                insertBookmark: insertBookmark,
+                bookmarkTemplate: bookmarkTemplate
+            )
+        } catch WrapCaptionError.patternMissingCaptureGroup(let actual) {
+            // Should be unreachable (we pre-checked) but propagate explicitly.
+            return "Error: wrap_caption_seq: pattern must contain exactly one capture group, got \(actual)"
+        } catch WrapCaptionError.bookmarkTemplateMissing {
+            return "Error: wrap_caption_seq: bookmark_template required when insert_bookmark is true"
+        } catch WrapCaptionError.scopeNotImplemented(let s) {
+            return "Error: wrap_caption_seq: scope_not_implemented: \(s == .all ? "all" : "body") (Phase 1 ships .body only; .all lands in v3.17.x)"
+        } catch {
+            return "Error: wrap_caption_seq: \(error.localizedDescription)"
+        }
+
+        // 7. Persist.
+        try await storeDocument(doc, for: docId)
+
+        // 8. Marshal result to JSON with snake_case keys.
+        let json: [String: Any] = [
+            "matched_paragraphs": result.matchedParagraphs,
+            "fields_inserted": result.fieldsInserted,
+            "paragraphs_modified": result.paragraphsModified,
+            "skipped": result.skipped.map { skip -> [String: Any] in
+                var entry: [String: Any] = [
+                    "paragraph_index": skip.paragraphIndex,
+                    "reason": skip.reason
+                ]
+                if let container = skip.container { entry["container"] = container }
+                return entry
+            }
+        ]
+        let data = try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
+        return String(data: data, encoding: .utf8) ?? "{}"
     }
 
     /// 插入交互參照
