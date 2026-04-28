@@ -6656,6 +6656,10 @@ actor WordMCPServer {
         // Anchor priority (mirrors insert_image_from_path):
         // into_table_cell > after_image_id > after_text > before_text > index > append
         let textInstance = args["text_instance"]?.intValue ?? 1
+        // anchor-dx-consistency (#72): explicit text_instance < 1 rejected.
+        if let explicit = args["text_instance"]?.intValue, explicit < 1 {
+            return "Error: insert_paragraph: text_instance must be ≥ 1, got \(explicit)."
+        }
         let resultMessage: String
 
         if let cellDict = args["into_table_cell"]?.objectValue {
@@ -7922,6 +7926,10 @@ actor WordMCPServer {
         // Resolve anchor: priority is into_table_cell > after_image_id > after_text > before_text > index
         let imageId: String
         let textInstance = args["text_instance"]?.intValue ?? 1
+        // anchor-dx-consistency (#72): explicit text_instance < 1 rejected.
+        if let explicit = args["text_instance"]?.intValue, explicit < 1 {
+            return "Error: insert_image_from_path: text_instance must be ≥ 1, got \(explicit)."
+        }
         if let cellDict = args["into_table_cell"]?.objectValue {
             // F5 (v3.15.1): malformed partial dict returns structured error instead of silent fallthrough.
             guard let tableIdx = cellDict["table_index"]?.intValue,
@@ -8792,6 +8800,10 @@ actor WordMCPServer {
         let afterImageId = args["after_image_id"]?.stringValue          // v3.15.1
         let intoTableCellDict = args["into_table_cell"]?.objectValue    // v3.15.1
         let textInstance = args["text_instance"]?.intValue ?? 1
+        // anchor-dx-consistency (#72): explicit text_instance < 1 rejected.
+        if let explicit = args["text_instance"]?.intValue, explicit < 1 {
+            return "Error: insert_equation: text_instance must be ≥ 1, got \(explicit)."
+        }
 
         // Anchors only meaningful in display mode (block-level new paragraph).
         // Inline mode appends an OMML run into an existing paragraph; anchor
@@ -12174,6 +12186,10 @@ actor WordMCPServer {
         let afterTextArg = args["after_text"]?.stringValue
         let beforeTextArg = args["before_text"]?.stringValue
         let textInstance = args["text_instance"]?.intValue ?? 1
+        // anchor-dx-consistency (#72): explicit text_instance < 1 rejected.
+        if let explicit = args["text_instance"]?.intValue, explicit < 1 {
+            return "Error: insert_caption: text_instance must be ≥ 1, got \(explicit)."
+        }
 
         // Build caption paragraph: label text + optional chapter STYLEREF + SEQ field + optional caption text
         var runs: [Run] = [Run(text: "\(label) ")]

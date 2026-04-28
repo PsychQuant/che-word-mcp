@@ -385,6 +385,169 @@ final class AnchorDXConsistencyTests: XCTestCase {
         XCTAssertTrue(msg.contains("at index"), "expected index report, got: \(msg)")
     }
 
+    // MARK: - Phase 2: text_instance validation
+    // Spec R2 — text_instance MUST be ≥ 1 when explicitly specified.
+
+    /// Spec R2 Scenario "text_instance: 0 rejected" for insert_paragraph.
+    func testInsertParagraphRejectsZeroTextInstance() async throws {
+        let url = try emptyDocxURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let server = await WordMCPServer()
+
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("p72ip0")]
+        )
+
+        let r = await server.invokeToolForTesting(
+            name: "insert_paragraph",
+            arguments: [
+                "doc_id": .string("p72ip0"),
+                "text": .string("x"),
+                "after_text": .string("foo"),
+                "text_instance": .int(0)
+            ]
+        )
+        let msg = textOf(r)
+        XCTAssertTrue(
+            msg.contains("Error: insert_paragraph: text_instance must be ≥ 1, got 0"),
+            "expected text_instance validation error, got: \(msg)"
+        )
+    }
+
+    /// Spec R2 Scenario "text_instance: -3 rejected" for insert_paragraph.
+    func testInsertParagraphRejectsNegativeTextInstance() async throws {
+        let url = try emptyDocxURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let server = await WordMCPServer()
+
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("p72ipn")]
+        )
+
+        let r = await server.invokeToolForTesting(
+            name: "insert_paragraph",
+            arguments: [
+                "doc_id": .string("p72ipn"),
+                "text": .string("x"),
+                "after_text": .string("foo"),
+                "text_instance": .int(-3)
+            ]
+        )
+        let msg = textOf(r)
+        XCTAssertTrue(
+            msg.contains("Error: insert_paragraph: text_instance must be ≥ 1, got -3"),
+            "expected text_instance validation error, got: \(msg)"
+        )
+    }
+
+    /// Spec R2 Scenario "text_instance omitted → defaults to 1" for insert_paragraph.
+    func testInsertParagraphTextInstanceOmittedUsesDefault() async throws {
+        let url = try docxWithText(text: "foo")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let server = await WordMCPServer()
+
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("p72ipd")]
+        )
+
+        let r = await server.invokeToolForTesting(
+            name: "insert_paragraph",
+            arguments: [
+                "doc_id": .string("p72ipd"),
+                "text": .string("inserted"),
+                "after_text": .string("foo")
+            ]
+        )
+        let msg = textOf(r)
+        XCTAssertFalse(msg.contains("text_instance"), "default path should not surface text_instance, got: \(msg)")
+        XCTAssertTrue(msg.contains("after text 'foo'"), "expected success, got: \(msg)")
+    }
+
+    func testInsertEquationRejectsZeroTextInstance() async throws {
+        let url = try emptyDocxURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let server = await WordMCPServer()
+
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("p72ie0")]
+        )
+
+        let r = await server.invokeToolForTesting(
+            name: "insert_equation",
+            arguments: [
+                "doc_id": .string("p72ie0"),
+                "latex": .string("x"),
+                "display_mode": .bool(true),
+                "after_text": .string("foo"),
+                "text_instance": .int(0)
+            ]
+        )
+        let msg = textOf(r)
+        XCTAssertTrue(
+            msg.contains("Error: insert_equation: text_instance must be ≥ 1, got 0"),
+            "expected validation error, got: \(msg)"
+        )
+    }
+
+    func testInsertImageFromPathRejectsZeroTextInstance() async throws {
+        let url = try emptyDocxURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let png = try writeOnePixelPNG()
+        defer { try? FileManager.default.removeItem(at: png) }
+        let server = await WordMCPServer()
+
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("p72ii0")]
+        )
+
+        let r = await server.invokeToolForTesting(
+            name: "insert_image_from_path",
+            arguments: [
+                "doc_id": .string("p72ii0"),
+                "path": .string(png.path),
+                "after_text": .string("foo"),
+                "text_instance": .int(0)
+            ]
+        )
+        let msg = textOf(r)
+        XCTAssertTrue(
+            msg.contains("Error: insert_image_from_path: text_instance must be ≥ 1, got 0"),
+            "expected validation error, got: \(msg)"
+        )
+    }
+
+    func testInsertCaptionRejectsNegativeTextInstance() async throws {
+        let url = try docxWithText(text: "foo")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let server = await WordMCPServer()
+
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("p72icn")]
+        )
+
+        let r = await server.invokeToolForTesting(
+            name: "insert_caption",
+            arguments: [
+                "doc_id": .string("p72icn"),
+                "label": .string("Figure"),
+                "caption_text": .string("Test"),
+                "after_text": .string("foo"),
+                "text_instance": .int(-1)
+            ]
+        )
+        let msg = textOf(r)
+        XCTAssertTrue(
+            msg.contains("Error: insert_caption: text_instance must be ≥ 1, got -1"),
+            "expected validation error, got: \(msg)"
+        )
+    }
+
     // MARK: - Test helpers
 
     private func textOf(_ r: CallTool.Result) -> String {
