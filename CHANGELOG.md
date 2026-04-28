@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added / Fixed — Verify findings F1+F2+F3+F5 closed (Refs #61)
 
-Verify ensemble (5 Claude reviewers + Codex gpt-5.5 xhigh) on v3.15.0 caught 4 in-scope gaps. v3.15.1 closes all 4 symmetrically across the 3 insert tools.
+Verify ensemble (5 Claude reviewers + Codex gpt-5.5 xhigh) on v3.15.0 caught 4 in-scope gaps. v3.15.1 closes all 4 symmetrically across the 3 #61-target insert tools (`insert_paragraph` / `insert_equation` / `insert_image_from_path`). Note: `insert_caption` is a 4th insert tool with its own anchor set including `after_table_index`; it is intentionally outside this unification scope.
 
 #### F1 (P1) — `after_image_id` anchor wired into 3 tools
 
@@ -29,7 +29,7 @@ Verify ensemble (5 Claude reviewers + Codex gpt-5.5 xhigh) on v3.15.0 caught 4 i
 // → "Inserted paragraph after image 'rId5'"
 ```
 
-Anchor priority unified across all 3 tools:
+Anchor priority unified across all 3 #61-target tools:
 ```
 into_table_cell > after_image_id > after_text > before_text > index > append
 ```
@@ -173,7 +173,7 @@ All anchor parameters are optional. Existing callers using `index` / `paragraph_
 
 #### Real-world impact
 
-Closes the inconsistency that forced document-rescue / template-population workflows to fall back to "insert at end + manual cut/paste in Word UI" or binary-search guessing on `paragraph_index`. AI callers can now reliably target anchor points by surrounding context for all three insert tools symmetrically.
+Closes the inconsistency that forced document-rescue / template-population workflows to fall back to "insert at end + manual cut/paste in Word UI" or binary-search guessing on `paragraph_index`. AI callers can now reliably target anchor points by surrounding context across the 3 #61-target insert tools (`insert_paragraph` / `insert_equation` / `insert_image_from_path`); `insert_caption` retains its own anchor set including `after_table_index`.
 
 ---
 
