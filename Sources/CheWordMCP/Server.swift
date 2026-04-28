@@ -7841,8 +7841,11 @@ actor WordMCPServer {
         }
 
         // Phase A (#41 investigation): structured entry log.
+        // #74: detection priority must mirror dispatch priority below
+        // (into_table_cell > after_image_id > after_text > before_text > index).
         let anchorKind: String
         if args["into_table_cell"]?.objectValue != nil { anchorKind = "intoTableCell" }
+        else if args["after_image_id"]?.stringValue != nil { anchorKind = "after_image_id" }
         else if args["after_text"]?.stringValue != nil { anchorKind = "after_text" }
         else if args["before_text"]?.stringValue != nil { anchorKind = "before_text" }
         else { anchorKind = "index" }
