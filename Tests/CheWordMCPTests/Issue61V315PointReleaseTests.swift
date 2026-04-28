@@ -441,6 +441,255 @@ final class Issue61V315PointReleaseTests: XCTestCase {
         )
     }
 
+    // MARK: - v3.15.3 follow-ups (PsychQuant/che-word-mcp #78 + #79)
+
+    /// #78: extend #69's [para, table, para] pin to bookmarkMarker / rawBlockElement /
+    /// contentControl body-children. `getParagraphs()` (lib `Document.swift:205-228`) skips
+    /// ALL non-paragraph BodyChild variants, not just .table; a future regression that
+    /// re-introduces `getParagraphs().count - 1` would silently break in docs containing
+    /// SDTs / TOC bookmark anchors / vendor extensions even if the table case still passes.
+
+    func testInsertParagraphAppendMessageWithBookmarkMarker() async throws {
+        var doc = WordDocument()
+        // Body layout: [para, .bookmarkMarker, para] → body.children.count = 3,
+        // getParagraphs() = [para, para] (marker skipped) → count = 2.
+        doc.body.children.append(.paragraph(Paragraph(runs: [Run(text: "before-marker")])))
+        doc.body.children.append(.bookmarkMarker(BookmarkRangeMarker(kind: .start, id: 1, position: 0)))
+        doc.body.children.append(.paragraph(Paragraph(runs: [Run(text: "after-marker")])))
+
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("issue78_bookmark_\(UUID().uuidString).docx")
+        try DocxWriter.write(doc, to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("p78bm")]
+        )
+
+        let r = await server.invokeToolForTesting(
+            name: "insert_paragraph",
+            arguments: ["doc_id": .string("p78bm"), "text": .string("APPENDED")]
+        )
+        XCTAssertFalse(r.isError == true, "append should succeed; got: \(r.content)")
+        let msg = textOf(r)
+        XCTAssertTrue(
+            msg.contains("at index 3"),
+            "append message should report body.children index across bookmarkMarker (expected 'at index 3'); got: \(msg)"
+        )
+        XCTAssertFalse(
+            msg.contains("at index 2"),
+            "append message must NOT use getParagraphs().count - 1 (would skip bookmarkMarker); got: \(msg)"
+        )
+    }
+
+    func testInsertParagraphAppendMessageWithRawBlockElement() async throws {
+        var doc = WordDocument()
+        doc.body.children.append(.paragraph(Paragraph(runs: [Run(text: "before-raw")])))
+        // .rawBlockElement is the catch-all for unrecognized body-level XML
+        // (vendor extensions, EG_BlockLevelElts members not specifically parsed).
+        doc.body.children.append(.rawBlockElement(RawElement(
+            name: "moveFromRangeStart",
+            xml: "<w:moveFromRangeStart xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" w:id=\"42\"/>"
+        )))
+        doc.body.children.append(.paragraph(Paragraph(runs: [Run(text: "after-raw")])))
+
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("issue78_raw_\(UUID().uuidString).docx")
+        try DocxWriter.write(doc, to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("p78raw")]
+        )
+
+        let r = await server.invokeToolForTesting(
+            name: "insert_paragraph",
+            arguments: ["doc_id": .string("p78raw"), "text": .string("APPENDED")]
+        )
+        XCTAssertFalse(r.isError == true, "append should succeed; got: \(r.content)")
+        let msg = textOf(r)
+        XCTAssertTrue(
+            msg.contains("at index 3"),
+            "append message should report body.children index across rawBlockElement (expected 'at index 3'); got: \(msg)"
+        )
+        XCTAssertFalse(
+            msg.contains("at index 2"),
+            "append message must NOT use getParagraphs().count - 1 (would skip rawBlockElement); got: \(msg)"
+        )
+    }
+
+    func testInsertParagraphAppendMessageWithBlockContentControl() async throws {
+        var doc = WordDocument()
+        // Block-level SDT wrapping a paragraph: body.children.count counts the .contentControl
+        // as one entry, but getParagraphs() recursively descends into the SDT children, so
+        // SDT-wrapped paragraphs ARE counted (see Document.swift:215-220).
+        // For a meaningful pin we use an empty SDT wrapper (children=[]) that is counted by
+        // body.children but contributes 0 to getParagraphs.
+        doc.body.children.append(.paragraph(Paragraph(runs: [Run(text: "before-sdt")])))
+        let blockSdt = StructuredDocumentTag(
+            id: 9001,
+            tag: "test_wrapper",
+            alias: "Test Wrapper",
+            type: .richText
+        )
+        let control = ContentControl(sdt: blockSdt, content: "")
+        doc.body.children.append(.contentControl(control, children: []))
+        doc.body.children.append(.paragraph(Paragraph(runs: [Run(text: "after-sdt")])))
+
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("issue78_sdt_\(UUID().uuidString).docx")
+        try DocxWriter.write(doc, to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("p78sdt")]
+        )
+
+        let r = await server.invokeToolForTesting(
+            name: "insert_paragraph",
+            arguments: ["doc_id": .string("p78sdt"), "text": .string("APPENDED")]
+        )
+        XCTAssertFalse(r.isError == true, "append should succeed; got: \(r.content)")
+        let msg = textOf(r)
+        XCTAssertTrue(
+            msg.contains("at index 3"),
+            "append message should report body.children index across empty block-level SDT (expected 'at index 3'); got: \(msg)"
+        )
+        XCTAssertFalse(
+            msg.contains("at index 2"),
+            "append message must NOT use getParagraphs().count - 1 (would skip empty SDT); got: \(msg)"
+        )
+    }
+
+    /// #79: round-trip depth — verify the reported index actually round-trips
+    /// as `paragraph_index` for a SUBSEQUENT insert_paragraph call. Pre-#69 fix,
+    /// the message lied about which index the lib's body.children-indexed
+    /// `insertParagraph(_:at:Int)` would interpret. This test demonstrates the
+    /// full append-then-insert pipeline works.
+
+    func testInsertParagraphAppendIndexRoundTripsForInsertCalls() async throws {
+        var doc = WordDocument()
+        doc.body.children.append(.paragraph(Paragraph(runs: [Run(text: "FIRST")])))
+        let table = Table(rows: [
+            TableRow(cells: [TableCell(paragraphs: [Paragraph(runs: [Run(text: "cell")])])])
+        ])
+        doc.body.children.append(.table(table))
+        doc.body.children.append(.paragraph(Paragraph(runs: [Run(text: "SECOND")])))
+
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("issue79_rt_\(UUID().uuidString).docx")
+        try DocxWriter.write(doc, to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("p79rt")]
+        )
+
+        // Step 1: append APPENDED, message should report "at index 3".
+        let r1 = await server.invokeToolForTesting(
+            name: "insert_paragraph",
+            arguments: ["doc_id": .string("p79rt"), "text": .string("APPENDED")]
+        )
+        XCTAssertFalse(r1.isError == true, "append should succeed")
+        let msg1 = textOf(r1)
+        XCTAssertTrue(msg1.contains("at index 3"), "expected reported index 3; got: \(msg1)")
+
+        // Step 2: use the reported body.children index (3) + 1 = 4 to insert
+        // immediately after the appended paragraph. Since insertParagraph(_:at:Int)
+        // clamps at body.children.count, an index of 4 (current count) appends
+        // at the very end — which is the body index AFTER our just-appended para.
+        let r2 = await server.invokeToolForTesting(
+            name: "insert_paragraph",
+            arguments: [
+                "doc_id": .string("p79rt"),
+                "text": .string("AFTER_APPENDED"),
+                "index": .int(4)
+            ]
+        )
+        XCTAssertFalse(r2.isError == true, "round-trip insert should succeed; got: \(r2.content)")
+
+        // Step 3: verify body order via get_paragraphs.
+        let r3 = await server.invokeToolForTesting(
+            name: "get_paragraphs",
+            arguments: ["doc_id": .string("p79rt")]
+        )
+        let paras = textOf(r3)
+        // Expected ordering: FIRST → (table skipped) → SECOND → APPENDED → AFTER_APPENDED
+        XCTAssertTrue(paras.contains("FIRST"), "FIRST missing from get_paragraphs output: \(paras)")
+        XCTAssertTrue(paras.contains("SECOND"), "SECOND missing")
+        XCTAssertTrue(paras.contains("APPENDED"), "APPENDED missing")
+        XCTAssertTrue(paras.contains("AFTER_APPENDED"), "AFTER_APPENDED missing")
+        // Verify AFTER_APPENDED comes after APPENDED.
+        if let posApp = paras.range(of: "APPENDED")?.lowerBound,
+           let posAfter = paras.range(of: "AFTER_APPENDED")?.lowerBound {
+            XCTAssertLessThan(
+                posApp, posAfter,
+                "AFTER_APPENDED should appear after APPENDED in body order; got: \(paras)"
+            )
+        } else {
+            XCTFail("could not locate APPENDED / AFTER_APPENDED in: \(paras)")
+        }
+    }
+
+    /// #79 negative: pin the cross-family trade-off acknowledged in v3.15.2 CHANGELOG
+    /// (also tracked as PsychQuant/ooxml-swift#10). The reported index works for
+    /// `insert_paragraph(index=)` but NOT for `update_paragraph(index=)` because the
+    /// latter uses paragraph-only count via `Document.bodyIndexForParagraph`.
+
+    func testInsertParagraphAppendIndexCannotRoundTripToUpdate() async throws {
+        var doc = WordDocument()
+        doc.body.children.append(.paragraph(Paragraph(runs: [Run(text: "FIRST")])))
+        let table = Table(rows: [
+            TableRow(cells: [TableCell(paragraphs: [Paragraph(runs: [Run(text: "cell")])])])
+        ])
+        doc.body.children.append(.table(table))
+        doc.body.children.append(.paragraph(Paragraph(runs: [Run(text: "SECOND")])))
+
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("issue79_xfam_\(UUID().uuidString).docx")
+        try DocxWriter.write(doc, to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("p79xf")]
+        )
+
+        // Append: body.children grows from 3 to 4; reported index = 3.
+        let r1 = await server.invokeToolForTesting(
+            name: "insert_paragraph",
+            arguments: ["doc_id": .string("p79xf"), "text": .string("APPENDED")]
+        )
+        XCTAssertFalse(r1.isError == true)
+        let msg1 = textOf(r1)
+        XCTAssertTrue(msg1.contains("at index 3"), "expected 'at index 3'; got: \(msg1)")
+
+        // Try to update_paragraph(index=3) — interprets 3 as paragraph-only index,
+        // but the doc only has 3 paragraphs (FIRST + SECOND + APPENDED at indices 0/1/2).
+        // Index 3 is out-of-range for paragraph-only count → throws WordError.invalidIndex.
+        let r2 = await server.invokeToolForTesting(
+            name: "update_paragraph",
+            arguments: [
+                "doc_id": .string("p79xf"),
+                "index": .int(3),
+                "text": .string("WONT_LAND")
+            ]
+        )
+        XCTAssertTrue(
+            r2.isError == true,
+            "update_paragraph should fail with cross-family index — pinning the trade-off acknowledged in v3.15.2 CHANGELOG / PsychQuant/ooxml-swift#10. Got non-error: \(r2.content)"
+        )
+    }
+
     // MARK: - Helpers
 
     private func docxWithImage() throws -> URL {
