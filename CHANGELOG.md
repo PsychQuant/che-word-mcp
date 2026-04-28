@@ -5,6 +5,107 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.15.1] - 2026-04-28
+
+### Added / Fixed — Verify findings F1+F2+F3+F5 closed (Refs #61)
+
+Verify ensemble (5 Claude reviewers + Codex gpt-5.5 xhigh) on v3.15.0 caught 4 in-scope gaps. v3.15.1 closes all 4 symmetrically across the 3 insert tools.
+
+#### F1 (P1) — `after_image_id` anchor wired into 3 tools
+
+`InsertLocation.afterImageId(String)` existed in lib since #44 but only `insert_caption` exposed it as an MCP-layer parameter. v3.15.0 inherited that gap. v3.15.1 wires it into:
+
+- `insert_paragraph` — schema + handler dispatch (display path is N/A for paragraph)
+- `insert_equation` — display mode only (inline rejects, see F2)
+- `insert_image_from_path` — schema + handler dispatch
+
+```jsonc
+// Pre-fix v3.15.0:
+{ "tool": "insert_paragraph", "args": { "doc_id": "d", "text": "...", "after_image_id": "rId5" } }
+// → Silent fallthrough — paragraph appended at end (after_image_id arg dropped)
+
+// Post-fix v3.15.1:
+{ "tool": "insert_paragraph", "args": { "doc_id": "d", "text": "...", "after_image_id": "rId5" } }
+// → "Inserted paragraph after image 'rId5'"
+```
+
+Anchor priority unified across all 3 tools:
+```
+into_table_cell > after_image_id > after_text > before_text > index > append
+```
+
+#### F2 (P1) — `into_table_cell` wired into `insert_equation`
+
+Display-mode equation is structurally a new paragraph (handler line 8708 `let eqPara = Paragraph(runs: [eqRun])`), so cell placement is well-defined. ≤10 LOC + 1 test.
+
+```jsonc
+{ "tool": "insert_equation", "args": { "doc_id": "d", "latex": "\\frac{a}{b}", "display_mode": true, "into_table_cell": { "table_index": 0, "row": 0, "col": 0 } } }
+// → "Inserted equation (display mode: true, into table[0] cell (row: 0, col: 0))"
+```
+
+Inline mode (`display_mode=false`) rejects with structured error — anchor semantics ambiguous when appending OMML run into existing paragraph; use `paragraph_index` for inline placement.
+
+#### F3 (P2) — equation success message includes anchor info
+
+Closes the same v3.14.4 LOOKUP over-claim pattern. Pre-fix v3.15.0 returned `"Inserted equation (display mode: true)"` regardless of which anchor path ran — caller couldn't distinguish anchor hit vs append fallthrough. Now mirrors `insert_paragraph`:
+
+```
+"Inserted equation (display mode: true, after text 'EQ_HERE' (instance 1))"
+"Inserted equation (display mode: true, into table[0] cell (row: 0, col: 0))"
+"Inserted equation (display mode: true, after image 'rId5')"
+"Inserted equation (display mode: true, before text 'X' (instance 2))"
+"Inserted equation (display mode: true, at index 17)"
+```
+
+This avoids the v3.14.4 翻車 pattern where CHANGELOG claimed observable behavior that wasn't verifiable from the response.
+
+#### F5 (P2) — malformed `into_table_cell` partial dict returns structured error
+
+Pre-fix in all 3 tools: passing `into_table_cell: { "table_index": 0 }` (missing `row` + `col`) silently fell through to next anchor or append, leading to wrong-position insertion that the caller couldn't detect. Post-fix:
+
+```jsonc
+{ "tool": "insert_paragraph", "args": { "doc_id": "d", "text": "...", "into_table_cell": { "table_index": 0 } } }
+// → "Error: into_table_cell requires all three fields (table_index, row, col); got partial dict"
+```
+
+Same fix in `insert_paragraph` + `insert_equation` + `insert_image_from_path` (cross-cutting consistency).
+
+#### Inline equation reject expanded
+
+Inline mode now rejects **all** anchor params (after_text / before_text / after_image_id / into_table_cell), not just the 2 in v3.15.0. Mirror error message updated.
+
+#### Tests
+
+`Tests/CheWordMCPTests/Issue61V315PointReleaseTests.swift` (9 sub-tests):
+- F1: `testInsertParagraphAfterImageIdResolvesAnchor`, `testInsertParagraphAfterImageIdNotFoundReturnsError`
+- F1+F2: `testInsertEquationAfterImageIdDisplayModeResolvesAnchor`, `testInsertEquationIntoTableCellDisplayMode`, `testInsertEquationIntoTableCellRejectedInInlineMode`
+- F1: `testInsertImageFromPathAfterImageIdResolvesAnchor`
+- F3: `testInsertEquationMessageIncludesAfterTextAnchor`
+- F5: `testInsertParagraphMalformedIntoTableCellReportsError`, `testInsertImageFromPathMalformedIntoTableCellReportsError`
+
+#### Test suite
+
+- 185 → 194 tests / 0 fail / 9 pre-existing skips
+
+#### No ooxml-swift dep bump
+
+Still on v0.20.5 — all needed lib APIs (`InsertLocation.afterImageId`, `.intoTableCell`) existed since #44.
+
+#### Backward compatibility
+
+All schema additions optional. Existing v3.15.0 callers unchanged. Only behavior change: malformed `into_table_cell` partial dict (new structured error) and richer equation success message (suffix added; substring `"Inserted equation"` still present).
+
+#### Follow-up issues opened
+
+- F4 (P2): Inline equation should support more general design (e.g. `into_paragraph_with_text`)
+- F6 (P2): Text anchor doesn't traverse table-cell paragraphs / block-level SDT
+- F7 (P3): `getParagraphs().count - 1` mis-reports index when doc has tables (pre-existing)
+- F8 (P3): Error message lacks tool-prefix — `"Error: text 'X' not found"` shared across 5 callers
+- F9 (P3): Multiple anchor params silently picks priority winner (cross-cutting DX trap)
+- F10 (P3): `text_instance ≤ 0` returns opaque `textNotFound` instead of normalized
+
+---
+
 ## [3.15.0] - 2026-04-28
 
 ### Added — `insert_paragraph` / `insert_equation` accept anchor parameters (Refs #61)
