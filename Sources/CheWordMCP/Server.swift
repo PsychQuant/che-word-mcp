@@ -2472,7 +2472,19 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（行內模式時指定插入位置）")
+                            "description": .string("段落索引（行內模式時指定插入位置）。display mode 下若搭配 anchor，anchor 優先")
+                        ]),
+                        "after_text": .object([
+                            "type": .string("string"),
+                            "description": .string("**僅 display_mode=true 時生效**。在含此文字的段落**之後**插入新公式段。substring match on flattened paragraph text（v3.14.5+ 涵蓋 hyperlinks/fieldSimples/contentControls/alternateContents）。配合 text_instance 指定第幾次出現（預設 1）。inline 模式傳入會回 error。（anchor 擇一）")
+                        ]),
+                        "before_text": .object([
+                            "type": .string("string"),
+                            "description": .string("**僅 display_mode=true 時生效**。在含此文字的段落**之前**插入新公式段。規則同 after_text。inline 模式傳入會回 error。（anchor 擇一）")
+                        ]),
+                        "text_instance": .object([
+                            "type": .string("integer"),
+                            "description": .string("after_text / before_text 的第 N 次匹配（1-based，預設 1）")
                         ])
                     ]),
                     "required": .array([.string("doc_id")])
@@ -8672,6 +8684,16 @@ actor WordMCPServer {
 
         let displayMode = args["display_mode"]?.boolValue ?? true
         let paragraphIndex = args["paragraph_index"]?.intValue
+        let afterText = args["after_text"]?.stringValue
+        let beforeText = args["before_text"]?.stringValue
+        let textInstance = args["text_instance"]?.intValue ?? 1
+
+        // Anchor only meaningful in display mode (block-level new paragraph).
+        // Inline mode appends an OMML run into an existing paragraph; "before/after a paragraph"
+        // semantics are ambiguous — reject explicitly to surface the misuse.
+        if !displayMode && (afterText != nil || beforeText != nil) {
+            return "Error: after_text / before_text only supported when display_mode=true (inline equations append to an existing paragraph; use paragraph_index instead)"
+        }
 
         // Assemble OMML with required namespace
         let xmlns = "xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\""
@@ -8685,8 +8707,24 @@ actor WordMCPServer {
         eqRun.rawXML = ommlXML
         let eqPara = Paragraph(runs: [eqRun])
 
-        let insertIdx = paragraphIndex ?? doc.body.children.count
-        doc.insertParagraph(eqPara, at: insertIdx)
+        // Anchor priority (display mode only): after_text > before_text > paragraph_index > append
+        if displayMode, let afterText = afterText {
+            do {
+                try doc.insertParagraph(eqPara, at: .afterText(afterText, instance: textInstance))
+            } catch let InsertLocationError.textNotFound(searchText, instance) {
+                return "Error: text '\(searchText)' not found (instance \(instance))"
+            }
+        } else if displayMode, let beforeText = beforeText {
+            do {
+                try doc.insertParagraph(eqPara, at: .beforeText(beforeText, instance: textInstance))
+            } catch let InsertLocationError.textNotFound(searchText, instance) {
+                return "Error: text '\(searchText)' not found (instance \(instance))"
+            }
+        } else {
+            let insertIdx = paragraphIndex ?? doc.body.children.count
+            doc.insertParagraph(eqPara, at: insertIdx)
+        }
+
         try await storeDocument(doc, for: docId)
 
         return "Inserted equation (display mode: \(displayMode))"
