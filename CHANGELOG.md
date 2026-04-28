@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.16.1] - 2026-04-28
+
+### Changed — anchor-presence whitelist drift prevention (Refs #80)
+
+Pure refactor; no runtime behavior change. Closes #80 forward-looking risk surfaced during /idd-verify of #71 (security + devil's advocate).
+
+#### Pre-fix risk
+
+`anchorPresence` static dict (7 anchor name → predicate map at `Server.swift:58`) was synced manually with 4 per-tool literal anchor arrays at lines ~6649 / ~7897 / ~8829 / ~12181. Future PR adding new anchor to one tool's call-site array but forgetting `anchorPresence` → `detectPresentAnchors` silently skips unknown name → conflict-detection regresses to silent priority winner for that anchor. NO drift in v3.16.0; risk forward-looking only.
+
+#### Fix
+
+- New `static let toolAnchorWhitelists: [String: [String]]`: single source of truth keyed by MCP tool name (snake_case) → accepted anchor list.
+- New `detectPresentAnchors(_:tool:)` overload: looks up dict, delegates to existing `(args, anchors:)` overload. Defensive: unknown tool returns `[]`.
+- 4 conflict-detection call sites switched to `(args, tool: "insert_paragraph")` form, replacing duplicated literal arrays.
+- 4 new tests in `AnchorDXConsistencyTests`:
+  - `testToolAnchorWhitelistsSubsetOfAnchorPresence` — invariant: every name in any tool's whitelist must exist in `anchorPresence.keys`. Catches the documented drift mode.
+  - `testToolAnchorWhitelistsCoversFourTargetTools` — pin: dict must cover exactly the 4 #61-target tools.
+  - `testDetectPresentAnchorsByToolMatchesByExplicitAnchors` — overload parity.
+  - `testDetectPresentAnchorsByUnknownToolReturnsEmpty` — defensive.
+
+Old `(args, anchors:)` overload preserved (no breaking change to API surface). Doc note added recommending the new `(tool:)` overload for #61-target tools.
+
+Suite: `227 → 231` (+4, 0 fail / 9 skip). No `ooxml-swift` dep bump (still v0.20.5).
+
+#### Out of scope (follow-up surfaces)
+
+Verify-80 Devil's Advocate flagged two remaining drift surfaces NOT closed by this refactor:
+- Schema descriptions in `inputSchema.properties.*.description` text still hardcode anchor names (3rd duplicate copy)
+- Dispatcher `if let / else if let` chain at handlers (lines ~5698 / 5776 / 5854 / 6128) reads `args["anchor_name"]` directly, not via dict
+
+Removing an anchor from `toolAnchorWhitelists` would silently disable conflict detection but the dispatcher would still process it. These are pre-existing risks, not introduced by this PR. Track as separate enhancement if pursued.
+
 ## [3.16.0] - 2026-04-28
 
 ### Changed — Bundle B anchor DX consistency (Refs #70 #71 #72)

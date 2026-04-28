@@ -89,6 +89,10 @@ actor WordMCPServer {
     ///   - anchors: whitelist of anchor names this tool accepts. Names not in
     ///     `anchorPresence` are silently skipped (defensive — never fatal).
     /// - Returns: sorted names of anchors that are present (correct type, non-null).
+    /// - Note: For #61-target tools (`insert_paragraph` / `insert_image_from_path`
+    ///   / `insert_equation` / `insert_caption`), prefer the `(args, tool:)`
+    ///   overload — it resolves the anchor list from `toolAnchorWhitelists` (SoT)
+    ///   so adding/removing anchors only touches one place.
     static func detectPresentAnchors(_ args: [String: Value], anchors: [String]) -> [String] {
         return anchors.compactMap { name -> String? in
             guard let value = args[name],
