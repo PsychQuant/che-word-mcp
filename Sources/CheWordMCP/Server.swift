@@ -49,6 +49,41 @@ actor WordMCPServer {
     private var debugEventLog: [DebugLogEvent] = []
     private static let debugEventLogCapacity = 1000
 
+    // MARK: - anchor-dx-consistency (#71): conflict-detection helper
+
+    /// Per-anchor presence predicate. Each entry knows its expected JSON-Value type
+    /// so JSON `null` and wrong-type values do NOT count as present (matches the
+    /// existing dispatcher pattern where `args["after_text"]?.stringValue` returning
+    /// nil falls through to the next branch).
+    static let anchorPresence: [String: @Sendable (Value) -> Bool] = [
+        "into_table_cell":   { $0.objectValue != nil },
+        "after_image_id":    { $0.stringValue != nil },
+        "after_text":        { $0.stringValue != nil },
+        "before_text":       { $0.stringValue != nil },
+        "index":             { $0.intValue    != nil },
+        "paragraph_index":   { $0.intValue    != nil },
+        "after_table_index": { $0.intValue    != nil },
+    ]
+
+    /// Detect which anchor parameters from `anchors` are present in `args`.
+    /// Returns alphabetically-sorted names so callers can include them verbatim
+    /// in error messages with stable formatting.
+    ///
+    /// - Parameters:
+    ///   - args: tool invocation arguments (from MCP request).
+    ///   - anchors: whitelist of anchor names this tool accepts. Names not in
+    ///     `anchorPresence` are silently skipped (defensive — never fatal).
+    /// - Returns: sorted names of anchors that are present (correct type, non-null).
+    static func detectPresentAnchors(_ args: [String: Value], anchors: [String]) -> [String] {
+        return anchors.compactMap { name -> String? in
+            guard let value = args[name],
+                  let predicate = anchorPresence[name],
+                  predicate(value)
+            else { return nil }
+            return name
+        }.sorted()
+    }
+
     /// One emitted log event. `event` is the dotted name (e.g. `storeDocument.entry`),
     /// `keyValues` is the structured payload.
     struct DebugLogEvent: Sendable, Equatable {
@@ -718,7 +753,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "insert_paragraph",
-                description: "插入新段落（需先 open_document）。v3.15.1+ 接受 after_text / before_text / text_instance / into_table_cell / after_image_id anchor（與 insert_image_from_path 對齊）；anchor 與 index 擇一，不傳則加到最後。",
+                description: "插入新段落（需先 open_document）。v3.15.1+ 接受 after_text / before_text / text_instance / into_table_cell / after_image_id anchor（與 insert_image_from_path 對齊）；anchor 與 index 擇一，不傳則加到最後。v3.16.0+ 同時傳多個 anchor 會 return 「Error: insert_paragraph: received conflicting anchors: ...」（先前版本是 silent priority winner）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1654,7 +1689,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "insert_image_from_path",
-                description: "從檔案路徑插入圖片。v2.1+ width/height 為可選（auto-aspect：擇一 → 另一邊按原圖比例算；全省略 → 用原始像素）。v3.15.1+ 新增 after_image_id anchor。anchor priority: into_table_cell > after_image_id > after_text > before_text > index > append。支援 PNG / JPEG。（需先 open_document）",
+                description: "從檔案路徑插入圖片。v2.1+ width/height 為可選（auto-aspect：擇一 → 另一邊按原圖比例算；全省略 → 用原始像素）。v3.15.1+ 新增 after_image_id anchor。anchor priority: into_table_cell > after_image_id > after_text > before_text > index > append。v3.16.0+ 同時傳多個 anchor 會 return 「Error: insert_image_from_path: received conflicting anchors: ...」（先前版本是 silent priority winner）。支援 PNG / JPEG。（需先 open_document）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -2458,7 +2493,7 @@ actor WordMCPServer {
             // 7.3 數學公式
             Tool(
                 name: "insert_equation",
-                description: "插入數學公式（結構化 OMML，可在 Word native equation editor 雙擊編輯）。v3.2+ 的 latex: 支援 LaTeX 子集（見下方 latex 參數描述完整 token 清單）；components: 為 JSON tree fallback，給超出 LaTeX 子集的進階用法。必須提供 components 或 latex 其中之一。",
+                description: "插入數學公式（結構化 OMML，可在 Word native equation editor 雙擊編輯）。v3.2+ 的 latex: 支援 LaTeX 子集（見下方 latex 參數描述完整 token 清單）；components: 為 JSON tree fallback，給超出 LaTeX 子集的進階用法。必須提供 components 或 latex 其中之一。v3.16.0+ display mode 同時傳多個 anchor 會 return 「Error: insert_equation: received conflicting anchors: ...」（先前版本是 silent priority winner）；inline mode 仍 reject 所有 anchor（語意 ambiguous）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -4778,7 +4813,7 @@ actor WordMCPServer {
             // 12.1 insert_caption - 插入圖表標號
             Tool(
                 name: "insert_caption",
-                description: "為圖表/公式插入自動編號 caption（emit 真 SEQ field，Word F9 自動重算）。v2.1+ 支援中文 label（圖/表/公式）+ 5 種 anchor（paragraph_index / after_image_id / after_table_index / after_text / before_text，擇一）。include_chapter_number 會 emit STYLEREF field 產生「圖 2-1」式章節編號。",
+                description: "為圖表/公式插入自動編號 caption（emit 真 SEQ field，Word F9 自動重算）。v2.1+ 支援中文 label（圖/表/公式）+ 5 種 anchor（paragraph_index / after_image_id / after_table_index / after_text / before_text，擇一）。v3.16.0+ 同時傳多個 anchor 會 return 「Error: insert_caption: received conflicting anchors: ...」（取代 v3.15.x 的「got N」訊息）。include_chapter_number 會 emit STYLEREF field 產生「圖 2-1」式章節編號。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -6609,6 +6644,15 @@ actor WordMCPServer {
             para.properties.style = style
         }
 
+        // anchor-dx-consistency (#71): reject conflicting anchors before the dispatcher.
+        // Spec: openspec/changes/anchor-dx-consistency/specs/.../spec.md R1.
+        let presentAnchors = WordMCPServer.detectPresentAnchors(args, anchors: [
+            "into_table_cell", "after_image_id", "after_text", "before_text", "index"
+        ])
+        if presentAnchors.count > 1 {
+            return "Error: insert_paragraph: received conflicting anchors: \(presentAnchors.joined(separator: " + ")). Specify exactly one."
+        }
+
         // Anchor priority (mirrors insert_image_from_path):
         // into_table_cell > after_image_id > after_text > before_text > index > append
         let textInstance = args["text_instance"]?.intValue ?? 1
@@ -7866,6 +7910,15 @@ actor WordMCPServer {
         let name = args["name"]?.stringValue ?? "Picture"
         let description = args["description"]?.stringValue ?? ""
 
+        // anchor-dx-consistency (#71): reject conflicting anchors before the dispatcher.
+        // Spec: openspec/changes/anchor-dx-consistency/specs/.../spec.md R1.
+        let presentAnchors = WordMCPServer.detectPresentAnchors(args, anchors: [
+            "into_table_cell", "after_image_id", "after_text", "before_text", "index"
+        ])
+        if presentAnchors.count > 1 {
+            return "Error: insert_image_from_path: received conflicting anchors: \(presentAnchors.joined(separator: " + ")). Specify exactly one."
+        }
+
         // Resolve anchor: priority is into_table_cell > after_image_id > after_text > before_text > index
         let imageId: String
         let textInstance = args["text_instance"]?.intValue ?? 1
@@ -8746,6 +8799,19 @@ actor WordMCPServer {
         if !displayMode && (afterText != nil || beforeText != nil
                             || afterImageId != nil || intoTableCellDict != nil) {
             return "Error: anchor parameters (after_text / before_text / after_image_id / into_table_cell) only supported when display_mode=true (inline equations append to an existing paragraph; use paragraph_index instead)"
+        }
+
+        // anchor-dx-consistency (#71): reject conflicting anchors in display mode.
+        // Spec R1 — display mode anchor set: into_table_cell / after_image_id /
+        // after_text / before_text / paragraph_index. Inline mode handled by the
+        // pre-existing rejection above (only paragraph_index allowed).
+        if displayMode {
+            let presentAnchors = WordMCPServer.detectPresentAnchors(args, anchors: [
+                "into_table_cell", "after_image_id", "after_text", "before_text", "paragraph_index"
+            ])
+            if presentAnchors.count > 1 {
+                return "Error: insert_equation: received conflicting anchors: \(presentAnchors.joined(separator: " + ")). Specify exactly one."
+            }
         }
 
         // Assemble OMML with required namespace
@@ -12088,23 +12154,26 @@ actor WordMCPServer {
         let includeChapterNumber = args["include_chapter_number"]?.boolValue ?? false
         let position = args["position"]?.stringValue ?? "below"
 
-        // Anchor resolution: exactly one of paragraph_index / after_image_id / after_table_index / after_text / before_text
+        // anchor-dx-consistency (#71): unified conflict + zero-anchor detection.
+        // Caption-specific anchor set: paragraph_index / after_image_id /
+        // after_table_index / after_text / before_text (no `index` or `into_table_cell`).
+        // Spec: openspec/changes/anchor-dx-consistency/specs/.../spec.md R1.
+        let presentAnchors = WordMCPServer.detectPresentAnchors(args, anchors: [
+            "paragraph_index", "after_image_id", "after_table_index", "after_text", "before_text"
+        ])
+        if presentAnchors.count > 1 {
+            return "Error: insert_caption: received conflicting anchors: \(presentAnchors.joined(separator: " + ")). Specify exactly one."
+        }
+        if presentAnchors.isEmpty {
+            return "Error: insert_caption: at least one anchor required (paragraph_index / after_image_id / after_table_index / after_text / before_text). Specify exactly one."
+        }
+
         let paragraphIndexArg = args["paragraph_index"]?.intValue
         let afterImageIdArg = args["after_image_id"]?.stringValue
         let afterTableIndexArg = args["after_table_index"]?.intValue
         let afterTextArg = args["after_text"]?.stringValue
         let beforeTextArg = args["before_text"]?.stringValue
         let textInstance = args["text_instance"]?.intValue ?? 1
-        let anchorCount = [
-            paragraphIndexArg != nil,
-            afterImageIdArg != nil,
-            afterTableIndexArg != nil,
-            afterTextArg != nil,
-            beforeTextArg != nil,
-        ].filter { $0 }.count
-        guard anchorCount == 1 else {
-            return "Error: exactly one of paragraph_index / after_image_id / after_table_index / after_text / before_text must be provided (got \(anchorCount))"
-        }
 
         // Build caption paragraph: label text + optional chapter STYLEREF + SEQ field + optional caption text
         var runs: [Run] = [Run(text: "\(label) ")]
