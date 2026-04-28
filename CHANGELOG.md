@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.14.5] - 2026-04-28
+
+### Fixed — `findBodyChildContainingText` covers all editable surfaces (Refs #63 verify F1)
+
+Bumps `ooxml-swift` v0.20.4 → v0.20.5. Closes the v3.14.4 CHANGELOG over-claim about `insert_image_from_path before_text/after_text` coverage.
+
+#### What this fixes for MCP users
+
+v3.14.4's CHANGELOG explicitly listed `insert_image_from_path(after_text: "[tab:foo]")` against an inline-SDT-wrapped anchor as fixed. Verify caught that the **REPLACE** path (`replace_text`) was fixed but the **LOOKUP** path (`findBodyChildContainingText`, used by `InsertLocation.afterText` / `.beforeText` resolution) was NOT — it only inspected `para.runs`, ignoring `paragraph.contentControls` / `hyperlinks` / `fieldSimples` / `alternateContents`.
+
+So `insert_image_from_path` / `insert_paragraph` / `insert_caption` `before_text`/`after_text` against an SDT-wrapped anchor still threw `textNotFound` post-v3.14.4.
+
+Post-fix v3.14.5: lookup mirrors REPLACE surface coverage. All inline wrappers (fldSimple / hyperlink / alternateContents / inlineSDT) work for both REPLACE and LOOKUP paths.
+
+#### Implementation
+
+ooxml-swift v0.20.5 adds:
+1. `TextReplacementEngine.flatTextOfContentXML(_:)` — read-only XML walker mirroring `replaceInContentXML` flattening rules (skips `<w:delText>` / `<w:instrText>` / nested `<w:sdt>` subtrees), returns joined display text.
+2. `Paragraph.flattenedDisplayText()` extension — concatenates display text across runs + hyperlinks + fieldSimples + alternateContents + contentControls (recursive into nested SDT children).
+3. `findBodyChildContainingText` now uses `flattenedDisplayText()` instead of `para.runs.map { $0.text }.joined()`.
+
+#### Test coverage
+
+| Suite | Tests | Status |
+|---|---|---|
+| `OOXMLSwiftPackageTests` | 693 → **696** | pass / 0 fail / 1 skip |
+| `CheWordMCPPackageTests` | 174 → **176** | pass / 0 fail / 9 skip |
+
+New regression tests:
+- `Issue63InsertAnchorInlineSDTTests` (lib): 3 wrappers × `afterText`/`beforeText`/`insertImage` resolution
+- `Issue63InsertAnchorInlineSDTSmokeTests` (MCP): 2 smoke tests pinning the lib-layer fix
+
+#### Backward compatibility
+
+Surgical fix — adds new code paths only:
+- `findBodyChildContainingText` now finds MORE anchors (a strict superset of pre-fix behavior)
+- Existing call sites that anchor on plain `para.runs` text still work identically
+- New helpers (`flatTextOfContentXML`, `flattenedDisplayText`) are additive
+
+---
+
 ## [3.14.4] - 2026-04-27
 
 ### Fixed — `replace_text` reaches text inside inline `<w:sdt>` content controls (closes #63)
