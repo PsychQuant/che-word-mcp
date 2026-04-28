@@ -13,7 +13,7 @@ Cleanup release for the four P3-level findings left over from #61's R2 verify (c
 
 #### #69 (bug) — `insert_paragraph` append message reports `body.children` index
 
-`Server.swift:6659` reported `getParagraphs().count - 1` for the append branch. `getParagraphs()` is recursive over `body.children` but skips tables and SDT markers (`Document.swift:205-228`), so in a doc with body `[para, table, para]` + appended para, it reported `at index 2` while `body.children.count - 1` was `3`. Since `Document.insertParagraph(_:at:Int)` interprets its int as a `body.children` index (`Document.swift:266-270`), the reported number was not round-trippable as `paragraph_index` for subsequent inserts. Now uses `body.children.count - 1`, matching the convention `insert_equation` already used at `Server.swift:8799`.
+`Server.swift:6659` reported `getParagraphs().count - 1` for the append branch. `getParagraphs()` is recursive over `body.children` but skips tables and SDT markers (`Document.swift:205-228`), so in a doc with body `[para, table, para]` + appended para, it reported `at index 2` while `body.children.count - 1` was `3`. Since `Document.insertParagraph(_:at:Int)` interprets its int as a `body.children` index (`Document.swift:266-270`), the reported number was not round-trippable as `paragraph_index` for subsequent **`insert_*`** calls. Now uses `body.children.count - 1`, matching the convention `insert_equation` already used at `Server.swift:8799`. See "Backward compatibility" below for the cross-tool-family trade-off and link to the underlying lib-layer issue.
 
 #### #74 (bug) — `insert_image_from_path` debug log mis-labeled `after_image_id`
 
@@ -33,7 +33,9 @@ CHANGELOG / manifest / marketplace.json / plugin.json described scope as `'acros
 
 ### Backward compatibility
 
-- `insert_paragraph` append message changed from `'at index N'` (where N counted via `getParagraphs().count - 1`) to `'at index M'` (where M = `body.children.count - 1`). For docs without tables/SDTs, N == M (no observable change). For docs with tables/SDTs, M is the correct value to round-trip as `paragraph_index` — this is the bug being fixed; pre-fix N was already wrong.
+- `insert_paragraph` append message changed from `'at index N'` (where N counted via `getParagraphs().count - 1`) to `'at index M'` (where M = `body.children.count - 1`). For docs without tables / SDTs, N == M (no observable change). For docs with tables / SDTs, M and N differ.
+- **The change is a trade-off, not a strict correctness fix.** che-word-mcp has TWO `paragraph_index` semantic families across ~23 tools: (a) the 4 `insert_*` tools interpret int as `body.children` index; (b) `update_paragraph` / `delete_paragraph` / `format_text` / `insert_text_as_revision` / etc. (~19 tools, via lib `Document.bodyIndexForParagraph` at `Document.swift:2528`) interpret int as paragraph-only count (skip tables / SDTs). Pre-fix message N matched family (b); post-fix M matches family (a). Pipeline `insert_paragraph (append) → insert_paragraph (index=N+1)` is now correct; pipeline `insert_paragraph (append) → update_paragraph (index=M+1)` now throws `WordError.invalidIndex` (where it previously succeeded). The fix optimizes for the more common "append then insert near end" workflow at the cost of the cross-family pipeline.
+- The deeper lib-layer inconsistency is tracked in [PsychQuant/ooxml-swift#10](https://github.com/PsychQuant/ooxml-swift/issues/10) — a unified semantic for the int parameter would close the trade-off entirely.
 - `insert_image_from_path` debug-log label change is observable only when `CHE_WORD_MCP_LOG_LEVEL=debug`.
 - All other changes are docs / tests; no behavioral surface affected.
 
@@ -99,7 +101,7 @@ This avoids the v3.14.4 翻車 pattern where CHANGELOG claimed observable behavi
 
 #### F5 (P2) — malformed `into_table_cell` partial dict returns structured error
 
-Pre-fix in all 3 tools: passing `into_table_cell: { "table_index": 0 }` (missing `row` + `col`) silently fell through to next anchor or append, leading to wrong-position insertion that the caller couldn't detect. Post-fix:
+Pre-fix in all 3 #61-target insert tools (`insert_paragraph` / `insert_equation` / `insert_image_from_path`): passing `into_table_cell: { "table_index": 0 }` (missing `row` + `col`) silently fell through to next anchor or append, leading to wrong-position insertion that the caller couldn't detect. Post-fix:
 
 ```jsonc
 { "tool": "insert_paragraph", "args": { "doc_id": "d", "text": "...", "into_table_cell": { "table_index": 0 } } }
