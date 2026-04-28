@@ -6656,7 +6656,10 @@ actor WordMCPServer {
             resultMessage = "Inserted paragraph at index \(index)"
         } else {
             doc.appendParagraph(para)
-            resultMessage = "Inserted paragraph at index \(doc.getParagraphs().count - 1)"
+            // #69: report body.children index (matches Document.insertParagraph(_:at:Int)
+            // semantics — Document.swift:266-270). getParagraphs() skips tables/SDTs so
+            // its count - 1 mis-reports the index in docs with non-paragraph body children.
+            resultMessage = "Inserted paragraph at index \(doc.body.children.count - 1)"
         }
 
         try await storeDocument(doc, for: docId)
