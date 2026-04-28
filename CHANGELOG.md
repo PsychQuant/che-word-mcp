@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.15.3] - 2026-04-28
+
+### Fixed — Bundle A2 polish from v3.15.2 verify R3-R6 follow-ups (Refs #76 #77 #78 #79)
+
+Cleanup release for the four P3-level findings opened during /idd-verify of v3.15.2 Bundle A. All trivial; no production behavior change; `196 → 201` tests.
+
+#### #76 (docs) — schema description doc rot
+
+Two adjacent schema description fixes in `Server.swift`:
+
+- `insert_caption` (line 4781): description said `'三種 anchor (paragraph_index / after_image_id / after_table_index)'` but the schema has exposed 5 anchors (+ `after_text` + `before_text`) for several releases. Updated to enumerate all 5.
+- `insert_equation.paragraph_index` (line 2491): description said `'段落索引'` (which reads as paragraph-only index) but the handler passes to `Document.insertParagraph(_:at:Int)` which is `body.children`-indexed. Now explicitly notes it is a `body.children` index distinct from `get_paragraphs`'s paragraph-only count, and cross-references [PsychQuant/ooxml-swift#10](https://github.com/PsychQuant/ooxml-swift/issues/10) for the lib-layer convention split.
+
+Schema description text only — no schema field additions / removals, no behavior change.
+
+#### #77 (docs) — `insert_caption` shared/unique anchor split wording
+
+v3.15.2 wording `"insert_caption is a 4th insert tool with its own anchor set including after_table_index"` implied a disjoint set. In reality `insert_caption` shares 3 of 5 anchors (`after_image_id` / `after_text` / `before_text`) with the unified set + `paragraph_index`. Unique to caption: `after_table_index` + `position` modifier. Replaced 3 occurrences with the explicit shared / adds / lacks enumeration: `"shares after_image_id / after_text / before_text / paragraph_index, adds after_table_index + position, lacks into_table_cell"`.
+
+#### #78 (test) — extend #69 append-index regression pin
+
+`testInsertParagraphAppendMessageUsesBodyChildrenIndex` (added in v3.15.2) only covered `[para, table, para]`. The same `getParagraphs() vs body.children.count` divergence applies to ALL non-paragraph BodyChild variants, not just `.table`. Added 3 new sub-tests covering `.bookmarkMarker` / `.rawBlockElement` / block-level `.contentControl` to lock against future regression to `getParagraphs().count - 1` that might pass the table case but break for SDT / TOC bookmark anchors / vendor extensions.
+
+#### #79 (test) — round-trip depth + cross-family negative
+
+The original v3.15.2 #69 test only asserted message format; it never actually called `insert_paragraph` again with the reported index to demonstrate true round-trip. Two new tests:
+
+- `testInsertParagraphAppendIndexRoundTripsForInsertCalls` — append, parse reported index from message, call `insert_paragraph(index=N+1)`, verify via `get_paragraphs` that the new paragraph lands after the appended one. Demonstrates the insert-family round-trip the #69 fix optimizes for.
+- `testInsertParagraphAppendIndexCannotRoundTripToUpdate` — append, parse index, call `update_paragraph(index=N)` and assert it throws `WordError.invalidIndex`. Pins the cross-family trade-off acknowledged in the v3.15.2 CHANGELOG (where N is body.children index but `update_paragraph` interprets it as paragraph-only count). Tracks PsychQuant/ooxml-swift#10 as the deeper unification path.
+
+### Tests
+
+`swift test --disable-sandbox` — `196 → 201` (+5 from this release: 3 BodyChild variants for #78 + 2 round-trip variants for #79). 0 fail / 9 pre-existing skips.
+
+### Backward compatibility
+
+Pure docs + tests. No production code change. No schema field additions or removals. No behavioral surface affected.
+
+### No ooxml-swift dep bump
+
+Still v0.20.5 (unchanged).
+
+---
+
 ## [3.15.2] - 2026-04-28
 
 ### Fixed — Bundle A polish from v3.15.1 R2 verify (Refs #69 #73 #74 #75)
@@ -25,7 +69,7 @@ v3.15.1 added F5 partial-dict guards to all three insert tools at `Server.swift:
 
 #### #75 (docs) — `'3 insert tools'` wording precision
 
-CHANGELOG / manifest / marketplace.json / plugin.json described scope as `'across the 3 insert tools'` / `'across all 3 tools'`, but the repo has a 4th insert tool (`insert_caption`) with its own anchor set including `after_table_index`. v3.15.1's anchor unification scope was the 3 #61-target tools (`insert_paragraph` / `insert_equation` / `insert_image_from_path`). Replaced ambiguous phrasing with explicit enumeration.
+CHANGELOG / manifest / marketplace.json / plugin.json described scope as `'across the 3 insert tools'` / `'across all 3 tools'`, but the repo has a 4th insert tool (`insert_caption`) which has a partially-overlapping anchor set (shares `after_image_id` / `after_text` / `before_text` / `paragraph_index` with the unified set, adds `after_table_index` + `position`, lacks `into_table_cell`). v3.15.1's anchor unification scope was the 3 #61-target tools (`insert_paragraph` / `insert_equation` / `insert_image_from_path`). Replaced ambiguous phrasing with explicit enumeration.
 
 ### Tests
 
@@ -49,7 +93,7 @@ Still v0.20.5 (unchanged).
 
 ### Added / Fixed — Verify findings F1+F2+F3+F5 closed (Refs #61)
 
-Verify ensemble (5 Claude reviewers + Codex gpt-5.5 xhigh) on v3.15.0 caught 4 in-scope gaps. v3.15.1 closes all 4 symmetrically across the 3 #61-target insert tools (`insert_paragraph` / `insert_equation` / `insert_image_from_path`). Note: `insert_caption` is a 4th insert tool with its own anchor set including `after_table_index`; it is intentionally outside this unification scope.
+Verify ensemble (5 Claude reviewers + Codex gpt-5.5 xhigh) on v3.15.0 caught 4 in-scope gaps. v3.15.1 closes all 4 symmetrically across the 3 #61-target insert tools (`insert_paragraph` / `insert_equation` / `insert_image_from_path`). Note: `insert_caption` is a 4th insert tool with a partially-overlapping anchor set (shares `after_image_id` / `after_text` / `before_text` / `paragraph_index` with the unified set, adds `after_table_index` + `position`, lacks `into_table_cell`); it is intentionally outside this unification scope.
 
 #### F1 (P1) — `after_image_id` anchor wired into 3 tools
 
@@ -213,7 +257,7 @@ All anchor parameters are optional. Existing callers using `index` / `paragraph_
 
 #### Real-world impact
 
-Closes the inconsistency that forced document-rescue / template-population workflows to fall back to "insert at end + manual cut/paste in Word UI" or binary-search guessing on `paragraph_index`. AI callers can now reliably target anchor points by surrounding context across the 3 #61-target insert tools (`insert_paragraph` / `insert_equation` / `insert_image_from_path`); `insert_caption` retains its own anchor set including `after_table_index`.
+Closes the inconsistency that forced document-rescue / template-population workflows to fall back to "insert at end + manual cut/paste in Word UI" or binary-search guessing on `paragraph_index`. AI callers can now reliably target anchor points by surrounding context across the 3 #61-target insert tools (`insert_paragraph` / `insert_equation` / `insert_image_from_path`); `insert_caption` retains a partially-overlapping anchor set (shares `after_image_id` / `after_text` / `before_text` / `paragraph_index`, adds `after_table_index` + `position`, lacks `into_table_cell`).
 
 ---
 
