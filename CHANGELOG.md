@@ -5,6 +5,86 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.16.0] - 2026-04-28
+
+### Changed — Bundle B anchor DX consistency (Refs #70 #71 #72)
+
+**BREAKING (input validation only)** — three coordinated MCP-layer changes across the 4 `#61`-target tools (`insert_paragraph` / `insert_equation` display mode / `insert_image_from_path` / `insert_caption`). Behavior change ONLY for callers passing 2+ anchors or explicit `text_instance` ≤ 0; single-anchor and omitted-text_instance paths unchanged.
+
+Spectra change: `anchor-dx-consistency`. SemVer rationale (minor not major): no schema break, no tool removal, no required-param additions — restricting previously-undefined behavior (silent priority order was an implementation detail that leaked, never documented as contract). See `openspec/changes/anchor-dx-consistency/design.md` *Cross-cutting: backward-compat note + SemVer rationale* for full reasoning.
+
+#### #71 (behavior) — silent priority on conflicting anchors → structured error
+
+Pre-fix: `insert_paragraph(after_text="foo", index=3)` silently picked `after_text` per a hardcoded priority chain and ignored `index`. AI callers got a misleading "success" message and assumed both args were honored.
+
+Post-fix: returns `"Error: insert_paragraph: received conflicting anchors: after_text + index. Specify exactly one."` (anchors alphabetically sorted). Same pattern applied to all 4 tools. New static helper `WordMCPServer.detectPresentAnchors(_:anchors:)` with per-anchor type-aware predicates — JSON `null` and wrong-type values do NOT count as present (matches existing dispatcher semantics).
+
+Per-tool anchor sets:
+
+| Tool | Anchor set |
+|---|---|
+| `insert_paragraph` | `into_table_cell` / `after_image_id` / `after_text` / `before_text` / `index` |
+| `insert_equation` (display mode) | `into_table_cell` / `after_image_id` / `after_text` / `before_text` / `paragraph_index` |
+| `insert_equation` (inline mode) | _no anchors accepted_ — pre-existing v3.15.1 rejection unchanged |
+| `insert_image_from_path` | `into_table_cell` / `after_image_id` / `after_text` / `before_text` / `index` |
+| `insert_caption` | `paragraph_index` / `after_image_id` / `after_table_index` / `after_text` / `before_text` |
+
+Modifiers (`text_instance`, `position`, `style`) are NOT anchors and don't count toward conflict.
+
+`insert_caption`'s pre-existing `anchorCount == 1` check is replaced by the unified helper-based check. Side effect: zero-anchor error format changed from `"Error: exactly one of paragraph_index / ... must be provided (got N)"` to `"Error: insert_caption: at least one anchor required (...). Specify exactly one."` — semantically identical, format aligned with new convention.
+
+#### #72 (validation) — `text_instance ≤ 0` rejected when explicitly specified
+
+Pre-fix: schema accepted any Int; explicit `text_instance: 0` or negative passed through to lib without validation.
+
+Post-fix: explicit `text_instance < 1` returns `"Error: <tool>: text_instance must be ≥ 1, got <N>."` Omitted `text_instance` continues to default to `1` (silent — that's coalescing, not user input). Reason: `instance: 0` has no defined lib semantics ("zeroth match" is undefined); rejecting pushes callers toward the documented contract.
+
+#### #70 (DX) — tool-prefix all `return "Error: ..."` lines in 4 tools
+
+Pre-fix: half of error paths used `throw WordError.*` (structured, gets tool name from caller's catch handler at `dispatch()` level); the other half used raw `return "Error: ..."` strings (no tool identifier). When 5 tools all returned `"Error: text 'foo' not found"` an AI parsing the response couldn't tell which call failed.
+
+Post-fix: all 32 `return "Error: ..."` lines in the 4 `#61`-target tools rewritten as `"Error: <tool>: <body>"`. `throw WordError.*` paths unchanged.
+
+Examples:
+- `"Error: text 'foo' not found (instance 1)"` → `"Error: insert_paragraph: text 'foo' not found (instance 1)"`
+- `"Error: image rId 'rId99' not found"` → `"Error: insert_image_from_path: image rId 'rId99' not found"`
+- `"Error: into_table_cell requires all three fields"` → `"Error: insert_equation: into_table_cell requires all three fields"`
+
+**Scope deliberately limited to 4 tools.** The remaining 41 `return "Error: ..."` lines elsewhere in `Server.swift` (~50 unfamiliar handlers) are tackled by a separate `error-prefix-sweep` follow-up change. Rationale in design §3 *Phasing*: bundling them would push past the 15-task scope guideline and risk subtle handler-name mistakes.
+
+#### Tests
+
+`AnchorDXConsistencyTests.swift` — 25 new sub-tests:
+- 9 helper unit tests (presence detection, null / wrong-type / modifier exclusion, whitelist)
+- 4 conflict-rejection integration tests (across 4 tools, including the alphabetical-sort 3-anchor case)
+- 4 backward-compat happy-path tests (single anchor still dispatches; insertEquation inline rejection preserved; modifier params don't count)
+- 6 `text_instance` validation tests (explicit 0 / -1 / -3 across 4 tools + 1 omitted-default)
+- 1 grep-based regression pin asserting zero un-prefixed `return "Error: ..."` lines in the 4 target tools
+
+Suite: `201 → 226` (+25, 0 fail / 9 skip). No `ooxml-swift` dep bump (still v0.20.5).
+
+#### Migration guidance
+
+If your existing prompts pass 2+ anchors expecting silent priority winner: drop the redundant ones. Error message itemizes the conflict. Example:
+
+```
+Before (worked silently): insert_paragraph({ doc_id, text, after_text: "foo", index: 3 })
+                          → silently picked after_text, ignored index, returned success message
+
+After (v3.16.0+):         insert_paragraph({ doc_id, text, after_text: "foo", index: 3 })
+                          → "Error: insert_paragraph: received conflicting anchors: after_text + index. Specify exactly one."
+```
+
+If your prompts pass `text_instance: 0` expecting "find any": drop the param entirely (defaults to 1 = first match).
+
+If you grep tool outputs for un-prefixed error strings (`"text '...' not found"`): update grep to match `"Error: <tool>: text '...' not found"` — body is unchanged, only prefix added.
+
+#### Out of scope (deferred)
+
+- `error-prefix-sweep` (separate change) — 41 remaining `return "Error: ..."` lines in non-`#61`-target handlers across `Server.swift`. Mechanical, low-risk, ships as v3.16.x patch.
+- `#67` (insert_equation inline anchors) — closing as wontfix-with-rationale outside Spectra. Inline equations are a structurally different shape (run-inside-paragraph); paragraph-level anchor set semantics are ill-defined for inline mode.
+- Lib-layer index-convention unification — PsychQuant/ooxml-swift#10, separate process.
+
 ## [3.15.3] - 2026-04-28
 
 ### Fixed — Bundle A2 polish from v3.15.2 verify R3-R6 follow-ups (Refs #76 #77 #78 #79)
