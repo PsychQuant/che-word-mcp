@@ -5,6 +5,77 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.15.0] - 2026-04-28
+
+### Added — `insert_paragraph` / `insert_equation` accept anchor parameters (Refs #61)
+
+Closes the MCP-side wire-up gap where `insert_paragraph` and `insert_equation` accepted only `index` / `paragraph_index`, while `insert_image_from_path` already supported the rich anchor set (`after_text` / `before_text` / `text_instance` / `into_table_cell`). Pre-fix the anchor JSON arguments were silently dropped — handler dispatch ignored them, falls through to legacy index path or appends at end. Lib API `Document.insertParagraph(_: at: InsertLocation)` has supported all six anchor cases since #44; this release closes the MCP-layer plumbing.
+
+#### What this fixes for MCP users
+
+```jsonc
+// Pre-fix (silent fallthrough — anchor dropped, paragraph appended at end):
+{ "tool": "insert_paragraph", "args": { "doc_id": "d", "text": "...", "after_text": "abstract" } }
+// → "Inserted paragraph at index 569" (NOT after the abstract anchor)
+
+// Post-fix v3.15.0:
+{ "tool": "insert_paragraph", "args": { "doc_id": "d", "text": "...", "after_text": "abstract" } }
+// → "Inserted paragraph after text 'abstract' (instance 1)"
+
+// Same anchor set now also works for display-mode equations:
+{ "tool": "insert_equation", "args": { "doc_id": "d", "latex": "a^2+b^2=c^2", "display_mode": true, "after_text": "Equation 4-1:" } }
+// → "Inserted equation (display mode: true)" — equation lands in correct position
+```
+
+#### Anchor priority (mirrors `insert_image_from_path`)
+
+1. `into_table_cell` (insert_paragraph only)
+2. `after_text` (with `text_instance`)
+3. `before_text` (with `text_instance`)
+4. `index` / `paragraph_index`
+5. append at end
+
+#### Inline equation rejects anchors (scope guard)
+
+`insert_equation` with `display_mode=false` (inline) **rejects** `after_text` / `before_text` with structured error — semantics ambiguous between "append OMML run into the existing para containing this text" vs "insert a new para before/after the target para". Inline placement still uses `paragraph_index`. Display-mode equations build a new paragraph, so anchor semantics are unambiguous.
+
+#### Errors
+
+`textNotFound` / `tableIndexOutOfRange` / `tableCellOutOfRange` now return structured error messages instead of silent fallthrough — AI callers can surface the failure instead of getting a misleading "success" with paragraph at the wrong position.
+
+#### Implementation
+
+- `Sources/CheWordMCP/Server.swift` — `insert_paragraph` schema (line 720) gains `into_table_cell` / `after_text` / `before_text` / `text_instance`; handler `insertParagraph(args:)` (line 6550) wires anchor priority dispatch to `Document.insertParagraph(_: at: InsertLocation)`. `insert_equation` schema (line 2436) gains `after_text` / `before_text` / `text_instance`; handler `insertEquation(args:)` (line 8591) accepts anchors only in display mode.
+- No `ooxml-swift` dep bump — v0.20.5 has all needed lib APIs from #44.
+
+#### Tests
+
+- `Tests/CheWordMCPTests/Issue61InsertParagraphAnchorsSmokeTests.swift` — 5 sub-tests:
+  - `testInsertParagraphAfterTextResolvesAnchor` — verifies INSERTED_AFTER lands between anchor and tail
+  - `testInsertParagraphBeforeTextResolvesAnchor` — verifies INSERTED_BEFORE lands before anchor
+  - `testInsertParagraphTextInstanceDisambiguates` — `text_instance: 2` targets the second of two duplicate anchors
+  - `testInsertParagraphIntoTableCellAppendsToCell` — paragraph appends inside the specified cell
+  - `testInsertParagraphAfterTextNotFoundReturnsError` — missing anchor reports `textNotFound`
+- `Tests/CheWordMCPTests/Issue61InsertEquationAnchorsSmokeTests.swift` — 4 sub-tests:
+  - `testInsertEquationAfterTextDisplayModeResolvesAnchor`
+  - `testInsertEquationBeforeTextDisplayModeResolvesAnchor`
+  - `testInsertEquationAnchorRejectedInInlineMode`
+  - `testInsertEquationMissingAnchorReportsTextNotFound`
+
+#### Test suite
+
+- 176 → 185 tests / 0 fail / 9 skipped (pre-existing skips, unrelated to #61)
+
+#### Backward compatibility
+
+All anchor parameters are optional. Existing callers using `index` / `paragraph_index` continue to work unchanged. No schema removal, no behavior change for non-anchor calls.
+
+#### Real-world impact
+
+Closes the inconsistency that forced document-rescue / template-population workflows to fall back to "insert at end + manual cut/paste in Word UI" or binary-search guessing on `paragraph_index`. AI callers can now reliably target anchor points by surrounding context for all three insert tools symmetrically.
+
+---
+
 ## [3.14.5] - 2026-04-28
 
 ### Fixed — `findBodyChildContainingText` covers all editable surfaces (Refs #63 verify F1)
