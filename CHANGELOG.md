@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.16.2] - 2026-04-28
+
+### Changed — bump ooxml-swift dep 0.20.5 → 0.21.0 (Refs #62 #68)
+
+Pure dep bump; no MCP-layer source changes. Picks up two ooxml-swift fixes that surface transparently to MCP callers via the existing tool dispatch:
+
+#### #68 — text anchor lookup recurses into table cells + block-level SDT (ooxml-swift v0.20.6)
+
+`InsertLocation.findBodyChildContainingText` now traverses `.table` (rows × cells × paragraphs + nestedTables) and `.contentControl(_, children:)` (recursive). Pre-fix anchor text inside a table cell or block-level `<w:sdt>` was silently skipped → `textNotFound` thrown even though the text was present.
+
+**MCP impact** — `insert_paragraph` / `insert_image_from_path` / `insert_equation` / `insert_caption` calls using `before_text` / `after_text` now succeed when the anchor text lives inside a table cell or block-level SDT (common in document docs with figure/table captions inside table cells). Returned position is the **top-level** `body.children` index of the containing table/SDT — insert lands at body level adjacent to the entire structure, not inside cells. Use `into_table_cell` for inside-cell inserts.
+
+Also picks up empty-needle guard: passing `before_text: ""` / `after_text: ""` now returns `textNotFound` instead of silently inserting at index 1.
+
+#### #62 — wrapCaptionSequenceFields lib API available (ooxml-swift v0.21.0)
+
+`WordDocument.wrapCaptionSequenceFields(...)` is now linked into the binary. **Not yet exposed as an MCP tool** — the `wrap_caption_seq` MCP wrapper ships in v3.17.0 (Phase 2 of the cross-repo work). Existing MCP tools are unaffected.
+
+### Tests
+
+Suite unchanged: `231 → 231` (0 fail / 9 skip). Dep bump is exercised end-to-end via the existing test surface; ooxml-swift itself ships 716 tests of which 10 cover the #62 lib API and 10 cover the #68 traversal fix.
+
+### Backward compatibility
+
+Strict superset of v3.16.1 behavior. The only externally observable change is that previously-`textNotFound` calls (anchor text in table cells / block SDT) now succeed. No tool removed, no schema change, no error-message format change.
+
 ## [3.16.1] - 2026-04-28
 
 ### Changed — anchor-presence whitelist drift prevention (Refs #80)
