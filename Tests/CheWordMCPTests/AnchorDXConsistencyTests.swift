@@ -688,6 +688,66 @@ final class AnchorDXConsistencyTests: XCTestCase {
         return url
     }
 
+    // MARK: - #80 Phase 4: SoT consistency invariant
+    // After the toolAnchorWhitelists refactor, every name listed for any tool
+    // must exist in anchorPresence — otherwise detectPresentAnchors silently
+    // skips it and conflict detection regresses for that anchor in that tool.
+
+    func testToolAnchorWhitelistsSubsetOfAnchorPresence() {
+        let knownAnchors = Set(WordMCPServer.anchorPresence.keys)
+        for (tool, anchors) in WordMCPServer.toolAnchorWhitelists {
+            let unknown = Set(anchors).subtracting(knownAnchors)
+            XCTAssertTrue(
+                unknown.isEmpty,
+                "\(tool): anchor names \(unknown.sorted()) not in WordMCPServer.anchorPresence — detectPresentAnchors will silently miss them"
+            )
+        }
+    }
+
+    func testToolAnchorWhitelistsCoversFourTargetTools() {
+        // Pin: refactor must keep all 4 #61-target tools registered. If a tool
+        // is removed (e.g. someone deletes insert_caption from the dict), this
+        // test fails loudly so the per-tool conflict check at the call site is
+        // not orphaned.
+        let expected: Set<String> = [
+            "insert_paragraph",
+            "insert_image_from_path",
+            "insert_equation",
+            "insert_caption",
+        ]
+        let actual = Set(WordMCPServer.toolAnchorWhitelists.keys)
+        XCTAssertEqual(actual, expected,
+                       "toolAnchorWhitelists must cover exactly the 4 #61-target tools; got \(actual.sorted())")
+    }
+
+    func testDetectPresentAnchorsByToolMatchesByExplicitAnchors() {
+        // The (args, tool:) overload must produce the same result as the
+        // (args, anchors:) overload when given the dict-resolved anchor list.
+        let args: [String: Value] = [
+            "doc_id": .string("d"),
+            "text": .string("x"),
+            "after_text": .string("foo"),
+            "before_text": .string("bar"),
+        ]
+        for (tool, anchors) in WordMCPServer.toolAnchorWhitelists {
+            let viaTool = WordMCPServer.detectPresentAnchors(args, tool: tool)
+            let viaList = WordMCPServer.detectPresentAnchors(args, anchors: anchors)
+            XCTAssertEqual(viaTool, viaList, "tool=\(tool) overload mismatch")
+        }
+    }
+
+    func testDetectPresentAnchorsByUnknownToolReturnsEmpty() {
+        // Defensive: passing a tool name not in the dict should return [],
+        // not crash. (Mirrors the existing (args, anchors:) defensive behavior
+        // for anchor names not in anchorPresence.)
+        let args: [String: Value] = [
+            "doc_id": .string("d"),
+            "after_text": .string("foo"),
+        ]
+        let present = WordMCPServer.detectPresentAnchors(args, tool: "nonexistent_tool")
+        XCTAssertEqual(present, [] as [String])
+    }
+
     /// Minimal 1x1 PNG (8-byte signature + IHDR + IDAT + IEND).
     private func writeOnePixelPNG() throws -> URL {
         let png: [UInt8] = [

@@ -65,6 +65,21 @@ actor WordMCPServer {
         "after_table_index": { $0.intValue    != nil },
     ]
 
+    /// #80 — single source of truth for each #61-target tool's accepted anchor names.
+    /// Keys are MCP tool names (snake_case, matching schema), values are the anchor
+    /// parameter names that tool accepts. Conflict-detection call sites resolve via
+    /// this dict instead of duplicating literal arrays at each site (which silently
+    /// drift when a future PR adds a new anchor to one but not the others).
+    /// Test `testToolAnchorWhitelistsSubsetOfAnchorPresence` enforces every value
+    /// here is in `anchorPresence.keys` so unknown names cannot silently bypass
+    /// detection.
+    static let toolAnchorWhitelists: [String: [String]] = [
+        "insert_paragraph":       ["into_table_cell", "after_image_id", "after_text", "before_text", "index"],
+        "insert_image_from_path": ["into_table_cell", "after_image_id", "after_text", "before_text", "index"],
+        "insert_equation":        ["into_table_cell", "after_image_id", "after_text", "before_text", "paragraph_index"],
+        "insert_caption":         ["paragraph_index", "after_image_id", "after_table_index", "after_text", "before_text"],
+    ]
+
     /// Detect which anchor parameters from `anchors` are present in `args`.
     /// Returns alphabetically-sorted names so callers can include them verbatim
     /// in error messages with stable formatting.
@@ -82,6 +97,15 @@ actor WordMCPServer {
             else { return nil }
             return name
         }.sorted()
+    }
+
+    /// #80 — SoT-driven overload. Looks up the tool's accepted anchor list in
+    /// `toolAnchorWhitelists` then delegates to the explicit-anchors overload.
+    /// Tools not in the dict return `[]` (defensive — mirrors the per-anchor
+    /// silent-skip in the explicit overload).
+    static func detectPresentAnchors(_ args: [String: Value], tool: String) -> [String] {
+        guard let anchors = toolAnchorWhitelists[tool] else { return [] }
+        return detectPresentAnchors(args, anchors: anchors)
     }
 
     /// One emitted log event. `event` is the dotted name (e.g. `storeDocument.entry`),
@@ -6646,9 +6670,8 @@ actor WordMCPServer {
 
         // anchor-dx-consistency (#71): reject conflicting anchors before the dispatcher.
         // Spec: openspec/changes/anchor-dx-consistency/specs/.../spec.md R1.
-        let presentAnchors = WordMCPServer.detectPresentAnchors(args, anchors: [
-            "into_table_cell", "after_image_id", "after_text", "before_text", "index"
-        ])
+        // #80: anchor list resolved from WordMCPServer.toolAnchorWhitelists (SoT).
+        let presentAnchors = WordMCPServer.detectPresentAnchors(args, tool: "insert_paragraph")
         if presentAnchors.count > 1 {
             return "Error: insert_paragraph: received conflicting anchors: \(presentAnchors.joined(separator: " + ")). Specify exactly one."
         }
@@ -7894,9 +7917,8 @@ actor WordMCPServer {
         // inconsistent with the other 3 #61-target handlers and violating the
         // bundle's "anchor-dx-consistency" promise.
         // Spec: openspec/changes/anchor-dx-consistency/specs/.../spec.md R1.
-        let presentAnchors = WordMCPServer.detectPresentAnchors(args, anchors: [
-            "into_table_cell", "after_image_id", "after_text", "before_text", "index"
-        ])
+        // #80: anchor list resolved from WordMCPServer.toolAnchorWhitelists (SoT).
+        let presentAnchors = WordMCPServer.detectPresentAnchors(args, tool: "insert_image_from_path")
         if presentAnchors.count > 1 {
             return "Error: insert_image_from_path: received conflicting anchors: \(presentAnchors.joined(separator: " + ")). Specify exactly one."
         }
@@ -8826,9 +8848,8 @@ actor WordMCPServer {
         // after_text / before_text / paragraph_index. Inline mode handled by the
         // pre-existing rejection above (only paragraph_index allowed).
         if displayMode {
-            let presentAnchors = WordMCPServer.detectPresentAnchors(args, anchors: [
-                "into_table_cell", "after_image_id", "after_text", "before_text", "paragraph_index"
-            ])
+            // #80: anchor list resolved from WordMCPServer.toolAnchorWhitelists (SoT).
+            let presentAnchors = WordMCPServer.detectPresentAnchors(args, tool: "insert_equation")
             if presentAnchors.count > 1 {
                 return "Error: insert_equation: received conflicting anchors: \(presentAnchors.joined(separator: " + ")). Specify exactly one."
             }
@@ -12178,9 +12199,8 @@ actor WordMCPServer {
         // Caption-specific anchor set: paragraph_index / after_image_id /
         // after_table_index / after_text / before_text (no `index` or `into_table_cell`).
         // Spec: openspec/changes/anchor-dx-consistency/specs/.../spec.md R1.
-        let presentAnchors = WordMCPServer.detectPresentAnchors(args, anchors: [
-            "paragraph_index", "after_image_id", "after_table_index", "after_text", "before_text"
-        ])
+        // #80: anchor list resolved from WordMCPServer.toolAnchorWhitelists (SoT).
+        let presentAnchors = WordMCPServer.detectPresentAnchors(args, tool: "insert_caption")
         if presentAnchors.count > 1 {
             return "Error: insert_caption: received conflicting anchors: \(presentAnchors.joined(separator: " + ")). Specify exactly one."
         }
