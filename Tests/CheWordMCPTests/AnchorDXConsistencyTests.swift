@@ -548,6 +548,78 @@ final class AnchorDXConsistencyTests: XCTestCase {
         )
     }
 
+    // MARK: - Phase 4.5: tool-prefix regression pin (grep on Server.swift source)
+    // Spec R3 — all `return "Error: ..."` lines in 4 #61-target tools must be
+    // tool-prefixed. Scoped to 4 target tools per design §3 *Phasing*; global
+    // sweep is the separate `error-prefix-sweep` change's concern.
+
+    func testFourTargetToolsHaveNoUnprefixedErrorReturns() throws {
+        // Locate Server.swift via SOURCES env (set by Xcode/swift test) or relative path.
+        let serverPath: URL = {
+            if let src = ProcessInfo.processInfo.environment["SOURCE_ROOT"] {
+                return URL(fileURLWithPath: src).appendingPathComponent("Sources/CheWordMCP/Server.swift")
+            }
+            // Fall back: walk up from test file location until we find Sources/.
+            var url = URL(fileURLWithPath: #filePath)
+            while url.pathComponents.count > 1 {
+                url = url.deletingLastPathComponent()
+                let candidate = url.appendingPathComponent("Sources/CheWordMCP/Server.swift")
+                if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+            }
+            return URL(fileURLWithPath: "/dev/null")
+        }()
+
+        let source = try String(contentsOf: serverPath)
+        let lines = source.components(separatedBy: "\n")
+
+        let targets: Set<String> = ["insertParagraph", "insertEquation", "insertImageFromPath", "insertCaption"]
+        var inTargetFunc = false
+        var currentTool: String? = nil
+
+        // Map func name → tool name for the prefix check.
+        let funcToTool: [String: String] = [
+            "insertParagraph": "insert_paragraph",
+            "insertEquation": "insert_equation",
+            "insertImageFromPath": "insert_image_from_path",
+            "insertCaption": "insert_caption",
+        ]
+
+        var unprefixed: [(line: Int, content: String, tool: String)] = []
+
+        for (idx, line) in lines.enumerated() {
+            // Detect entry into / exit from target functions.
+            // Pattern: `    private func <name>(args:`
+            if let match = line.range(of: #"^    private func (\w+)\(args"#, options: .regularExpression) {
+                let funcName = String(line[match]).replacingOccurrences(of: "    private func ", with: "")
+                                                 .replacingOccurrences(of: "(args", with: "")
+                if targets.contains(funcName) {
+                    inTargetFunc = true
+                    currentTool = funcToTool[funcName]
+                } else {
+                    inTargetFunc = false
+                    currentTool = nil
+                }
+                continue
+            }
+            guard inTargetFunc, let tool = currentTool else { continue }
+
+            // Look for `return "Error: ...` that does NOT start with `Error: <tool>:`.
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix(#"return "Error:"#) else { continue }
+            let expectedPrefix = #"return "Error: \#(tool):"#
+            if !trimmed.hasPrefix(expectedPrefix) {
+                unprefixed.append((line: idx + 1, content: trimmed, tool: tool))
+            }
+        }
+
+        XCTAssertEqual(
+            unprefixed.count, 0,
+            "Found \(unprefixed.count) unprefixed `return \"Error: ...\"` lines in 4 #61-target tools "
+            + "(Spec R3, Phase 3 sweep). Each must be `Error: <tool>: <body>`. Lines:\n"
+            + unprefixed.map { "  Server.swift:\($0.line) [\($0.tool)] \($0.content)" }.joined(separator: "\n")
+        )
+    }
+
     // MARK: - Test helpers
 
     private func textOf(_ r: CallTool.Result) -> String {

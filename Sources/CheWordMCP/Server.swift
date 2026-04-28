@@ -6667,15 +6667,15 @@ actor WordMCPServer {
             guard let tableIdx = cellDict["table_index"]?.intValue,
                   let row = cellDict["row"]?.intValue,
                   let col = cellDict["col"]?.intValue else {
-                return "Error: into_table_cell requires all three fields (table_index, row, col); got partial dict"
+                return "Error: insert_paragraph: into_table_cell requires all three fields (table_index, row, col); got partial dict"
             }
             do {
                 try doc.insertParagraph(para, at: .intoTableCell(tableIndex: tableIdx, row: row, col: col))
                 resultMessage = "Inserted paragraph into table[\(tableIdx)] cell (row: \(row), col: \(col))"
             } catch let InsertLocationError.tableIndexOutOfRange(i) {
-                return "Error: table index \(i) out of range"
+                return "Error: insert_paragraph: table index \(i) out of range"
             } catch let InsertLocationError.tableCellOutOfRange(t, r, c) {
-                return "Error: table[\(t)] cell (row: \(r), col: \(c)) out of range"
+                return "Error: insert_paragraph: table[\(t)] cell (row: \(r), col: \(c)) out of range"
             }
         } else if let afterImageId = args["after_image_id"]?.stringValue {
             // F1 (v3.15.1): after_image_id anchor.
@@ -6683,21 +6683,21 @@ actor WordMCPServer {
                 try doc.insertParagraph(para, at: .afterImageId(afterImageId))
                 resultMessage = "Inserted paragraph after image '\(afterImageId)'"
             } catch let InsertLocationError.imageIdNotFound(rId) {
-                return "Error: image rId '\(rId)' not found"
+                return "Error: insert_paragraph: image rId '\(rId)' not found"
             }
         } else if let afterText = args["after_text"]?.stringValue {
             do {
                 try doc.insertParagraph(para, at: .afterText(afterText, instance: textInstance))
                 resultMessage = "Inserted paragraph after text '\(afterText)' (instance \(textInstance))"
             } catch let InsertLocationError.textNotFound(searchText, instance) {
-                return "Error: text '\(searchText)' not found (instance \(instance))"
+                return "Error: insert_paragraph: text '\(searchText)' not found (instance \(instance))"
             }
         } else if let beforeText = args["before_text"]?.stringValue {
             do {
                 try doc.insertParagraph(para, at: .beforeText(beforeText, instance: textInstance))
                 resultMessage = "Inserted paragraph before text '\(beforeText)' (instance \(textInstance))"
             } catch let InsertLocationError.textNotFound(searchText, instance) {
-                return "Error: text '\(searchText)' not found (instance \(instance))"
+                return "Error: insert_paragraph: text '\(searchText)' not found (instance \(instance))"
             }
         } else if let index = args["index"]?.intValue {
             doc.insertParagraph(para, at: index)
@@ -7935,7 +7935,7 @@ actor WordMCPServer {
             guard let tableIdx = cellDict["table_index"]?.intValue,
                   let row = cellDict["row"]?.intValue,
                   let col = cellDict["col"]?.intValue else {
-                return "Error: into_table_cell requires all three fields (table_index, row, col); got partial dict"
+                return "Error: insert_image_from_path: into_table_cell requires all three fields (table_index, row, col); got partial dict"
             }
             do {
                 imageId = try doc.insertImage(
@@ -7947,9 +7947,9 @@ actor WordMCPServer {
                     description: description
                 )
             } catch let InsertLocationError.tableIndexOutOfRange(i) {
-                return "Error: table index \(i) out of range"
+                return "Error: insert_image_from_path: table index \(i) out of range"
             } catch let InsertLocationError.tableCellOutOfRange(t, r, c) {
-                return "Error: table[\(t)] cell (row: \(r), col: \(c)) out of range"
+                return "Error: insert_image_from_path: table[\(t)] cell (row: \(r), col: \(c)) out of range"
             }
         } else if let afterImageId = args["after_image_id"]?.stringValue {
             // F1 (v3.15.1): after_image_id anchor.
@@ -7963,7 +7963,7 @@ actor WordMCPServer {
                     description: description
                 )
             } catch let InsertLocationError.imageIdNotFound(rId) {
-                return "Error: image rId '\(rId)' not found"
+                return "Error: insert_image_from_path: image rId '\(rId)' not found"
             }
         } else if let afterText = args["after_text"]?.stringValue {
             do {
@@ -7976,7 +7976,7 @@ actor WordMCPServer {
                     description: description
                 )
             } catch let InsertLocationError.textNotFound(text, instance) {
-                return "Error: text '\(text)' not found (instance \(instance))"
+                return "Error: insert_image_from_path: text '\(text)' not found (instance \(instance))"
             }
         } else if let beforeText = args["before_text"]?.stringValue {
             do {
@@ -7989,7 +7989,7 @@ actor WordMCPServer {
                     description: description
                 )
             } catch let InsertLocationError.textNotFound(text, instance) {
-                return "Error: text '\(text)' not found (instance \(instance))"
+                return "Error: insert_image_from_path: text '\(text)' not found (instance \(instance))"
             }
         } else {
             // body-level: use legacy index-based API
@@ -8773,24 +8773,24 @@ actor WordMCPServer {
             do {
                 components = [try parseMathComponent(from: componentsValue)]
             } catch MathParseError.unknownType(let t) {
-                return "Error: unknown math component type '\(t)'. Supported: run, fraction, radical, subSuperScript, nary."
+                return "Error: insert_equation: unknown math component type '\(t)'. Supported: run, fraction, radical, subSuperScript, nary."
             } catch MathParseError.missingField(let f, let t) {
-                return "Error: math component '\(t)' missing required field '\(f)'"
+                return "Error: insert_equation: math component '\(t)' missing required field '\(f)'"
             } catch MathParseError.invalidStructure(let msg) {
-                return "Error: invalid components structure: \(msg)"
+                return "Error: insert_equation: invalid components structure: \(msg)"
             }
         } else if let latex = args["latex"]?.stringValue {
             do {
                 components = try parseLatex(latex)
             } catch LaTeXParseError.unrecognizedToken(let tok) {
-                return "Error: unrecognized LaTeX token '\(tok)'. Use `components:` argument for full MathComponent control."
+                return "Error: insert_equation: unrecognized LaTeX token '\(tok)'. Use `components:` argument for full MathComponent control."
             } catch LaTeXParseError.malformed(let msg) {
-                return "Error: malformed LaTeX: \(msg). Use `components:` for complex expressions."
+                return "Error: insert_equation: malformed LaTeX: \(msg). Use `components:` for complex expressions."
             } catch LaTeXParseError.empty {
-                return "Error: empty LaTeX input."
+                return "Error: insert_equation: empty LaTeX input."
             }
         } else {
-            return "Error: either 'components' (JSON tree) or 'latex' (LaTeX subset) argument required"
+            return "Error: insert_equation: either 'components' (JSON tree) or 'latex' (LaTeX subset) argument required"
         }
 
         let displayMode = args["display_mode"]?.boolValue ?? true
@@ -8810,7 +8810,7 @@ actor WordMCPServer {
         // semantics are ambiguous — reject explicitly to surface the misuse.
         if !displayMode && (afterText != nil || beforeText != nil
                             || afterImageId != nil || intoTableCellDict != nil) {
-            return "Error: anchor parameters (after_text / before_text / after_image_id / into_table_cell) only supported when display_mode=true (inline equations append to an existing paragraph; use paragraph_index instead)"
+            return "Error: insert_equation: anchor parameters (after_text / before_text / after_image_id / into_table_cell) only supported when display_mode=true (inline equations append to an existing paragraph; use paragraph_index instead)"
         }
 
         // anchor-dx-consistency (#71): reject conflicting anchors in display mode.
@@ -8848,36 +8848,36 @@ actor WordMCPServer {
             guard let tableIdx = cellDict["table_index"]?.intValue,
                   let row = cellDict["row"]?.intValue,
                   let col = cellDict["col"]?.intValue else {
-                return "Error: into_table_cell requires all three fields (table_index, row, col); got partial dict"
+                return "Error: insert_equation: into_table_cell requires all three fields (table_index, row, col); got partial dict"
             }
             do {
                 try doc.insertParagraph(eqPara, at: .intoTableCell(tableIndex: tableIdx, row: row, col: col))
                 anchorInfo = "into table[\(tableIdx)] cell (row: \(row), col: \(col))"
             } catch let InsertLocationError.tableIndexOutOfRange(i) {
-                return "Error: table index \(i) out of range"
+                return "Error: insert_equation: table index \(i) out of range"
             } catch let InsertLocationError.tableCellOutOfRange(t, r, c) {
-                return "Error: table[\(t)] cell (row: \(r), col: \(c)) out of range"
+                return "Error: insert_equation: table[\(t)] cell (row: \(r), col: \(c)) out of range"
             }
         } else if displayMode, let afterImageId = afterImageId {
             do {
                 try doc.insertParagraph(eqPara, at: .afterImageId(afterImageId))
                 anchorInfo = "after image '\(afterImageId)'"
             } catch let InsertLocationError.imageIdNotFound(rId) {
-                return "Error: image rId '\(rId)' not found"
+                return "Error: insert_equation: image rId '\(rId)' not found"
             }
         } else if displayMode, let afterText = afterText {
             do {
                 try doc.insertParagraph(eqPara, at: .afterText(afterText, instance: textInstance))
                 anchorInfo = "after text '\(afterText)' (instance \(textInstance))"
             } catch let InsertLocationError.textNotFound(searchText, instance) {
-                return "Error: text '\(searchText)' not found (instance \(instance))"
+                return "Error: insert_equation: text '\(searchText)' not found (instance \(instance))"
             }
         } else if displayMode, let beforeText = beforeText {
             do {
                 try doc.insertParagraph(eqPara, at: .beforeText(beforeText, instance: textInstance))
                 anchorInfo = "before text '\(beforeText)' (instance \(textInstance))"
             } catch let InsertLocationError.textNotFound(searchText, instance) {
-                return "Error: text '\(searchText)' not found (instance \(instance))"
+                return "Error: insert_equation: text '\(searchText)' not found (instance \(instance))"
             }
         } else {
             let insertIdx = paragraphIndex ?? doc.body.children.count
@@ -12159,7 +12159,7 @@ actor WordMCPServer {
 
         let validLabels = ["Figure", "Table", "Equation", "圖", "表", "公式"]
         guard validLabels.contains(label) else {
-            return "Error: Invalid label '\(label)'. Valid options: \(validLabels.joined(separator: ", "))"
+            return "Error: insert_caption: Invalid label '\(label)'. Valid options: \(validLabels.joined(separator: ", "))"
         }
 
         let captionText = args["caption_text"]?.stringValue ?? ""
@@ -12237,13 +12237,13 @@ actor WordMCPServer {
             try await storeDocument(doc, for: docId)
             return "Caption inserted: '\(label)' with real SEQ field"
         } catch let InsertLocationError.invalidParagraphIndex(i) {
-            return "Error: invalid paragraph index \(i)"
+            return "Error: insert_caption: invalid paragraph index \(i)"
         } catch let InsertLocationError.imageIdNotFound(rId) {
-            return "Error: image with id '\(rId)' not found"
+            return "Error: insert_caption: image with id '\(rId)' not found"
         } catch let InsertLocationError.tableIndexOutOfRange(i) {
-            return "Error: table index \(i) out of range"
+            return "Error: insert_caption: table index \(i) out of range"
         } catch let InsertLocationError.textNotFound(text, instance) {
-            return "Error: text '\(text)' not found (instance \(instance))"
+            return "Error: insert_caption: text '\(text)' not found (instance \(instance))"
         }
     }
 
