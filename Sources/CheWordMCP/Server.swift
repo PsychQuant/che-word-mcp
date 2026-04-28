@@ -7884,6 +7884,23 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
+
+        // anchor-dx-consistency (#71): reject conflicting anchors BEFORE any IO
+        // (filesystem stat / image dimension probe), logging, or anchor-priority
+        // derivation. Verify-71 P2 (Devil's Advocate refutation): previously this
+        // check sat after fileExists check + resolveImageDimensions(throws) + the
+        // entry log write, so a caller passing "bad image path + 2 anchors" would
+        // see the file-IO error and never the conflict error — making this tool
+        // inconsistent with the other 3 #61-target handlers and violating the
+        // bundle's "anchor-dx-consistency" promise.
+        // Spec: openspec/changes/anchor-dx-consistency/specs/.../spec.md R1.
+        let presentAnchors = WordMCPServer.detectPresentAnchors(args, anchors: [
+            "into_table_cell", "after_image_id", "after_text", "before_text", "index"
+        ])
+        if presentAnchors.count > 1 {
+            return "Error: insert_image_from_path: received conflicting anchors: \(presentAnchors.joined(separator: " + ")). Specify exactly one."
+        }
+
         guard FileManager.default.fileExists(atPath: path) else {
             throw WordError.fileNotFound(path)
         }
@@ -7913,15 +7930,6 @@ actor WordMCPServer {
 
         let name = args["name"]?.stringValue ?? "Picture"
         let description = args["description"]?.stringValue ?? ""
-
-        // anchor-dx-consistency (#71): reject conflicting anchors before the dispatcher.
-        // Spec: openspec/changes/anchor-dx-consistency/specs/.../spec.md R1.
-        let presentAnchors = WordMCPServer.detectPresentAnchors(args, anchors: [
-            "into_table_cell", "after_image_id", "after_text", "before_text", "index"
-        ])
-        if presentAnchors.count > 1 {
-            return "Error: insert_image_from_path: received conflicting anchors: \(presentAnchors.joined(separator: " + ")). Specify exactly one."
-        }
 
         // Resolve anchor: priority is into_table_cell > after_image_id > after_text > before_text > index
         let imageId: String

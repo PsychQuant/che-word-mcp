@@ -61,7 +61,11 @@ Examples:
 - 6 `text_instance` validation tests (explicit 0 / -1 / -3 across 4 tools + 1 omitted-default)
 - 1 grep-based regression pin asserting zero un-prefixed `return "Error: ..."` lines in the 4 target tools
 
-Suite: `201 → 226` (+25, 0 fail / 9 skip). No `ooxml-swift` dep bump (still v0.20.5).
+Suite: `201 → 227` (+26, 0 fail / 9 skip). No `ooxml-swift` dep bump (still v0.20.5).
+
+#### Verify-71 hot-fix (2026-04-28)
+
+Devil's Advocate caught DX inconsistency in `insertImageFromPath`: conflict-detection sat after `fileExists` guard + `resolveImageDimensions(throws)` + entry log write, so a "bad path + 2 anchors" call surfaced the file-IO error instead of the conflict error. Bundle is literally named `anchor-dx-consistency` — moved conflict check to be the FIRST validation after parameter guards. Other 3 tools were already correct. New regression pin `testInsertImageFromPathConflictReportedBeforeBadPathError`.
 
 #### Migration guidance
 

@@ -275,6 +275,37 @@ final class AnchorDXConsistencyTests: XCTestCase {
 
     // MARK: - Phase 1.4: insertImageFromPath conflict detection
 
+    /// Verify-71 P2 fix: conflict check MUST run before resolveImageDimensions(throws).
+    /// Pre-fix: bad path + 2 anchors surfaced file-IO error, never the conflict error.
+    /// Post-fix: caller sees the conflict error first (the actionable signal).
+    func testInsertImageFromPathConflictReportedBeforeBadPathError() async throws {
+        let url = try emptyDocxURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let server = await WordMCPServer()
+
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("p71iiP")]
+        )
+
+        // Path that doesn't exist + 2 conflicting anchors. Pre-fix would error on
+        // file path; post-fix errors on conflict.
+        let r = await server.invokeToolForTesting(
+            name: "insert_image_from_path",
+            arguments: [
+                "doc_id": .string("p71iiP"),
+                "path": .string("/tmp/this-image-definitely-does-not-exist-\(UUID().uuidString).png"),
+                "after_text": .string("foo"),
+                "index": .int(3)
+            ]
+        )
+        let msg = textOf(r)
+        XCTAssertTrue(
+            msg.contains("Error: insert_image_from_path: received conflicting anchors: after_text + index"),
+            "expected conflict error to win over file-IO error, got: \(msg)"
+        )
+    }
+
     /// Spec R1 Scenario "Three anchors → all listed in error".
     func testInsertImageFromPathRejectsThreeAnchorsConflict() async throws {
         let url = try emptyDocxURL()
