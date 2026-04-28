@@ -351,6 +351,96 @@ final class Issue61V315PointReleaseTests: XCTestCase {
         )
     }
 
+    // MARK: - v3.15.2 polish (PsychQuant/che-word-mcp#69 + #73)
+
+    /// #73: regression pin for F5 guard on insert_equation. Code path was added
+    /// in v3.15.1 alongside paragraph + image_from_path, but the test sweep only
+    /// covered the latter two. Pins Server.swift:8762 partial-dict guard.
+    func testInsertEquationMalformedIntoTableCellReportsError() async throws {
+        var doc = WordDocument()
+        doc.body.children.append(.paragraph(Paragraph(runs: [Run(text: "p")])))
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("issue61_eq_malformed_\(UUID().uuidString).docx")
+        try DocxWriter.write(doc, to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("e61mal")]
+        )
+
+        // Pass into_table_cell with only table_index — missing row + col.
+        let r = await server.invokeToolForTesting(
+            name: "insert_equation",
+            arguments: [
+                "doc_id": .string("e61mal"),
+                "latex": .string("x^2"),
+                "display_mode": .bool(true),
+                "into_table_cell": .object([
+                    "table_index": .int(0)
+                ])
+            ]
+        )
+        let txt = textOf(r)
+        XCTAssertTrue(
+            r.isError == true || txt.contains("into_table_cell") || txt.contains("missing"),
+            "malformed into_table_cell on insert_equation should return structured error; got: \(txt)"
+        )
+    }
+
+    /// #69: insert_paragraph append branch reported `getParagraphs().count - 1`,
+    /// which skips tables and SDTs — so in a doc like `[para, table, para]` an
+    /// append says "at index 2" but the actual body.children index is 3. The
+    /// reported number can't round-trip as `paragraph_index` for subsequent
+    /// inserts because `Document.insertParagraph(_:at:Int)` interprets its int
+    /// as a body.children index (Document.swift:266-270).
+    /// Fix in Server.swift:6659 — use `body.children.count - 1`.
+    func testInsertParagraphAppendMessageUsesBodyChildrenIndex() async throws {
+        var doc = WordDocument()
+        // Body layout: [para, table, para] → body.children.count = 3,
+        // getParagraphs() = [para, para] (table skipped) → count = 2.
+        doc.body.children.append(.paragraph(Paragraph(runs: [Run(text: "before-table")])))
+        let table = Table(rows: [
+            TableRow(cells: [TableCell(paragraphs: [Paragraph(runs: [Run(text: "cell")])])])
+        ])
+        doc.body.children.append(.table(table))
+        doc.body.children.append(.paragraph(Paragraph(runs: [Run(text: "after-table")])))
+
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("issue69_append_\(UUID().uuidString).docx")
+        try DocxWriter.write(doc, to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("p69app")]
+        )
+
+        // Append: no anchor, no index → falls through to appendParagraph branch.
+        let r = await server.invokeToolForTesting(
+            name: "insert_paragraph",
+            arguments: [
+                "doc_id": .string("p69app"),
+                "text": .string("APPENDED")
+            ]
+        )
+        XCTAssertFalse(r.isError == true, "append should succeed; got: \(r.content)")
+        let msg = textOf(r)
+        // After append, body.children.count = 4, so the new paragraph is at body
+        // index 3. Pre-fix message reported "at index 2" (getParagraphs().count - 1
+        // because table was skipped). Post-fix should report "at index 3".
+        XCTAssertTrue(
+            msg.contains("at index 3"),
+            "append message should report body.children index of new paragraph (expected 'at index 3' for [para, table, para] + append); got: \(msg)"
+        )
+        XCTAssertFalse(
+            msg.contains("at index 2"),
+            "append message must NOT use getParagraphs().count - 1 (would be 2 here, skipping the table); got: \(msg)"
+        )
+    }
+
     // MARK: - Helpers
 
     private func docxWithImage() throws -> URL {
