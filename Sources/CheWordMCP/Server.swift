@@ -718,7 +718,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "insert_paragraph",
-                description: "插入新段落（需先 open_document）",
+                description: "插入新段落（需先 open_document）。v3.15+ 新增 after_text / before_text / text_instance / into_table_cell anchor，與 insert_image_from_path 一致；anchor 與 index 擇一，不傳則加到最後。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -732,11 +732,27 @@ actor WordMCPServer {
                         ]),
                         "index": .object([
                             "type": .string("integer"),
-                            "description": .string("插入位置（從 0 開始），不指定則加到最後")
+                            "description": .string("插入位置（body 層級索引，從 0 開始）。anchor 擇一，不傳則加到最後")
                         ]),
                         "style": .object([
                             "type": .string("string"),
                             "description": .string("段落樣式（如 Heading1, Normal）")
+                        ]),
+                        "into_table_cell": .object([
+                            "type": .string("object"),
+                            "description": .string("插入到指定表格儲存格（append 到 cell.paragraphs）。格式：{ table_index: N, row: R, col: C }（anchor 擇一）")
+                        ]),
+                        "after_text": .object([
+                            "type": .string("string"),
+                            "description": .string("在含此文字的段落**之後**插入新段落。substring match on flattened paragraph text（cross-run + 涵蓋 hyperlinks/fieldSimples/contentControls/alternateContents v3.14.5+）。配合 text_instance 指定第幾次出現（預設 1）。（anchor 擇一）")
+                        ]),
+                        "before_text": .object([
+                            "type": .string("string"),
+                            "description": .string("在含此文字的段落**之前**插入新段落。規則同 after_text。（anchor 擇一）")
+                        ]),
+                        "text_instance": .object([
+                            "type": .string("integer"),
+                            "description": .string("after_text / before_text 的第 N 次匹配（1-based，預設 1）")
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("text")])
@@ -6558,7 +6574,6 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let index = args["index"]?.intValue
         let style = args["style"]?.stringValue
 
         var para = Paragraph(text: text)
@@ -6566,15 +6581,48 @@ actor WordMCPServer {
             para.properties.style = style
         }
 
-        if let index = index {
+        // Anchor priority (mirrors insert_image_from_path):
+        // into_table_cell > after_text > before_text > index > append
+        let textInstance = args["text_instance"]?.intValue ?? 1
+        let resultMessage: String
+
+        if let cellDict = args["into_table_cell"]?.objectValue,
+           let tableIdx = cellDict["table_index"]?.intValue,
+           let row = cellDict["row"]?.intValue,
+           let col = cellDict["col"]?.intValue {
+            do {
+                try doc.insertParagraph(para, at: .intoTableCell(tableIndex: tableIdx, row: row, col: col))
+                resultMessage = "Inserted paragraph into table[\(tableIdx)] cell (row: \(row), col: \(col))"
+            } catch let InsertLocationError.tableIndexOutOfRange(i) {
+                return "Error: table index \(i) out of range"
+            } catch let InsertLocationError.tableCellOutOfRange(t, r, c) {
+                return "Error: table[\(t)] cell (row: \(r), col: \(c)) out of range"
+            }
+        } else if let afterText = args["after_text"]?.stringValue {
+            do {
+                try doc.insertParagraph(para, at: .afterText(afterText, instance: textInstance))
+                resultMessage = "Inserted paragraph after text '\(afterText)' (instance \(textInstance))"
+            } catch let InsertLocationError.textNotFound(searchText, instance) {
+                return "Error: text '\(searchText)' not found (instance \(instance))"
+            }
+        } else if let beforeText = args["before_text"]?.stringValue {
+            do {
+                try doc.insertParagraph(para, at: .beforeText(beforeText, instance: textInstance))
+                resultMessage = "Inserted paragraph before text '\(beforeText)' (instance \(textInstance))"
+            } catch let InsertLocationError.textNotFound(searchText, instance) {
+                return "Error: text '\(searchText)' not found (instance \(instance))"
+            }
+        } else if let index = args["index"]?.intValue {
             doc.insertParagraph(para, at: index)
+            resultMessage = "Inserted paragraph at index \(index)"
         } else {
             doc.appendParagraph(para)
+            resultMessage = "Inserted paragraph at index \(doc.getParagraphs().count - 1)"
         }
 
         try await storeDocument(doc, for: docId)
 
-        return "Inserted paragraph at index \(index ?? doc.getParagraphs().count - 1)"
+        return resultMessage
     }
 
     private func updateParagraph(args: [String: Value]) async throws -> String {
