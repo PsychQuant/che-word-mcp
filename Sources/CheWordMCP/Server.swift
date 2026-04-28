@@ -718,7 +718,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "insert_paragraph",
-                description: "插入新段落（需先 open_document）。v3.15+ 新增 after_text / before_text / text_instance / into_table_cell anchor，與 insert_image_from_path 一致；anchor 與 index 擇一，不傳則加到最後。",
+                description: "插入新段落（需先 open_document）。v3.15.1+ 接受 after_text / before_text / text_instance / into_table_cell / after_image_id anchor（與 insert_image_from_path 對齊）；anchor 與 index 擇一，不傳則加到最後。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -740,7 +740,11 @@ actor WordMCPServer {
                         ]),
                         "into_table_cell": .object([
                             "type": .string("object"),
-                            "description": .string("插入到指定表格儲存格（append 到 cell.paragraphs）。格式：{ table_index: N, row: R, col: C }（anchor 擇一）")
+                            "description": .string("插入到指定表格儲存格（append 到 cell.paragraphs）。格式：{ table_index: N, row: R, col: C }，三個欄位都必填，缺一回 structured error。（anchor 擇一）")
+                        ]),
+                        "after_image_id": .object([
+                            "type": .string("string"),
+                            "description": .string("v3.15.1+：在含指定圖片 rId（`insert_image_from_path` 返回值）的段落**之後**插入新段落。（anchor 擇一）")
                         ]),
                         "after_text": .object([
                             "type": .string("string"),
@@ -1650,7 +1654,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "insert_image_from_path",
-                description: "從檔案路徑插入圖片。v2.1+ width/height 為可選（auto-aspect：擇一 → 另一邊按原圖比例算；全省略 → 用原始像素）。新增 into_table_cell 插入表格儲存格。支援 PNG / JPEG。（需先 open_document）",
+                description: "從檔案路徑插入圖片。v2.1+ width/height 為可選（auto-aspect：擇一 → 另一邊按原圖比例算；全省略 → 用原始像素）。v3.15.1+ 新增 after_image_id anchor。anchor priority: into_table_cell > after_image_id > after_text > before_text > index > append。支援 PNG / JPEG。（需先 open_document）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1676,7 +1680,11 @@ actor WordMCPServer {
                         ]),
                         "into_table_cell": .object([
                             "type": .string("object"),
-                            "description": .string("插入到指定表格儲存格。格式：{ table_index: N, row: R, col: C }（anchor 擇一）")
+                            "description": .string("插入到指定表格儲存格。格式：{ table_index: N, row: R, col: C }，三個欄位都必填，缺一回 structured error。（anchor 擇一）")
+                        ]),
+                        "after_image_id": .object([
+                            "type": .string("string"),
+                            "description": .string("v3.15.1+：在含指定圖片 rId 的段落**之後**插入新圖片。便於連續插入相關圖片（e.g. 多圖 figure）。（anchor 擇一）")
                         ]),
                         "after_text": .object([
                             "type": .string("string"),
@@ -2473,6 +2481,14 @@ actor WordMCPServer {
                         "paragraph_index": .object([
                             "type": .string("integer"),
                             "description": .string("段落索引（行內模式時指定插入位置）。display mode 下若搭配 anchor，anchor 優先")
+                        ]),
+                        "into_table_cell": .object([
+                            "type": .string("object"),
+                            "description": .string("v3.15.1+，**僅 display_mode=true 時生效**：插入到指定表格儲存格（display mode 為新段落，append 到 cell.paragraphs）。格式：{ table_index: N, row: R, col: C }，三個欄位都必填。inline 模式傳入會回 error。（anchor 擇一）")
+                        ]),
+                        "after_image_id": .object([
+                            "type": .string("string"),
+                            "description": .string("v3.15.1+，**僅 display_mode=true 時生效**：在含指定圖片 rId 的段落之後插入新公式段。inline 模式傳入會回 error。（anchor 擇一）")
                         ]),
                         "after_text": .object([
                             "type": .string("string"),
@@ -6594,14 +6610,17 @@ actor WordMCPServer {
         }
 
         // Anchor priority (mirrors insert_image_from_path):
-        // into_table_cell > after_text > before_text > index > append
+        // into_table_cell > after_image_id > after_text > before_text > index > append
         let textInstance = args["text_instance"]?.intValue ?? 1
         let resultMessage: String
 
-        if let cellDict = args["into_table_cell"]?.objectValue,
-           let tableIdx = cellDict["table_index"]?.intValue,
-           let row = cellDict["row"]?.intValue,
-           let col = cellDict["col"]?.intValue {
+        if let cellDict = args["into_table_cell"]?.objectValue {
+            // F5 (v3.15.1): malformed partial dict returns structured error instead of silent fallthrough.
+            guard let tableIdx = cellDict["table_index"]?.intValue,
+                  let row = cellDict["row"]?.intValue,
+                  let col = cellDict["col"]?.intValue else {
+                return "Error: into_table_cell requires all three fields (table_index, row, col); got partial dict"
+            }
             do {
                 try doc.insertParagraph(para, at: .intoTableCell(tableIndex: tableIdx, row: row, col: col))
                 resultMessage = "Inserted paragraph into table[\(tableIdx)] cell (row: \(row), col: \(col))"
@@ -6609,6 +6628,14 @@ actor WordMCPServer {
                 return "Error: table index \(i) out of range"
             } catch let InsertLocationError.tableCellOutOfRange(t, r, c) {
                 return "Error: table[\(t)] cell (row: \(r), col: \(c)) out of range"
+            }
+        } else if let afterImageId = args["after_image_id"]?.stringValue {
+            // F1 (v3.15.1): after_image_id anchor.
+            do {
+                try doc.insertParagraph(para, at: .afterImageId(afterImageId))
+                resultMessage = "Inserted paragraph after image '\(afterImageId)'"
+            } catch let InsertLocationError.imageIdNotFound(rId) {
+                return "Error: image rId '\(rId)' not found"
             }
         } else if let afterText = args["after_text"]?.stringValue {
             do {
@@ -7833,13 +7860,16 @@ actor WordMCPServer {
         let name = args["name"]?.stringValue ?? "Picture"
         let description = args["description"]?.stringValue ?? ""
 
-        // Resolve anchor: priority is into_table_cell > after_text/before_text > index
+        // Resolve anchor: priority is into_table_cell > after_image_id > after_text > before_text > index
         let imageId: String
         let textInstance = args["text_instance"]?.intValue ?? 1
-        if let cellDict = args["into_table_cell"]?.objectValue,
-           let tableIdx = cellDict["table_index"]?.intValue,
-           let row = cellDict["row"]?.intValue,
-           let col = cellDict["col"]?.intValue {
+        if let cellDict = args["into_table_cell"]?.objectValue {
+            // F5 (v3.15.1): malformed partial dict returns structured error instead of silent fallthrough.
+            guard let tableIdx = cellDict["table_index"]?.intValue,
+                  let row = cellDict["row"]?.intValue,
+                  let col = cellDict["col"]?.intValue else {
+                return "Error: into_table_cell requires all three fields (table_index, row, col); got partial dict"
+            }
             do {
                 imageId = try doc.insertImage(
                     path: path,
@@ -7853,6 +7883,20 @@ actor WordMCPServer {
                 return "Error: table index \(i) out of range"
             } catch let InsertLocationError.tableCellOutOfRange(t, r, c) {
                 return "Error: table[\(t)] cell (row: \(r), col: \(c)) out of range"
+            }
+        } else if let afterImageId = args["after_image_id"]?.stringValue {
+            // F1 (v3.15.1): after_image_id anchor.
+            do {
+                imageId = try doc.insertImage(
+                    path: path,
+                    widthPx: width,
+                    heightPx: height,
+                    at: .afterImageId(afterImageId),
+                    name: name,
+                    description: description
+                )
+            } catch let InsertLocationError.imageIdNotFound(rId) {
+                return "Error: image rId '\(rId)' not found"
             }
         } else if let afterText = args["after_text"]?.stringValue {
             do {
@@ -8686,13 +8730,16 @@ actor WordMCPServer {
         let paragraphIndex = args["paragraph_index"]?.intValue
         let afterText = args["after_text"]?.stringValue
         let beforeText = args["before_text"]?.stringValue
+        let afterImageId = args["after_image_id"]?.stringValue          // v3.15.1
+        let intoTableCellDict = args["into_table_cell"]?.objectValue    // v3.15.1
         let textInstance = args["text_instance"]?.intValue ?? 1
 
-        // Anchor only meaningful in display mode (block-level new paragraph).
-        // Inline mode appends an OMML run into an existing paragraph; "before/after a paragraph"
+        // Anchors only meaningful in display mode (block-level new paragraph).
+        // Inline mode appends an OMML run into an existing paragraph; anchor
         // semantics are ambiguous — reject explicitly to surface the misuse.
-        if !displayMode && (afterText != nil || beforeText != nil) {
-            return "Error: after_text / before_text only supported when display_mode=true (inline equations append to an existing paragraph; use paragraph_index instead)"
+        if !displayMode && (afterText != nil || beforeText != nil
+                            || afterImageId != nil || intoTableCellDict != nil) {
+            return "Error: anchor parameters (after_text / before_text / after_image_id / into_table_cell) only supported when display_mode=true (inline equations append to an existing paragraph; use paragraph_index instead)"
         }
 
         // Assemble OMML with required namespace
@@ -8707,27 +8754,56 @@ actor WordMCPServer {
         eqRun.rawXML = ommlXML
         let eqPara = Paragraph(runs: [eqRun])
 
-        // Anchor priority (display mode only): after_text > before_text > paragraph_index > append
-        if displayMode, let afterText = afterText {
+        // F3 (v3.15.1): success message includes anchor info (mirror insert_paragraph).
+        // Anchor priority (display mode only):
+        // into_table_cell > after_image_id > after_text > before_text > paragraph_index > append
+        let anchorInfo: String
+
+        if displayMode, let cellDict = intoTableCellDict {
+            // F5 (v3.15.1): malformed partial dict returns structured error.
+            guard let tableIdx = cellDict["table_index"]?.intValue,
+                  let row = cellDict["row"]?.intValue,
+                  let col = cellDict["col"]?.intValue else {
+                return "Error: into_table_cell requires all three fields (table_index, row, col); got partial dict"
+            }
+            do {
+                try doc.insertParagraph(eqPara, at: .intoTableCell(tableIndex: tableIdx, row: row, col: col))
+                anchorInfo = "into table[\(tableIdx)] cell (row: \(row), col: \(col))"
+            } catch let InsertLocationError.tableIndexOutOfRange(i) {
+                return "Error: table index \(i) out of range"
+            } catch let InsertLocationError.tableCellOutOfRange(t, r, c) {
+                return "Error: table[\(t)] cell (row: \(r), col: \(c)) out of range"
+            }
+        } else if displayMode, let afterImageId = afterImageId {
+            do {
+                try doc.insertParagraph(eqPara, at: .afterImageId(afterImageId))
+                anchorInfo = "after image '\(afterImageId)'"
+            } catch let InsertLocationError.imageIdNotFound(rId) {
+                return "Error: image rId '\(rId)' not found"
+            }
+        } else if displayMode, let afterText = afterText {
             do {
                 try doc.insertParagraph(eqPara, at: .afterText(afterText, instance: textInstance))
+                anchorInfo = "after text '\(afterText)' (instance \(textInstance))"
             } catch let InsertLocationError.textNotFound(searchText, instance) {
                 return "Error: text '\(searchText)' not found (instance \(instance))"
             }
         } else if displayMode, let beforeText = beforeText {
             do {
                 try doc.insertParagraph(eqPara, at: .beforeText(beforeText, instance: textInstance))
+                anchorInfo = "before text '\(beforeText)' (instance \(textInstance))"
             } catch let InsertLocationError.textNotFound(searchText, instance) {
                 return "Error: text '\(searchText)' not found (instance \(instance))"
             }
         } else {
             let insertIdx = paragraphIndex ?? doc.body.children.count
             doc.insertParagraph(eqPara, at: insertIdx)
+            anchorInfo = "at index \(insertIdx)"
         }
 
         try await storeDocument(doc, for: docId)
 
-        return "Inserted equation (display mode: \(displayMode))"
+        return "Inserted equation (display mode: \(displayMode), \(anchorInfo))"
     }
 
     // MARK: - Math parsers (insert_equation helpers)
