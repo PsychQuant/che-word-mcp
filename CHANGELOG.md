@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.17.4] - 2026-04-29
+
+### Changed — ooxml-swift dep bump 0.21.7 → 0.21.8 (transitive only, no MCP source changes)
+
+Paired release of [PsychQuant/che-word-mcp#91](https://github.com/PsychQuant/che-word-mcp/issues/91) + [PsychQuant/che-word-mcp#92](https://github.com/PsychQuant/che-word-mcp/issues/92), both lib-only post-#85 verify follow-ups.
+
+#### #91 — `insertEquation` inline-mode error semantics
+
+`WordDocument.insertEquation(at: InsertLocation, latex:, displayMode:)` previously silently no-op'd or accepted out-of-bounds indices in two failure classes. Both now surface dedicated `InsertLocationError` cases:
+
+- `InsertLocationError.inlineModeRequiresParagraphIndex` — thrown when inline mode is requested with `.atEnd` / `.bookmark` / `.contentControlByTag` etc.
+- `InsertLocationError.invalidParagraphIndex(Int)` — thrown when `paragraphIndex` is negative or `≥ topLevelParagraphCount`
+
+**MCP impact**: `insert_equation` calls with `paragraph_index` out of bounds, or with anchors that are semantically invalid for inline math, now return structured errors instead of silent fallthrough/no-op. Same v3.15.x family `Error: <tool>: <body>` prefix discipline.
+
+#### #92 — `flattenedDisplayText` OMML wrapper-path coverage
+
+`Paragraph.flattenedDisplayText()` walked OMML in the top-level `runs` loop only after #85's v0.21.5 fix. The 3 sibling surface paths (`hyperlinks[].runs` / `fieldSimples[].runs` / `alternateContents[].fallbackRuns`) used `runs.map { $0.text }.joined()` and silently dropped any `<m:oMath>` inside those wrappers.
+
+Solution: extracted the OMML walk into `flattenRunsWithOMML(_:)` private static helper at `Sources/OOXMLSwift/Models/InsertLocation.swift:310-320` and routed all 4 wrapper paths through it. `contentControls` path remains on its `flattenContentControlText` helper (different recursion strategy, established in #63). Cheap `raw.contains("oMath")` short-circuit avoids `OMMLParser` invocation on plain runs.
+
+**MCP impact**: anchor lookups (`replace_text` / `insert_paragraph` / `insert_image_from_path` / `insert_caption` `before_text`/`after_text`) against paragraphs containing inline math inside hyperlink/fldSimple/AC fallback wrappers now succeed where they previously silently 0-matched. Strict superset of pre-fix behavior — anchors that previously found text continue to find it.
+
+#### Follow-ups filed (out of v3.17.4 scope)
+
+Devils-advocate verify of #92 surfaced 4 sibling bugs at neighboring container levels (DA-1..DA-4) + 1 docstring qualifier (DA-5). Filed as #99-#103 for separate disposition. NOT regressions introduced by v3.17.4.
+
+#### Test status
+
+- 236 passing (no new MCP tests, no regressions, 9 pre-existing skips)
+- Backward compatible
+
 ## [3.17.3] - 2026-04-29
 
 ### Changed — ooxml-swift dep bump 0.21.6 → 0.21.7 (transitive only, no MCP source changes)
