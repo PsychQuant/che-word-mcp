@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.17.2] - 2026-04-29
+
+### Changed — ooxml-swift dep bump 0.21.2 → 0.21.6 (transitive only, no MCP source changes)
+
+Pure dep bump pulling in 4 ooxml-swift releases worth of hardening + new APIs. No MCP tool surface changes; behavior is mostly identical for typical callers, with new typed errors surfacing on edge cases (malicious input, dirty fallback edits) and 2 deprecation warnings firing on previously-supported lossy mutation APIs.
+
+#### v0.21.3 — XML hardening (closes [PsychQuant/ooxml-swift#7](https://github.com/PsychQuant/ooxml-swift/issues/7))
+
+- DTD reject — pre-scans document XML for `<!DOCTYPE` and throws `XMLHardeningError.dtdNotAllowed` (OOXML disallows DTD; no false positives on legitimate input)
+- 64KB attribute-value cap — throws `XMLHardeningError.attributeValueTooLarge(name:limit:)` on multi-MB `mc:Ignorable` payloads (DoS amplification defense)
+- SAX-based root-element attribute parsing — handles `<wordml:document>` / default-namespace docs without regression to original #56 bug
+- Attribute-name whitelist on emit — throws `XMLHardeningError.invalidAttributeName(name:)` instead of letting malformed names from source transit to Writer output
+
+#### v0.21.4 — roundtrip loud-fail (closes [PsychQuant/ooxml-swift#6](https://github.com/PsychQuant/ooxml-swift/issues/6))
+
+- `AlternateContent.fallbackRunsModified` dirty flag — throws `RoundtripError.unserializedFallbackEdit(position:)` when in-memory fallbackRuns mutation isn't propagated to rawXML. Closes the #56 silent UX failure where `replace_text` reported success but disk write was stale.
+- `Run.commentIds` `@available(*, deprecated)` with migration guidance to `commentRangeMarkers` (single source of truth since Phase 4). Stored `commentIds` no longer populated by Reader since v0.21.4; full removal scheduled for v0.22.
+
+#### v0.21.5 — insertEquation flexibility (closes [PsychQuant/che-word-mcp#84 #85](https://github.com/PsychQuant/che-word-mcp/issues/84))
+
+- New `Document.insertEquation(at: InsertLocation, ...)` overload — replaces the legacy `at: String` paragraph-text resolver with the unified InsertLocation enum. The String overload is `@available(*, deprecated)` until v0.22.
+- `flattenedDisplayText` extension covers OMML — anchor-text resolution (used by `insertEquation`, `insert_paragraph` `after_text` / `before_text`) now traverses display-mode equations and surfaces their visible text. Previously, insert calls anchored on text inside equations would fail with `textNotFound`.
+
+#### v0.21.6 — mutation surface fix (closes [PsychQuant/ooxml-swift#5](https://github.com/PsychQuant/ooxml-swift/issues/5))
+
+- `Hyperlink.text` setter `@available(*, deprecated, message: "Mutates runs destructively (loses formatting / rawElements). Use .runs directly to preserve formatting; assign a single Run to replace, append/insert Runs to extend.")` — pre-fix, calling `hyperlink.text = "new"` discarded all `RunProperties` (bold/italic/color/font/size/rStyle) and `Run.rawElements` (e.g., embedded VML). Removal scheduled for v0.22.
+- Position field cascade `Int = 0` → `Int? = nil` across 13 typed-child models (`Hyperlink`, `Run`, `AlternateContent`, `FieldSimple`, `Field`, `ParagraphChildMarkers` + subtypes). Tri-state semantics: `nil` (unset, new mutations), `0` (legacy front-pinned default — preserved for backward compatibility), `> 0` (explicit ordering from XML round-trip). 27 Paragraph.swift sites bulk-transformed via `(position ?? 0) > 0` patterns.
+- `Run.toXMLThrowing` autosense for `xml:space="preserve"` — fires only when text starts/ends with whitespace OR contains consecutive whitespace runs. Avoids attribute bloat on the common case.
+
+#### Plus 3 unreleased docs commits on ooxml-swift main
+
+- [PsychQuant/ooxml-swift#17](https://github.com/PsychQuant/ooxml-swift/issues/17) — Bidirectional reference comments at both `needsPPr` emit gates pointing to `Issue4PPrRegressionGuardTests.testEmptyPPrSelfClosingProducesNoUnrecognizedAndDropsEmptyBlock` (lock-in test for drop-empty-pPr invariant)
+- [PsychQuant/ooxml-swift#15](https://github.com/PsychQuant/ooxml-swift/issues/15) — Pattern divergence documented at both walker sites (parseRun's function-local `recognizedRunChildren` vs parseParagraph's static `walkerPreConsumed` — different mental models, complementary mechanisms)
+- [PsychQuant/ooxml-swift#14](https://github.com/PsychQuant/ooxml-swift/issues/14) — Foreign-namespace pPr asymmetry documented at `parseParagraphProperties` consumer (`<x:pPr xmlns:x="other-ns">` is silently dropped — intentional conservative response to spec-illegal input)
+
+#### Test status
+
+236 tests passing (0 failures, 9 pre-existing skips). No new tests added; no regressions surfaced by ooxml-swift dep bump.
+
+#### Backward compatibility
+
+- Deprecation warnings: `Hyperlink.text` setter, `Run.commentIds` (both fire only when callers actively use the lossy/legacy API; no behavioral change unless caller writes to those properties)
+- New typed errors: `XMLHardeningError.*` (only on malicious/malformed input), `RoundtripError.unserializedFallbackEdit` (only on dirty AlternateContent edits) — code that previously silently lost data now throws fail-fast
+- No API removals (all v0.21.x deprecations queued for v0.22)
+
 ## [3.17.0] - 2026-04-28
 
 ### Added — wrap_caption_seq MCP tool (Refs #62)
