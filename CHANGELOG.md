@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.17.3] - 2026-04-29
+
+### Changed — ooxml-swift dep bump 0.21.6 → 0.21.7 (transitive only, no MCP source changes)
+
+Pure dep bump exposing the public anchor lookup API from [PsychQuant/ooxml-swift#86](https://github.com/PsychQuant/che-word-mcp/issues/86):
+
+- `WordDocument.findBodyChildContainingText(_:nthInstance:)` is now `public` (was `private`)
+- `WordDocument.bodyChildContainsText(_:needle:)` is now `public static` (was `private static`)
+- `WordDocument.tableContainsText(_:needle:)` is now `public static` (was `private static`)
+
+#### Why this matters for MCP consumers
+
+External Swift SPM consumers (rescue scripts, dxedit CLI, third-party tooling) previously had to reimplement anchor lookup with diverging semantics:
+- Some skipped `.contentControl(_, children:)` recursion
+- Some skipped `.table` cell traversal (pre-#68 default)
+- Some used different `nthInstance` counting rules (top-level body child vs flattened paragraph)
+
+Now they can call the canonical `WordDocument.findBodyChildContainingText` directly, getting *exactly* what `che-word-mcp`'s `insert_paragraph` / `insert_image_from_path` / `insert_caption` etc. tools see when they resolve `after_text` / `before_text` anchors.
+
+#### Internal cleanup follow-up
+
+The MCP layer (`Server.swift`) currently has its own `anchorIndex` resolution helpers that mirror parts of the lib's logic. A future internal refactor can de-duplicate by routing those helpers through the now-public `WordDocument.findBodyChildContainingText`. Out of scope for this dep bump; will be tracked as a separate refactor issue if/when it surfaces friction.
+
+#### Test status
+
+236 tests passing (0 failures, 9 pre-existing skips). No new tests added; no regressions surfaced by ooxml-swift dep bump.
+
+#### Backward compatibility
+
+Pure additive (private → public visibility change). No API removals, no behavioral changes for existing callers. Backward compatible.
+
 ## [3.17.2] - 2026-04-29
 
 ### Changed — ooxml-swift dep bump 0.21.2 → 0.21.6 (transitive only, no MCP source changes)
