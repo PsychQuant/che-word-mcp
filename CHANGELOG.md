@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.17.5] - 2026-04-30
+
+### Changed — ooxml-swift dep bump 0.21.8 → 0.21.9 (transitive only, no MCP source changes)
+
+Triple release of [PsychQuant/che-word-mcp#265](https://github.com/PsychQuant/che-word-mcp/issues/265) + [PsychQuant/che-word-mcp#267](https://github.com/PsychQuant/che-word-mcp/issues/267) + [PsychQuant/che-word-mcp#268](https://github.com/PsychQuant/che-word-mcp/issues/268), all lib-only fixes verified by 6-AI ensemble (5 Claude reviewers + Codex gpt-5.5 xhigh).
+
+#### #265 — `Comment.paragraphIndex` linker uses flat-paragraph counter (observable behavior change)
+
+`DocxReader`'s comment-link pass previously wrote `Comment.paragraphIndex = body.children.enumerated() index`. With the new flat-paragraph counter walker (mirrors `Document.collectTopLevelParagraphs`), the invariant `comment.paragraphIndex == getParagraphs().firstIndex { contains commentId }` now holds for all body layouts.
+
+**MCP impact**: `list_comments` `paragraph_index` field now consistently 0-indexed against `get_paragraphs()` flat list, regardless of how many tables / SDTs precede the commented paragraph. Pre-fix off-by-N (where N = number of non-paragraph BodyChild siblings before the commented paragraph). Callers using documented `get_paragraphs()[paragraph_index]` pattern: now correct. Callers manually compensating with `paragraph_index - 1` (or `- N`) to work around the bug: **will over-correct** and need to remove their compensation.
+
+#### #267 — `wrap_caption_seq` SEQ run inherits source `position` (caption visual format fix)
+
+Pre-fix caption like 「圖 4-1：xxx」 became 「圖 4-：xxx1」 after `wrap_caption_seq` because the new SEQ run had `position = nil` while source-loaded `preText` / `postText` had `position > 0`. `Paragraph` emit bifurcates by position field — positioned section vs legacy post-content section — so SEQ landed at end of paragraph instead of spliced at match position.
+
+**MCP impact**: `wrap_caption_seq` now produces visually-correct captions on real Word docs (where source-loaded paragraphs have `position > 0` runs). The pre-existing test pattern used `Paragraph(text: "...")` (which produces `position = nil`) and shared the legacy emit path — bug only visible on real docx data.
+
+**Known incompleteness**: `insert_bookmark=true` × source-loaded paragraph still has the same gap on `bookmarkStart`/`bookmarkEnd` markers (filed as **PsychQuant/ooxml-swift#24**). Default `insert_bookmark=false` unaffected.
+
+#### #268 — `update_all_fields` traverses `.table` and `.contentControl` containers
+
+Pre-fix body loop only processed top-level `.paragraph` BodyChild — silently skipped `.table` and `.contentControl(_, children:)`. SEQ fields anchored inside table cells or block-level SDTs were never updated, returning `update_all_fields completed: 0 SEQ fields found` for document docs (where caption paragraphs commonly live inside the table they describe). Same gap that #68 (v0.20.6) closed for `findBodyChildContainingText`.
+
+**MCP impact**: `update_all_fields` now finds and updates SEQ fields inside body-level table cells / block-level SDT children — automates the "Adam opens Word → Ctrl+A → F9" workflow step for document pipelines. Heading-count semantics: only top-level direct `.paragraph` body children count toward chapter-reset (container-nested headings do NOT trigger SEQ resets — conservative choice documented and pinned by test).
+
+**Known incompleteness** (filed as follow-ups):
+- **PsychQuant/ooxml-swift#25** — header / footer / footnote / endnote SEQ scans still walk flat `.paragraphs` view (drops `.table` / `.contentControl` siblings). SEQ inside header/footer table cells, footer SDT children, footnote/endnote tables still silently skipped.
+- **PsychQuant/ooxml-swift#26** — `FieldParser.parse(paragraph:)` only walks `para.runs[*].rawXML`. Misses `para.contentControls` (inline SDT containing fields), `para.hyperlinks[*].runs[*].rawXML`, `para.fieldSimples` (`<w:fldSimple>` wrappers), `para.alternateContents[*].fallbackRuns[*].rawXML`. Same recipe as #92's OMML wrapper-paths fix.
+- **PsychQuant/ooxml-swift#209** — verify-with-user-fixture: real document docx roundtrip test (no fixture from <private-repo>#5).
+
+Plus **PsychQuant/ooxml-swift#28** — refactor follow-up: extract `BodyChildVisitor` protocol to dedupe 5+ near-identical body-children walkers (consensus P3 from regression + devils-advocate reviewers).
+
+#### Test status
+
+- ooxml-swift suite: 805 → 809 (+4 from #268 only — #265 and #267 add tests under their own test files which were counted separately in 791→796→800→805 progression). 0 failures, 1 pre-existing skip.
+- che-word-mcp suite: 236 passing (no new MCP tests, no regressions, 9 pre-existing skips).
+- Backward compatible (except #265 documented behavior change).
+
 ## [3.17.4] - 2026-04-29
 
 ### Changed — ooxml-swift dep bump 0.21.7 → 0.21.8 (transitive only, no MCP source changes)
