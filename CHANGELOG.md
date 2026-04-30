@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.17.6] - 2026-04-30
+
+### Changed — ooxml-swift dep bump 0.21.9 → 0.21.10 (transitive only, no MCP source changes)
+
+Closes [PsychQuant/che-word-mcp#271](https://github.com/PsychQuant/che-word-mcp/issues/271) — `update_all_fields` returned silent no-op (`"no SEQ fields found"`) on docs containing valid SEQ paragraphs at body top level when the fldChar block was emitted in **canonical 5-run form** (each `<w:fldChar>` / `<w:instrText>` / `<w:t>` in its own `<w:r>` sibling — what DocxReader produces post-roundtrip and what native Word always emits). Pre-fix worked only on in-memory `wrapCaptionSequenceFields` output before save.
+
+#### Form-level vs container-level distinction
+
+This fix is **form-level** (baked vs canonical fldChar emission), orthogonal to v3.17.5's #268 **container-level** fix (`.table` / `.contentControl` recursion). The two address independent walker dimensions.
+
+#### Two ooxml-swift commits land via this dep bump
+
+- `a579d68` — `fix: FieldParser detects canonical 5-run fldChar form` — two-phase parse: Phase-1 baked form (existing) + Phase-2 `parseFiveRunSpan` state machine (idle → seenBegin → seenInstrText → seenSeparate → seenCached → emit). Probes BOTH `Run.rawXML` AND `Run.rawElements` (DocxReader stores fldChar/instrText as `RawElement` per allowlist `recognizedRunChildren = ["rPr", "t", "drawing", "oMath", "oMathPara"]`).
+- `2e3096f` — `fix: canonical-form cached run rawXML splice + P1 verify follow-up` — Logic + Devil's Advocate runtime test surfaced a P1: the first canonical-branch implementation only mutated `Run.text`, but `Run.toXML()` short-circuits on non-nil rawXML — would silently no-op rewrite while reporting populated counter dict. Fixed via new `rewriteCanonicalCachedText` helper that splices new value into embedded `<w:t>` while preserving `<w:rPr>` siblings and `xml:space="preserve"`, AND keeps `Run.text` in sync.
+
+#### MCP impact
+
+- `update_all_fields` → now finds and updates SEQ fields in canonical 5-run form (post-roundtrip / native Word emission). Previously only worked on in-memory `wrapCaptionSequenceFields` output before save.
+- `list_captions` → benefits transitively via shared `FieldParser`.
+
+#### Verification
+
+6-AI ensemble verify (5 Claude + Codex gpt-5.5 xhigh) — 4 PASS / 2 WARN / 0 BLOCK. Production reproducer (rescue-swift-v317.docx via DocxReader path) confirmed working. P1 sub-bug surfaced and fixed in-scope. 5 P3 follow-ups filed in ooxml-swift (#29 SEQ Table coverage / #30 multi-paragraph counter / #31 multi-SEQ same paragraph / #32 DoS hardening / #33 discriminator invariant). Verify report: [comment-4346442620](https://github.com/PsychQuant/che-word-mcp/issues/271#issuecomment-4346442620). Closing summary: [comment-4348201118](https://github.com/PsychQuant/che-word-mcp/issues/271#issuecomment-4348201118).
+
+#### Tests
+
+- ooxml-swift: 813 tests, 0 failures, 1 pre-existing skip (was 809 → 813, +4 sub-tests in `Issue104FieldParserCanonicalFormTests`)
+- che-word-mcp: 236 passing (no new MCP tests, pure transitive bump)
+
+Backward compatible. Strict superset of pre-fix behavior.
+
 ## [3.17.5] - 2026-04-30
 
 ### Changed — ooxml-swift dep bump 0.21.8 → 0.21.9 (transitive only, no MCP source changes)
