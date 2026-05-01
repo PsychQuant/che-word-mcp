@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.17.7] - 2026-05-01
+
+### Changed — ooxml-swift dep bump 0.21.10 → 0.21.11 (transitive only, no MCP source changes)
+
+Closes 5-issue cluster [PsychQuant/che-word-mcp#99](https://github.com/PsychQuant/che-word-mcp/issues/99) + [#100](https://github.com/PsychQuant/che-word-mcp/issues/100) + [#101](https://github.com/PsychQuant/che-word-mcp/issues/101) + [#102](https://github.com/PsychQuant/che-word-mcp/issues/102) + [#103](https://github.com/PsychQuant/che-word-mcp/issues/103) — bilateral mirror coverage for direct-child OMML at 4 wrapper positions, plus library-wide design principles.
+
+#### Cluster scope
+
+Pre-fix `Paragraph.flattenedDisplayText` and `Document.replaceInParagraphSurfaces` shared a symmetric blind spot: direct-child OMML (`<m:oMath>` / `<m:oMathPara>` not wrapped in `<w:r>`) was silently dropped at 4 wrapper positions:
+
+- Position 1 (`<w:p>` direct child) — Pandoc `$$...$$` display math (#99)
+- Position 2 (`<w:hyperlink>` direct child) — LaTeX→docx hyperlink-wrapped math (#100)
+- Position 3 (`<mc:Fallback>` direct child) — Office.js fallback emit (#101)
+- Position 4 nested wrapper (e.g. `<w:hyperlink><w:fldSimple>...<m:oMath>`) (#102)
+- Plus #103 docstring sync (DA-5 docstring claimed mirror invariant; pre-fix that claim was broken in the OMML axis)
+
+Real-world impact: anchor lookups against paragraphs containing display math silently 0-matched → `replace_text` / `insert_paragraph` / `insert_image_from_path` / `insert_caption` `before_text` / `after_text` failed to find paragraphs that contained inline math.
+
+#### Two ooxml-swift artifacts land via this dep bump
+
+- `7db7fe6` — `feat: bilateral mirror coverage for direct-child OMML at 4 wrapper positions`
+- 2 NEW spec capabilities promoted to `openspec/specs/`:
+  - `ooxml-paragraph-text-mirror` — defines mirror invariant + `ReplaceResult` informative refusal contract
+  - `ooxml-library-design-principles` — Correctness primacy + Human-like operations as foundational normative invariants for all `ooxml-swift` mutators
+
+#### MCP impact
+
+- `replace_text` (and other anchor-lookup tools using `findBodyChildContainingText`) — now find paragraphs containing direct-child OMML at all 4 wrapper positions
+- NEW `ReplaceResult` enum (in `OOXMLSwift`) — public type carrying `.replaced(count:)` / `.refusedDueToOMMLBoundary(occurrences:)` / `.mixed(replacedCount:, refusedOccurrences:)` cases. The boundary-detection variant (new public `WordDocument.replaceTextWithBoundaryDetection` API) refuses replacements crossing OMML boundaries with informative occurrence info instead of producing structurally valid but semantically incorrect output.
+- Existing `replace_text` MCP tool unchanged in this release (remains backward-compatible); future MCP-layer adapter to expose `replaceTextWithBoundaryDetection` semantics tracked separately.
+
+#### Mirror invariant — asymmetric by design
+
+`flattenedDisplayText` and `replaceTextWithBoundaryDetection` walk the same wrapper surfaces and detect direct-child OMML at the same 4 positions, but diverge on detected OMML — by design:
+
+- Reads include OMML `visibleText` (anchor lookup universe extends to math)
+- Writes treat OMML as opaque structural units (refuse cross-OMML mutation rather than silently delete equations or produce visible artifacts like `"see δref X"`)
+
+#### Verification
+
+Spectra change `flatten-replace-omml-bilateral-coverage` (now archived). 16 new tests in `Issue99FlattenReplaceOMMLBilateralTests`. ooxml-swift suite: 813 → 829 tests, 0 failures, 1 pre-existing skip. Round-trip fidelity matrix-pin unchanged (Decision 4 raw passthrough preserved).
+
+#### Tests
+
+- ooxml-swift: 813 → 829 (+16 sub-tests)
+- che-word-mcp: 236 passing (no new MCP tests, pure transitive bump)
+
+Backward compatible. Strict superset of pre-fix behavior.
+
 ## [3.17.6] - 2026-04-30
 
 ### Changed — ooxml-swift dep bump 0.21.9 → 0.21.10 (transitive only, no MCP source changes)
