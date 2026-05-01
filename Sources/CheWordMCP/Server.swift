@@ -8848,24 +8848,15 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        // #98: handler now forks into two paths.
-        //
-        // (a) `latex` arg → delegate to lib `WordDocument.insertEquation(at:latex:displayMode:)`
-        //     overload (Document.swift:3968+, ooxml-swift v0.21.11+). Lib handles
-        //     OMML build, inline-vs-display branching, bounds check, and
-        //     `InsertLocationError.invalidParagraphIndex` / `inlineModeRequiresParagraphIndex`
-        //     structured errors centrally (single source of truth).
-        //
-        // (b) `components` arg → handler self-builds OMML (lib has no
-        //     components-tree entry point), but routes through the throwing
-        //     `insertParagraph(_:at: InsertLocation)` overload to inherit the
-        //     same bounds-check semantics. Pre-#98 the components path called
-        //     the non-throwing `insertParagraph(_:at: Int)` Int overload which
-        //     silently clamped on out-of-range index.
-        let latexString: String?
+        // #98 v2 (post-verify): both `latex` and `components` paths feed into
+        // the same `[MathComponent]` AST and use handler-side OMML build via
+        // `MathComponent.toOMML()`. Lib's `Document.insertEquation` overload
+        // internally uses deprecated flat `MathEquation` (Field.swift:301)
+        // which produces broken plain-text OOXML — see Insert step below for
+        // full rationale. Path origin is preserved in error messages but the
+        // insertion mechanic is unified.
         let components: [MathComponent]
         if let componentsValue = args["components"] {
-            latexString = nil
             do {
                 components = [try parseMathComponent(from: componentsValue)]
             } catch MathParseError.unknownType(let t) {
@@ -8876,7 +8867,6 @@ actor WordMCPServer {
                 return "Error: insert_equation: invalid components structure: \(msg)"
             }
         } else if let latex = args["latex"]?.stringValue {
-            latexString = latex
             do {
                 components = try parseLatex(latex)
             } catch LaTeXParseError.unrecognizedToken(let tok) {
@@ -8960,26 +8950,73 @@ actor WordMCPServer {
             anchorInfo = "at index \(insertIdx)"
         }
 
-        // Insert: latex path delegates to lib overload; components path
-        // self-builds OMML and uses throwing insertParagraph (NOT the
-        // pre-#98 silent-clamp Int overload).
+        // #98 v2 (post-verify): both paths use MathComponent.toOMML() for
+        // structurally correct OMML. The lib's `Document.insertEquation(at:
+        // InsertLocation, latex:, displayMode:)` overload internally uses
+        // `MathEquation(latex:).toXML()` which is `@available(*, deprecated, ...)`
+        // flat output (Field.swift:301): emits `<m:r><m:t>processed_string</m:t></m:r>`
+        // (e.g., `\frac{a}{b}` → `(a)/(b)` plain text), and worse, wraps in
+        // `<w:p>` for displayMode causing nested `<w:p><w:p>` invalid OOXML
+        // when used inside a Paragraph context. Codex verify (#98 6-AI ensemble)
+        // flagged this as P1 regression.
+        //
+        // Resolution: handler builds OMML via MathComponent AST for both paths;
+        // borrows lib's bounds-check via throwing `insertParagraph(_:at: InsertLocation)`
+        // (display mode) and replicates lib's bounds-check pattern for inline mode
+        // (handler-side append, since lib has no structured-OMML inline-append API).
+        let xmlns = "xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\""
+        let inner = components.map { $0.toOMML() }.joined()
+        let ommlXML = displayMode
+            ? "<m:oMathPara \(xmlns)><m:oMath>\(inner)</m:oMath></m:oMathPara>"
+            : "<m:oMath \(xmlns)>\(inner)</m:oMath>"
+
         do {
-            if let latex = latexString {
-                try doc.insertEquation(at: location, latex: latex, displayMode: displayMode)
-            } else {
-                let xmlns = "xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\""
-                let inner = components.map { $0.toOMML() }.joined()
-                let ommlXML = displayMode
-                    ? "<m:oMathPara \(xmlns)><m:oMath>\(inner)</m:oMath></m:oMathPara>"
-                    : "<m:oMath \(xmlns)>\(inner)</m:oMath>"
+            if displayMode {
+                // Display mode: build new paragraph carrying the OMML, insert
+                // via lib's throwing InsertLocation overload (centralized
+                // bounds-check + structured errors).
                 var eqRun = Run(text: "")
                 eqRun.rawXML = ommlXML
-                // Match lib pattern (#85 BLOCKING #2): set both rawXML fields so
+                // Match lib's #85 BLOCKING #2 pattern: set both rawXML fields so
                 // the post-cluster #99-#103 flatten walker sees this freshly-
                 // inserted equation before the next save→reload cycle.
                 eqRun.properties.rawXML = ommlXML
                 let eqPara = Paragraph(runs: [eqRun])
                 try doc.insertParagraph(eqPara, at: location)
+            } else {
+                // Inline mode: append OMML run to existing paragraph at
+                // `paragraph_index`. The pre-check above already rejected
+                // inline + nil paragraph_index, so `location` is guaranteed
+                // to be `.paragraphIndex(idx)` with a non-nil idx.
+                guard case .paragraphIndex(let idx) = location else {
+                    // Defensive: pre-check should have caught this.
+                    throw InsertLocationError.inlineModeRequiresParagraphIndex
+                }
+                // Bounds check matches lib's pattern at Document.swift:3990-3997
+                // (#91 Defect 2): count only top-level `.paragraph` body
+                // children, NOT recursing into block-level SDTs.
+                let topLevelParaCount = doc.body.children.reduce(0) { count, child in
+                    if case .paragraph = child { return count + 1 }
+                    return count
+                }
+                guard idx >= 0, idx < topLevelParaCount else {
+                    throw InsertLocationError.invalidParagraphIndex(idx)
+                }
+                // Walk top-level paragraphs, find target, append OMML run.
+                var paraCounter = 0
+                for (i, child) in doc.body.children.enumerated() {
+                    guard case .paragraph(var para) = child else { continue }
+                    if paraCounter == idx {
+                        var eqRun = Run(text: "")
+                        eqRun.rawXML = ommlXML
+                        eqRun.properties.rawXML = ommlXML
+                        para.runs.append(eqRun)
+                        doc.body.children[i] = .paragraph(para)
+                        doc.markPartDirty("word/document.xml")
+                        break
+                    }
+                    paraCounter += 1
+                }
             }
         } catch let InsertLocationError.tableIndexOutOfRange(i) {
             return "Error: insert_equation: table index \(i) out of range"

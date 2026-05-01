@@ -17,21 +17,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### What changed
 
-`Server.swift:8843+` `insertEquation(args:)` handler refactored:
+`Server.swift:8843+` `insertEquation(args:)` handler refactored. Both `latex` and `components` invocation paths now use the same insertion mechanic:
 
-- **latex path** (`args["latex"]`) — delegates to `try doc.insertEquation(at: location, latex: latex, displayMode: displayMode)` (lib v0.21.11 overload). Lib handles OMML build, inline-vs-display branching, bounds check, and structured errors.
-- **components path** (`args["components"]`) — handler self-builds OMML (lib has no components-tree entry), but routes through throwing `try doc.insertParagraph(eqPara, at: .paragraphIndex(insertIdx))` (NOT the silent-clamp Int overload). Also sets both `eqRun.rawXML = omml` AND `eqRun.properties.rawXML = omml` to match lib's #85 BLOCKING #2 pattern (post-cluster #99-#103 walker sees freshly-inserted equations).
+- **OMML build**: both paths feed into `[MathComponent]` (via `parseLatex` or `parseMathComponent`), then `MathComponent.toOMML()` produces structurally correct OMML (e.g., `\frac{a}{b}` → `<m:f><m:num>a</m:num><m:den>b</m:den></m:f>`). The handler does NOT delegate to lib's `Document.insertEquation(at:latex:displayMode:)` overload because that internally uses `MathEquation` which is `@available(*, deprecated, ...)` flat output (Field.swift:301): emits `<m:r><m:t>processed_string</m:t></m:r>` (Word renders as plain text, not as a live equation), and worse, wraps in `<w:p>` for displayMode causing nested `<w:p><w:p>` invalid OOXML when used inside a Paragraph context.
+- **Display mode insert**: build new `Paragraph` carrying the OMML, route through lib's throwing `insertParagraph(_:at: InsertLocation)` for centralized bounds-check + structured errors.
+- **Inline mode insert**: handler-side append OMML run to the existing paragraph at `paragraph_index` (lib has no structured-OMML inline-append API). Bounds-check replicates lib's `topLevelParagraphCount` pattern (Document.swift:3990-3997).
+- **Both paths set `eqRun.rawXML` AND `eqRun.properties.rawXML`** to match lib's #85 BLOCKING #2 pattern — post-cluster #99-#103 flatten walker sees freshly-inserted equations before the next save→reload cycle.
 - **Catch chain extended** with two new arms:
   - `InsertLocationError.inlineModeRequiresParagraphIndex` → `Error: insert_equation: inline mode requires paragraph_index anchor`
   - `InsertLocationError.invalidParagraphIndex(idx)` → `Error: insert_equation: paragraph_index N out of range`
 - **Pre-check added**: `!displayMode && paragraphIndex == nil` returns a clearer message than letting it fall through to `invalidParagraphIndex(body.children.count)`.
 - Existing `Inserted equation (display mode: <bool>, <anchorInfo>)` success-message format preserved (CHANGELOG-stable substring contract).
 
-#### BREAKING — inline mode semantics changed
+#### BREAKING — inline mode semantics changed (both paths)
 
 > **Pre-fix**: `insert_equation(display_mode: false, paragraph_index: 5)` inserted a NEW `Paragraph(runs: [eqRun])` at index 5.
 >
-> **Post-fix**: `insert_equation(display_mode: false, paragraph_index: 5)` appends the OMML run to the EXISTING paragraph at index 5 (matching lib semantics + `#84`/`#91` contract).
+> **Post-fix**: `insert_equation(display_mode: false, paragraph_index: 5)` appends the OMML run to the EXISTING paragraph at index 5 (matching lib's #84/#91 design intent for inline equations).
+
+This applies to **both `latex` and `components` invocation paths** uniformly post-v2 unification.
 
 **Migration for callers depending on the pre-fix "new paragraph for inline" behavior**:
 
@@ -42,19 +46,29 @@ This is a structural correctness fix — the pre-fix behavior was a bug, not a b
 
 #### Tests
 
-- `Issue98InsertEquationLibBypassTests` (NEW): 5 tests pinning the post-fix contract:
+- `Issue98InsertEquationLibBypassTests` (NEW): 7 tests pinning the post-fix contract:
   - `testInlineModeWithOutOfRangeIndexReturnsStructuredError` — inline + bad index → structured error
   - `testInlineModeWithoutParagraphIndexReturnsStructuredError` — inline + no anchor → structured error
   - `testDisplayModeWithOutOfRangeIndexReturnsStructuredError` — display + bad index → structured error (no silent clamp)
-  - `testInlineModeWithValidIndexAppendsOMMLRunToExistingParagraph` — pins BREAKING new behavior (no new paragraph; flatten sees OMML in existing paragraph)
+  - `testInlineModeWithValidIndexAppendsOMMLRunToExistingParagraph` — pins BREAKING new behavior for latex path (no new paragraph; OMML survives in runs/unrecognizedChildren)
   - `testComponentsPathSilentClampReplaced` — components path also rejects bad index
+  - `testComponentsPathInlineModeAppendsToExistingParagraph` — pins BREAKING new behavior for components path (matches latex path post-v2)
+  - `testLatexPathProducesStructuredOMMLForFraction` — saved doc must contain `<m:f>` (math fraction) for `\frac{a}{b}`, NOT deprecated MathEquation flat `(a)/(b)` — pins the OMML quality regression Codex caught in 6-AI verify
 
-Full suite: 236 → 241 tests, 0 failures, 9 pre-existing skips.
+Full suite: 236 → 243 tests, 0 failures, 9 pre-existing skips.
+
+#### 6-AI verify findings addressed
+
+- **P1 (Codex)**: latex path was using lib's deprecated `MathEquation` flat output → handler now keeps `MathComponent` AST for both paths
+- **P1 (Logic + Devil's Advocate + Codex)**: components path inline mode still created new paragraph → handler-side inline append unifies both paths
+- **P2 (Devil's Advocate)**: bounds-check counter asymmetry between paths → both paths use same `topLevelParagraphCount` pattern post-v2
+- **P2 (Devil's Advocate)**: test 4 weak assertion + hidden cluster #99-#103 dependency → strengthened to inspect either runs[].rawXML or unrecognizedChildren OMML
 
 #### Reference
 
-- Lib overload `Document.insertEquation(at: InsertLocation, latex:, displayMode:)` from ooxml-swift v0.21.11 (`Document.swift:3968`)
-- Sibling cluster #99-#103 (just shipped in v3.17.7) — bilateral mirror coverage for direct-child OMML, makes the `flattenedDisplayText` semantic check in test 4 meaningful
+- Lib `MathComponent.toOMML()` produces structurally correct OMML (`Sources/OOXMLSwift/Models/MathComponent.swift`)
+- Lib's deprecated `MathEquation` (Field.swift:301) — observed defective: truncates `\frac{a}{b}` → `(a)/(b` (missing `)`) AND emits nested `<w:p>` for displayMode
+- Sibling cluster #99-#103 (shipped in v3.17.7) — bilateral mirror coverage for direct-child OMML
 
 ## [3.17.7] - 2026-05-01
 
