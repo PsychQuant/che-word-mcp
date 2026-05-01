@@ -371,6 +371,12 @@ final class Issue98InsertEquationLibBypassTests: XCTestCase {
             unzipped.contains("(a)/(b)"),
             "saved document.xml must NOT contain deprecated MathEquation flat output '(a)/(b)' (was Codex-flagged P1 regression)"
         )
+        // v2 Codex sanity-check P2: display equations should be centered to
+        // match lib's display-mode convention (Document.swift:4025).
+        XCTAssertTrue(
+            unzipped.contains("<w:jc w:val=\"center\"/>"),
+            "saved document.xml MUST contain centered alignment for display equations (lib display-mode convention)"
+        )
     }
 
     // MARK: - Helpers

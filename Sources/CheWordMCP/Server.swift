@@ -8981,7 +8981,12 @@ actor WordMCPServer {
                 // the post-cluster #99-#103 flatten walker sees this freshly-
                 // inserted equation before the next save→reload cycle.
                 eqRun.properties.rawXML = ommlXML
-                let eqPara = Paragraph(runs: [eqRun])
+                var eqPara = Paragraph(runs: [eqRun])
+                // Match lib's display-mode convention (Document.swift:4025):
+                // display equations are centered. v2 verify Codex sanity-check
+                // P2 finding — without this, latex display equations regressed
+                // from centered (lib delegate convention) to left-aligned.
+                eqPara.properties.alignment = .center
                 try doc.insertParagraph(eqPara, at: location)
             } else {
                 // Inline mode: append OMML run to existing paragraph at
