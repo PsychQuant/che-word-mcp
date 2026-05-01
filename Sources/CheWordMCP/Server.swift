@@ -8848,9 +8848,24 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        // Resolve to a sequence of MathComponent atoms.
+        // #98: handler now forks into two paths.
+        //
+        // (a) `latex` arg → delegate to lib `WordDocument.insertEquation(at:latex:displayMode:)`
+        //     overload (Document.swift:3968+, ooxml-swift v0.21.11+). Lib handles
+        //     OMML build, inline-vs-display branching, bounds check, and
+        //     `InsertLocationError.invalidParagraphIndex` / `inlineModeRequiresParagraphIndex`
+        //     structured errors centrally (single source of truth).
+        //
+        // (b) `components` arg → handler self-builds OMML (lib has no
+        //     components-tree entry point), but routes through the throwing
+        //     `insertParagraph(_:at: InsertLocation)` overload to inherit the
+        //     same bounds-check semantics. Pre-#98 the components path called
+        //     the non-throwing `insertParagraph(_:at: Int)` Int overload which
+        //     silently clamped on out-of-range index.
+        let latexString: String?
         let components: [MathComponent]
         if let componentsValue = args["components"] {
+            latexString = nil
             do {
                 components = [try parseMathComponent(from: componentsValue)]
             } catch MathParseError.unknownType(let t) {
@@ -8861,6 +8876,7 @@ actor WordMCPServer {
                 return "Error: insert_equation: invalid components structure: \(msg)"
             }
         } else if let latex = args["latex"]?.stringValue {
+            latexString = latex
             do {
                 components = try parseLatex(latex)
             } catch LaTeXParseError.unrecognizedToken(let tok) {
@@ -8894,6 +8910,15 @@ actor WordMCPServer {
             return "Error: insert_equation: anchor parameters (after_text / before_text / after_image_id / into_table_cell) only supported when display_mode=true (inline equations append to an existing paragraph; use paragraph_index instead)"
         }
 
+        // #98: inline mode requires explicit `paragraph_index`. Pre-fix handler
+        // silently fell back to `body.children.count` (= invalid index) and
+        // either silent-clamped via the Int overload OR (post-#98 lib path)
+        // would surface as `invalidParagraphIndex(N)`. Explicit pre-check yields
+        // a more actionable error than the index-out-of-range message.
+        if !displayMode && paragraphIndex == nil {
+            return "Error: insert_equation: inline mode (display_mode=false) requires paragraph_index anchor (inline equations append OMML run to existing paragraph)"
+        }
+
         // anchor-dx-consistency (#71): reject conflicting anchors in display mode.
         // Spec R1 — display mode anchor set: into_table_cell / after_image_id /
         // after_text / before_text / paragraph_index. Inline mode handled by the
@@ -8906,23 +8931,11 @@ actor WordMCPServer {
             }
         }
 
-        // Assemble OMML with required namespace
-        let xmlns = "xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\""
-        let inner = components.map { $0.toOMML() }.joined()
-        let ommlXML = displayMode
-            ? "<m:oMathPara \(xmlns)><m:oMath>\(inner)</m:oMath></m:oMathPara>"
-            : "<m:oMath \(xmlns)>\(inner)</m:oMath>"
-
-        // Embed in a paragraph via rawXML-bearing Run (writer emits rawXML verbatim)
-        var eqRun = Run(text: "")
-        eqRun.rawXML = ommlXML
-        let eqPara = Paragraph(runs: [eqRun])
-
-        // F3 (v3.15.1): success message includes anchor info (mirror insert_paragraph).
-        // Anchor priority (display mode only):
-        // into_table_cell > after_image_id > after_text > before_text > paragraph_index > append
+        // Resolve anchor → InsertLocation + anchorInfo. Anchor priority
+        // (display mode): into_table_cell > after_image_id > after_text >
+        // before_text > paragraph_index > append.
+        let location: InsertLocation
         let anchorInfo: String
-
         if displayMode, let cellDict = intoTableCellDict {
             // F5 (v3.15.1): malformed partial dict returns structured error.
             guard let tableIdx = cellDict["table_index"]?.intValue,
@@ -8930,39 +8943,57 @@ actor WordMCPServer {
                   let col = cellDict["col"]?.intValue else {
                 return "Error: insert_equation: into_table_cell requires all three fields (table_index, row, col); got partial dict"
             }
-            do {
-                try doc.insertParagraph(eqPara, at: .intoTableCell(tableIndex: tableIdx, row: row, col: col))
-                anchorInfo = "into table[\(tableIdx)] cell (row: \(row), col: \(col))"
-            } catch let InsertLocationError.tableIndexOutOfRange(i) {
-                return "Error: insert_equation: table index \(i) out of range"
-            } catch let InsertLocationError.tableCellOutOfRange(t, r, c) {
-                return "Error: insert_equation: table[\(t)] cell (row: \(r), col: \(c)) out of range"
-            }
+            location = .intoTableCell(tableIndex: tableIdx, row: row, col: col)
+            anchorInfo = "into table[\(tableIdx)] cell (row: \(row), col: \(col))"
         } else if displayMode, let afterImageId = afterImageId {
-            do {
-                try doc.insertParagraph(eqPara, at: .afterImageId(afterImageId))
-                anchorInfo = "after image '\(afterImageId)'"
-            } catch let InsertLocationError.imageIdNotFound(rId) {
-                return "Error: insert_equation: image rId '\(rId)' not found"
-            }
+            location = .afterImageId(afterImageId)
+            anchorInfo = "after image '\(afterImageId)'"
         } else if displayMode, let afterText = afterText {
-            do {
-                try doc.insertParagraph(eqPara, at: .afterText(afterText, instance: textInstance))
-                anchorInfo = "after text '\(afterText)' (instance \(textInstance))"
-            } catch let InsertLocationError.textNotFound(searchText, instance) {
-                return "Error: insert_equation: text '\(searchText)' not found (instance \(instance))"
-            }
+            location = .afterText(afterText, instance: textInstance)
+            anchorInfo = "after text '\(afterText)' (instance \(textInstance))"
         } else if displayMode, let beforeText = beforeText {
-            do {
-                try doc.insertParagraph(eqPara, at: .beforeText(beforeText, instance: textInstance))
-                anchorInfo = "before text '\(beforeText)' (instance \(textInstance))"
-            } catch let InsertLocationError.textNotFound(searchText, instance) {
-                return "Error: insert_equation: text '\(searchText)' not found (instance \(instance))"
-            }
+            location = .beforeText(beforeText, instance: textInstance)
+            anchorInfo = "before text '\(beforeText)' (instance \(textInstance))"
         } else {
             let insertIdx = paragraphIndex ?? doc.body.children.count
-            doc.insertParagraph(eqPara, at: insertIdx)
+            location = .paragraphIndex(insertIdx)
             anchorInfo = "at index \(insertIdx)"
+        }
+
+        // Insert: latex path delegates to lib overload; components path
+        // self-builds OMML and uses throwing insertParagraph (NOT the
+        // pre-#98 silent-clamp Int overload).
+        do {
+            if let latex = latexString {
+                try doc.insertEquation(at: location, latex: latex, displayMode: displayMode)
+            } else {
+                let xmlns = "xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\""
+                let inner = components.map { $0.toOMML() }.joined()
+                let ommlXML = displayMode
+                    ? "<m:oMathPara \(xmlns)><m:oMath>\(inner)</m:oMath></m:oMathPara>"
+                    : "<m:oMath \(xmlns)>\(inner)</m:oMath>"
+                var eqRun = Run(text: "")
+                eqRun.rawXML = ommlXML
+                // Match lib pattern (#85 BLOCKING #2): set both rawXML fields so
+                // the post-cluster #99-#103 flatten walker sees this freshly-
+                // inserted equation before the next save→reload cycle.
+                eqRun.properties.rawXML = ommlXML
+                let eqPara = Paragraph(runs: [eqRun])
+                try doc.insertParagraph(eqPara, at: location)
+            }
+        } catch let InsertLocationError.tableIndexOutOfRange(i) {
+            return "Error: insert_equation: table index \(i) out of range"
+        } catch let InsertLocationError.tableCellOutOfRange(t, r, c) {
+            return "Error: insert_equation: table[\(t)] cell (row: \(r), col: \(c)) out of range"
+        } catch let InsertLocationError.imageIdNotFound(rId) {
+            return "Error: insert_equation: image rId '\(rId)' not found"
+        } catch let InsertLocationError.textNotFound(searchText, instance) {
+            return "Error: insert_equation: text '\(searchText)' not found (instance \(instance))"
+        } catch InsertLocationError.inlineModeRequiresParagraphIndex {
+            // Defensive: explicit pre-check above should have caught this.
+            return "Error: insert_equation: inline mode requires paragraph_index anchor"
+        } catch let InsertLocationError.invalidParagraphIndex(idx) {
+            return "Error: insert_equation: paragraph_index \(idx) out of range"
         }
 
         try await storeDocument(doc, for: docId)

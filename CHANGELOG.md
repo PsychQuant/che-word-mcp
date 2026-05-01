@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed — `insert_equation` MCP tool now uses lib `InsertLocation` overload + structured errors (closes #98)
+
+[#98](https://github.com/PsychQuant/che-word-mcp/issues/98) — `insert_equation` handler bypassed the lib `WordDocument.insertEquation(at: InsertLocation, latex:, displayMode:)` overload (added in #84/#91) and called the non-throwing `insertParagraph(_:at: Int)` overload directly. Three bug surfaces:
+
+1. **Silent-clamp** on out-of-range `paragraph_index` — `insertParagraph(_:at: Int)` clamps to last paragraph (`Document.swift:266-270`). Tool reported success but inserted at the wrong location.
+2. **Lib overload bypass** — handler self-built OMML and routed through `insertParagraph` for all anchor types instead of delegating to the lib overload that handles bounds-check + structured errors centrally.
+3. **Inline mode structural bug** — handler always created a NEW `Paragraph(runs: [eqRun])` regardless of `display_mode`. Lib semantics (matching `#84`/`#91` design): inline mode appends OMML run to the EXISTING paragraph at `paragraph_index`.
+
+#### What changed
+
+`Server.swift:8843+` `insertEquation(args:)` handler refactored:
+
+- **latex path** (`args["latex"]`) — delegates to `try doc.insertEquation(at: location, latex: latex, displayMode: displayMode)` (lib v0.21.11 overload). Lib handles OMML build, inline-vs-display branching, bounds check, and structured errors.
+- **components path** (`args["components"]`) — handler self-builds OMML (lib has no components-tree entry), but routes through throwing `try doc.insertParagraph(eqPara, at: .paragraphIndex(insertIdx))` (NOT the silent-clamp Int overload). Also sets both `eqRun.rawXML = omml` AND `eqRun.properties.rawXML = omml` to match lib's #85 BLOCKING #2 pattern (post-cluster #99-#103 walker sees freshly-inserted equations).
+- **Catch chain extended** with two new arms:
+  - `InsertLocationError.inlineModeRequiresParagraphIndex` → `Error: insert_equation: inline mode requires paragraph_index anchor`
+  - `InsertLocationError.invalidParagraphIndex(idx)` → `Error: insert_equation: paragraph_index N out of range`
+- **Pre-check added**: `!displayMode && paragraphIndex == nil` returns a clearer message than letting it fall through to `invalidParagraphIndex(body.children.count)`.
+- Existing `Inserted equation (display mode: <bool>, <anchorInfo>)` success-message format preserved (CHANGELOG-stable substring contract).
+
+#### BREAKING — inline mode semantics changed
+
+> **Pre-fix**: `insert_equation(display_mode: false, paragraph_index: 5)` inserted a NEW `Paragraph(runs: [eqRun])` at index 5.
+>
+> **Post-fix**: `insert_equation(display_mode: false, paragraph_index: 5)` appends the OMML run to the EXISTING paragraph at index 5 (matching lib semantics + `#84`/`#91` contract).
+
+**Migration for callers depending on the pre-fix "new paragraph for inline" behavior**:
+
+- Use `display_mode: true` for "new paragraph containing equation" (display equation = new paragraph by definition)
+- Or call `insert_paragraph` separately followed by `insert_equation` with the new paragraph's index
+
+This is a structural correctness fix — the pre-fix behavior was a bug, not a backward-compat surface worth preserving.
+
+#### Tests
+
+- `Issue98InsertEquationLibBypassTests` (NEW): 5 tests pinning the post-fix contract:
+  - `testInlineModeWithOutOfRangeIndexReturnsStructuredError` — inline + bad index → structured error
+  - `testInlineModeWithoutParagraphIndexReturnsStructuredError` — inline + no anchor → structured error
+  - `testDisplayModeWithOutOfRangeIndexReturnsStructuredError` — display + bad index → structured error (no silent clamp)
+  - `testInlineModeWithValidIndexAppendsOMMLRunToExistingParagraph` — pins BREAKING new behavior (no new paragraph; flatten sees OMML in existing paragraph)
+  - `testComponentsPathSilentClampReplaced` — components path also rejects bad index
+
+Full suite: 236 → 241 tests, 0 failures, 9 pre-existing skips.
+
+#### Reference
+
+- Lib overload `Document.insertEquation(at: InsertLocation, latex:, displayMode:)` from ooxml-swift v0.21.11 (`Document.swift:3968`)
+- Sibling cluster #99-#103 (just shipped in v3.17.7) — bilateral mirror coverage for direct-child OMML, makes the `flattenedDisplayText` semantic check in test 4 meaningful
+
 ## [3.17.7] - 2026-05-01
 
 ### Changed — ooxml-swift dep bump 0.21.10 → 0.21.11 (transitive only, no MCP source changes)
