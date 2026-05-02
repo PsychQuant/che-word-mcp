@@ -2521,7 +2521,7 @@ actor WordMCPServer {
             // 7.3 數學公式
             Tool(
                 name: "insert_equation",
-                description: "插入數學公式（結構化 OMML，可在 Word native equation editor 雙擊編輯）。v3.2+ 的 latex: 支援 LaTeX 子集（見下方 latex 參數描述完整 token 清單）；components: 為 JSON tree fallback，給超出 LaTeX 子集的進階用法。必須提供 components 或 latex 其中之一。v3.16.0+ display mode 同時傳多個 anchor 會 return 「Error: insert_equation: received conflicting anchors: ...」（先前版本是 silent priority winner）；inline mode 仍 reject 所有 anchor（語意 ambiguous）。",
+                description: "插入數學公式（結構化 OMML，可在 Word native equation editor 雙擊編輯）。v3.2+ 的 latex: 支援 LaTeX 子集（見下方 latex 參數描述完整 token 清單）；components: 為 JSON tree fallback，給超出 LaTeX 子集的進階用法。必須提供 components 或 latex 其中之一。MCP 工具層 display_mode 預設 true（區塊公式；OOXMLSwift lib API 的預設值不同）。v3.16.0+ display mode 同時傳多個 anchor 會 return 「Error: insert_equation: received conflicting anchors: ...」（先前版本是 silent priority winner）；inline mode 仍 reject 所有 anchor（語意 ambiguous）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -2539,11 +2539,11 @@ actor WordMCPServer {
                         ]),
                         "display_mode": .object([
                             "type": .string("boolean"),
-                            "description": .string("是否為獨立區塊（true，預設）或行內（false）")
+                            "description": .string("是否為獨立區塊（true，MCP 工具層預設）或行內（false）。注意：底層 OOXMLSwift lib API 的預設值為 false；MCP 因 agent 常用區塊公式而保留 true。")
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("body.children 索引（從 0 開始；計入 tables / SDTs / bookmarkMarker / rawBlockElement，**不**等同於 get_paragraphs 回傳的 paragraph-only count）。display mode 下若搭配 anchor，anchor 優先；inline 模式直接以此索引插入。lib API 在 #61 / #69 系列已對齊到 body.children index；參數命名沿用「paragraph_index」是歷史遺留，跨工具語意統一見 PsychQuant/ooxml-swift#10。")
+                            "description": .string("display_mode=true：body.children 插入索引（從 0 開始；計入 tables / SDTs / bookmarkMarker / rawBlockElement，**不**等同於 get_paragraphs 回傳的 paragraph-only count），若搭配其他 anchor 則 anchor 衝突會回錯。display_mode=false：top-level `.paragraph` ordinal（從 0 開始；不計入 tables / SDTs / bookmarkMarker / rawBlockElement），且 inline 模式沒有其他 anchor 時必填；inline 會把 OMML run append 到該既有段落。參數命名沿用「paragraph_index」是歷史遺留，跨工具語意統一見 PsychQuant/ooxml-swift#10。")
                         ]),
                         "into_table_cell": .object([
                             "type": .string("object"),
@@ -8840,6 +8840,11 @@ actor WordMCPServer {
     ///   uppercase / variants), and common operators. Anything else returns
     ///   an error naming the unrecognized token. See latex-math-swift README
     ///   for the canonical macro list.
+    ///
+    /// MCP defaults `display_mode` to true because agent callers normally want
+    /// block equations. That intentionally differs from the lower-level
+    /// OOXMLSwift lib default, which preserves inline behavior for direct API
+    /// callers.
     private func insertEquation(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -8855,6 +8860,10 @@ actor WordMCPServer {
         // which produces broken plain-text OOXML — see Insert step below for
         // full rationale. Path origin is preserved in error messages but the
         // insertion mechanic is unified.
+        if args["components"] != nil && args["latex"] != nil {
+            return "Error: insert_equation: pass either 'components' (JSON tree) OR 'latex' (LaTeX subset), not both"
+        }
+
         let components: [MathComponent]
         if let componentsValue = args["components"] {
             do {
@@ -8880,7 +8889,15 @@ actor WordMCPServer {
             return "Error: insert_equation: either 'components' (JSON tree) or 'latex' (LaTeX subset) argument required"
         }
 
-        let displayMode = args["display_mode"]?.boolValue ?? true
+        let displayMode: Bool
+        if let displayModeValue = args["display_mode"] {
+            guard let bool = displayModeValue.boolValue else {
+                return "Error: insert_equation: display_mode must be a boolean true/false, not a string or other JSON type"
+            }
+            displayMode = bool
+        } else {
+            displayMode = true
+        }
         let paragraphIndex = args["paragraph_index"]?.intValue
         let afterText = args["after_text"]?.stringValue
         let beforeText = args["before_text"]?.stringValue
@@ -8945,6 +8962,9 @@ actor WordMCPServer {
             location = .beforeText(beforeText, instance: textInstance)
             anchorInfo = "before text '\(beforeText)' (instance \(textInstance))"
         } else {
+            // Display mode with no explicit anchor appends at end by passing
+            // body.children.count. The throwing lib insert accepts idx == count
+            // as append-at-end, while larger indices still return out-of-range.
             let insertIdx = paragraphIndex ?? doc.body.children.count
             location = .paragraphIndex(insertIdx)
             anchorInfo = "at index \(insertIdx)"
@@ -8993,10 +9013,7 @@ actor WordMCPServer {
                 // `paragraph_index`. The pre-check above already rejected
                 // inline + nil paragraph_index, so `location` is guaranteed
                 // to be `.paragraphIndex(idx)` with a non-nil idx.
-                guard case .paragraphIndex(let idx) = location else {
-                    // Defensive: pre-check should have caught this.
-                    throw InsertLocationError.inlineModeRequiresParagraphIndex
-                }
+                let idx = paragraphIndex!
                 // Bounds check matches lib's pattern at Document.swift:3990-3997
                 // (#91 Defect 2): count only top-level `.paragraph` body
                 // children, NOT recursing into block-level SDTs.
@@ -9031,9 +9048,6 @@ actor WordMCPServer {
             return "Error: insert_equation: image rId '\(rId)' not found"
         } catch let InsertLocationError.textNotFound(searchText, instance) {
             return "Error: insert_equation: text '\(searchText)' not found (instance \(instance))"
-        } catch InsertLocationError.inlineModeRequiresParagraphIndex {
-            // Defensive: explicit pre-check above should have caught this.
-            return "Error: insert_equation: inline mode requires paragraph_index anchor"
         } catch let InsertLocationError.invalidParagraphIndex(idx) {
             return "Error: insert_equation: paragraph_index \(idx) out of range"
         }
