@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.18.0] - 2026-05-03
+
+### Added — `insert_equation` argument-contract hardening (closes #105 #106 #107)
+
+PR [#111](https://github.com/PsychQuant/che-word-mcp/pull/111) closes three sister tickets surfaced by `#98` verify follow-up:
+
+- **#106 (P2)** — `insert_equation` no longer silently picks a winner when both `components` and `latex` are passed. The handler now returns a structured error before either parser runs:
+  > `Error: insert_equation: pass either 'components' (JSON tree) OR 'latex' (LaTeX subset), not both`
+- **#107 (P2)** — `display_mode` rejects non-boolean values (e.g., `"true"` string from a misconfigured agent caller). Pre-fix, `args["display_mode"]?.boolValue` returned `nil` for strings and silently fell back to `?? true`, routing inline-intent calls as display-mode. Post-fix:
+  > `Error: insert_equation: display_mode must be a boolean true/false, not a string or other JSON type`
+- **#105 (P3)** — `paragraph_index` schema description clarified to distinguish display-mode (body.children index) from inline-mode (top-level paragraph ordinal) per the post-#91 inline branch behavior. The dedicated handler-level guard `args["paragraphIndex"]!` replaces the now-unreachable defensive `guard case .paragraphIndex(let idx)` arm; the `InsertLocationError.inlineModeRequiresParagraphIndex` catch arm is removed.
+
+#### What changed
+
+- `Server.swift:8843` `insertEquation(args:)` — added two pre-check guards (components+latex conflict, display_mode strict-bool) before entering the existing parsing logic.
+- `Server.swift:2521-2570` `insert_equation` tool schema — `description` documents the MCP-vs-lib `display_mode` default divergence (MCP defaults to true because agent callers normally want block equations); `paragraph_index` description split into display-mode + inline-mode semantics.
+- `Server.swift` — removed unreachable `throw InsertLocationError.inlineModeRequiresParagraphIndex` and its catch arm (post-#98 the pre-check already returns early before that path is hit).
+
+#### Tests
+
+`Issue98InsertEquationLibBypassTests` extended with 6 new tests pinning the contract:
+
+- `testInsertEquationRejectsComponentsAndLatexTogether` — runtime conflict-error
+- `testInsertEquationRejectsStringDisplayMode` — runtime type-error for `"false"` string
+- `testParagraphIndexSchemaDocumentsDisplayAndInlineOrdinals` — schema text contract
+- `testDisplayModeSchemaDocumentsMCPDefaultDivergence` — MCP-vs-lib default note
+- `testHandlerDocumentsDisplayAppendFallback` — append-at-end semantics doc-comment
+- `testServerNoLongerThrowsOrCatchesDeadInlineModeRequiresParagraphIndex` — dead-code removal
+
+Full suite: 243 → 249 tests, 0 failures, 9 pre-existing skips.
+
+#### 6-AI verify findings addressed
+
+PR went through 5 Claude reviewers + Codex (gpt-5.5 xhigh). Verdict: PASS with follow-up. 0 blocking, 5 P2 follow-up findings, 6 P3 nits. Six follow-up issues opened from the review:
+
+- [#124](https://github.com/PsychQuant/che-word-mcp/issues/124) — sibling fail-open hardening (`paragraph_index` / `text_instance` / `into_table_cell.*` `intValue` accepts strings → silent default)
+- [#125](https://github.com/PsychQuant/che-word-mcp/issues/125) — JSON null vs absent semantics for `latex` / `display_mode`
+- [#126](https://github.com/PsychQuant/che-word-mcp/issues/126) — runtime regression test for #105 with `[paragraph, table/SDT, paragraph]` fixture
+- [#127](https://github.com/PsychQuant/che-word-mcp/issues/127) — `paragraphIndex!` force-unwrap → defensive guard or narrowed type
+- [#128](https://github.com/PsychQuant/che-word-mcp/issues/128) — schema "若搭配其他 anchor" phrasing alignment with #71 anchor whitelist
+- [#129](https://github.com/PsychQuant/che-word-mcp/issues/129) — echo received value in argument-validation error messages
+
 ## [3.17.8] - 2026-05-01
 
 ### Fixed — `insert_equation` MCP tool now uses lib `InsertLocation` overload + structured errors (closes #98)
