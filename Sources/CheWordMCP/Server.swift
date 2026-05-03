@@ -112,6 +112,28 @@ actor WordMCPServer {
         return detectPresentAnchors(args, anchors: anchors)
     }
 
+    /// Parse text-anchor matching options shared by insertion tools.
+    /// Omitted `match_options` and omitted `math_script_insensitive` keep
+    /// exact matching. Wrong types are rejected instead of silently enabling or
+    /// disabling a caller-provided option.
+    static func parseAnchorLookupOptions(_ args: [String: Value], tool: String) -> (AnchorLookupOptions, String?) {
+        guard let rawOptions = args["match_options"] else {
+            return (.exact, nil)
+        }
+        guard let optionsDict = rawOptions.objectValue else {
+            return (.exact, "Error: \(tool): match_options must be an object")
+        }
+
+        var options = AnchorLookupOptions.exact
+        if let rawMathScript = optionsDict["math_script_insensitive"] {
+            guard let enabled = rawMathScript.boolValue else {
+                return (.exact, "Error: \(tool): match_options.math_script_insensitive must be boolean")
+            }
+            options.mathScriptInsensitive = enabled
+        }
+        return (options, nil)
+    }
+
     /// One emitted log event. `event` is the dotted name (e.g. `storeDocument.entry`),
     /// `keyValues` is the structured payload.
     struct DebugLogEvent: Sendable, Equatable {
@@ -471,6 +493,10 @@ actor WordMCPServer {
         }
     }
 
+    func toolInputSchemaForTesting(name: String) -> Value? {
+        allTools.first { $0.name == name }?.inputSchema
+    }
+
     func isDocumentDirtyForTesting(_ docId: String) -> Bool {
         isDirty(docId: docId)
     }
@@ -820,6 +846,16 @@ actor WordMCPServer {
                         "text_instance": .object([
                             "type": .string("integer"),
                             "description": .string("after_text / before_text 的第 N 次匹配（1-based，預設 1）")
+                        ]),
+                        "match_options": .object([
+                            "type": .string("object"),
+                            "description": .string("after_text / before_text 的比對選項。預設 exact matching；設定 { math_script_insensitive: true } 時，H₀/H0、xᵢ/xi 等數學上下標變體會雙向匹配。"),
+                            "properties": .object([
+                                "math_script_insensitive": .object([
+                                    "type": .string("boolean"),
+                                    "description": .string("是否啟用數學上下標變體匹配（預設 false）。true 時會把 H₀/H0、xᵢ/xi 等視為等價 anchor。")
+                                ])
+                            ])
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("text")])
@@ -1761,6 +1797,16 @@ actor WordMCPServer {
                             "type": .string("integer"),
                             "description": .string("after_text / before_text 的第 N 次匹配（1-based，預設 1）")
                         ]),
+                        "match_options": .object([
+                            "type": .string("object"),
+                            "description": .string("after_text / before_text 的比對選項。預設 exact matching；設定 { math_script_insensitive: true } 時，H₀/H0、xᵢ/xi 等數學上下標變體會雙向匹配。"),
+                            "properties": .object([
+                                "math_script_insensitive": .object([
+                                    "type": .string("boolean"),
+                                    "description": .string("是否啟用數學上下標變體匹配（預設 false）。true 時會把 H₀/H0、xᵢ/xi 等視為等價 anchor。")
+                                ])
+                            ])
+                        ]),
                         "name": .object([
                             "type": .string("string"),
                             "description": .string("圖片名稱（可選，用於替代文字）")
@@ -2593,6 +2639,16 @@ actor WordMCPServer {
                         "text_instance": .object([
                             "type": .string("integer"),
                             "description": .string("after_text / before_text 的第 N 次匹配（1-based，預設 1）")
+                        ]),
+                        "match_options": .object([
+                            "type": .string("object"),
+                            "description": .string("after_text / before_text 的比對選項。預設 exact matching；設定 { math_script_insensitive: true } 時，H₀/H0、xᵢ/xi 等數學上下標變體會雙向匹配。"),
+                            "properties": .object([
+                                "math_script_insensitive": .object([
+                                    "type": .string("boolean"),
+                                    "description": .string("是否啟用數學上下標變體匹配（預設 false）。true 時會把 H₀/H0、xᵢ/xi 等視為等價 anchor。")
+                                ])
+                            ])
                         ])
                     ]),
                     "required": .array([.string("doc_id")])
@@ -5041,6 +5097,16 @@ actor WordMCPServer {
                             "type": .string("integer"),
                             "description": .string("after_text / before_text 的第 N 次匹配（1-based，預設 1）")
                         ]),
+                        "match_options": .object([
+                            "type": .string("object"),
+                            "description": .string("after_text / before_text 的比對選項。預設 exact matching；設定 { math_script_insensitive: true } 時，H₀/H0、xᵢ/xi 等數學上下標變體會雙向匹配。"),
+                            "properties": .object([
+                                "math_script_insensitive": .object([
+                                    "type": .string("boolean"),
+                                    "description": .string("是否啟用數學上下標變體匹配（預設 false）。true 時會把 H₀/H0、xᵢ/xi 等視為等價 anchor。")
+                                ])
+                            ])
+                        ]),
                         "position": .object([
                             "type": .string("string"),
                             "description": .string("搭配 paragraph_index 使用：above（上方）、below（下方，預設）")
@@ -6902,6 +6968,8 @@ actor WordMCPServer {
         if let explicit = args["text_instance"]?.intValue, explicit < 1 {
             return "Error: insert_paragraph: text_instance must be ≥ 1, got \(explicit)."
         }
+        let (anchorLookupOptions, matchOptionsError) = WordMCPServer.parseAnchorLookupOptions(args, tool: "insert_paragraph")
+        if let matchOptionsError { return matchOptionsError }
         let resultMessage: String
 
         if let cellDict = args["into_table_cell"]?.objectValue {
@@ -6929,14 +6997,14 @@ actor WordMCPServer {
             }
         } else if let afterText = args["after_text"]?.stringValue {
             do {
-                try doc.insertParagraph(para, at: .afterText(afterText, instance: textInstance))
+                try doc.insertParagraph(para, at: .afterText(afterText, instance: textInstance, options: anchorLookupOptions))
                 resultMessage = "Inserted paragraph after text '\(afterText)' (instance \(textInstance))"
             } catch let InsertLocationError.textNotFound(searchText, instance) {
                 return "Error: insert_paragraph: text '\(searchText)' not found (instance \(instance))"
             }
         } else if let beforeText = args["before_text"]?.stringValue {
             do {
-                try doc.insertParagraph(para, at: .beforeText(beforeText, instance: textInstance))
+                try doc.insertParagraph(para, at: .beforeText(beforeText, instance: textInstance, options: anchorLookupOptions))
                 resultMessage = "Inserted paragraph before text '\(beforeText)' (instance \(textInstance))"
             } catch let InsertLocationError.textNotFound(searchText, instance) {
                 return "Error: insert_paragraph: text '\(searchText)' not found (instance \(instance))"
@@ -8179,6 +8247,8 @@ actor WordMCPServer {
         if let explicit = args["text_instance"]?.intValue, explicit < 1 {
             return "Error: insert_image_from_path: text_instance must be ≥ 1, got \(explicit)."
         }
+        let (anchorLookupOptions, matchOptionsError) = WordMCPServer.parseAnchorLookupOptions(args, tool: "insert_image_from_path")
+        if let matchOptionsError { return matchOptionsError }
         if let cellDict = args["into_table_cell"]?.objectValue {
             // F5 (v3.15.1): malformed partial dict returns structured error instead of silent fallthrough.
             guard let tableIdx = cellDict["table_index"]?.intValue,
@@ -8220,7 +8290,7 @@ actor WordMCPServer {
                     path: path,
                     widthPx: width,
                     heightPx: height,
-                    at: .afterText(afterText, instance: textInstance),
+                    at: .afterText(afterText, instance: textInstance, options: anchorLookupOptions),
                     name: name,
                     description: description
                 )
@@ -8233,7 +8303,7 @@ actor WordMCPServer {
                     path: path,
                     widthPx: width,
                     heightPx: height,
-                    at: .beforeText(beforeText, instance: textInstance),
+                    at: .beforeText(beforeText, instance: textInstance, options: anchorLookupOptions),
                     name: name,
                     description: description
                 )
@@ -9192,6 +9262,8 @@ actor WordMCPServer {
         if let explicit = args["text_instance"]?.intValue, explicit < 1 {
             return "Error: insert_equation: text_instance must be ≥ 1, got \(explicit)."
         }
+        let (anchorLookupOptions, matchOptionsError) = WordMCPServer.parseAnchorLookupOptions(args, tool: "insert_equation")
+        if let matchOptionsError { return matchOptionsError }
 
         // Anchors only meaningful in display mode (block-level new paragraph).
         // Inline mode appends an OMML run into an existing paragraph; anchor
@@ -9240,10 +9312,10 @@ actor WordMCPServer {
             location = .afterImageId(afterImageId)
             anchorInfo = "after image '\(afterImageId)'"
         } else if displayMode, let afterText = afterText {
-            location = .afterText(afterText, instance: textInstance)
+            location = .afterText(afterText, instance: textInstance, options: anchorLookupOptions)
             anchorInfo = "after text '\(afterText)' (instance \(textInstance))"
         } else if displayMode, let beforeText = beforeText {
-            location = .beforeText(beforeText, instance: textInstance)
+            location = .beforeText(beforeText, instance: textInstance, options: anchorLookupOptions)
             anchorInfo = "before text '\(beforeText)' (instance \(textInstance))"
         } else {
             // Display mode with no explicit anchor appends at end by passing
@@ -12979,6 +13051,8 @@ actor WordMCPServer {
         if let explicit = args["text_instance"]?.intValue, explicit < 1 {
             return "Error: insert_caption: text_instance must be ≥ 1, got \(explicit)."
         }
+        let (anchorLookupOptions, matchOptionsError) = WordMCPServer.parseAnchorLookupOptions(args, tool: "insert_caption")
+        if let matchOptionsError { return matchOptionsError }
 
         // Build caption paragraph: label text + optional chapter STYLEREF + SEQ field + optional caption text
         var runs: [Run] = [Run(text: "\(label) ")]
@@ -13016,9 +13090,9 @@ actor WordMCPServer {
         } else if let tableIdx = afterTableIndexArg {
             location = .afterTableIndex(tableIdx)
         } else if let afterText = afterTextArg {
-            location = .afterText(afterText, instance: textInstance)
+            location = .afterText(afterText, instance: textInstance, options: anchorLookupOptions)
         } else {
-            location = .beforeText(beforeTextArg!, instance: textInstance)
+            location = .beforeText(beforeTextArg!, instance: textInstance, options: anchorLookupOptions)
         }
 
         do {

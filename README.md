@@ -22,7 +22,7 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 - **Theme + Header/Footer/Watermark CRUD (v3.3.0+)**: `word/theme/theme1.xml` editing, header/footer enumeration + deletion, watermark VML detection. document Chinese font fix path: `update_theme_fonts({ minor: { ea: "DFKai-SB" } })`.
 - **Comment Threads + People + Notes Update + Web Settings (v3.4.0+)**: 13 tools for collaborative comment metadata, `people.xml` author records (dual identity: GUID + legacy author), in-place endnote/footnote editing (preserves IDs), `webSettings.xml` configuration.
 - **Full LaTeX Subset for `insert_equation` (v3.2.0+)**: Delegated to [`latex-math-swift`](https://github.com/PsychQuant/latex-math-swift). Supports `\frac`, `\sqrt`, `\hat`/`\bar`/`\tilde` accents, `\left/\right` delimiters, `\sum`/`\int`/`\prod` n-ary with bounds, function names, limits, `\text{}`, all Greek letters (including `\varepsilon` variants), and common operators.
-- **Text-Anchor Insertion**: Insert captions / images relative to matched text (`after_text` / `before_text`), no pre-search call required
+- **Text-Anchor Insertion**: Insert captions / images relative to matched text (`after_text` / `before_text`), no pre-search call required. Optional `match_options.math_script_insensitive` lets anchors typed as `H₀` match flattened math text such as `H0` without changing exact matching by default.
 - **Batch Operations**: `replace_text_batch` / `search_text_batch` collapse N round-trips into one
 - **Session State API**: SHA256 + mtime-based disk drift detection, `revert_to_disk` / `reload_from_disk` / `check_disk_drift`
 - **Structural Readback**: `list_captions` / `list_equations` / `update_all_fields` (F9-equivalent) for manuscript review workflows
@@ -278,7 +278,7 @@ for the per-tool inventory before reusing an index across tools.
 | `get_text` | Get plain text content |
 | `get_paragraphs` | Get all paragraphs with formatting |
 | `estimate_paragraph_for_page` | **v3.18.0+** — estimate a Word UI page number to a `get_paragraphs` candidate range (heuristic JSON with confidence + warning) |
-| `insert_paragraph` | Insert a new paragraph |
+| `insert_paragraph` | Insert a new paragraph; text anchors support `match_options.math_script_insensitive` for `H₀` / `H0` matching |
 | `update_paragraph` | Update paragraph content |
 | `delete_paragraph` | Delete a paragraph |
 | `replace_text` | Cross-run-safe find & replace with `scope` (body\|all) + `regex` + `$1..$N` backreferences |
@@ -429,7 +429,7 @@ Even/odd + section linkage (4, **v3.11.0**):
 | Tool | Description |
 |------|-------------|
 | `insert_image` | Insert inline image (PNG, JPEG) |
-| `insert_image_from_path` | **v2.0.0+** — width/height optional (auto-aspect via `ImageDimensions.detect`), supports `into_table_cell` + `after_text` / `before_text` anchors |
+| `insert_image_from_path` | **v2.0.0+** — width/height optional (auto-aspect via `ImageDimensions.detect`), supports `into_table_cell` + `after_text` / `before_text` anchors; `match_options.math_script_insensitive` can match math-script variants such as `H₀` / `H0` |
 | `insert_floating_image` | Insert floating image with text wrap |
 | `update_image` | Update image properties |
 | `delete_image` | Delete image |
@@ -440,7 +440,7 @@ Even/odd + section linkage (4, **v3.11.0**):
 
 | Tool | Description |
 |------|-------------|
-| `insert_caption` | **v2.0.0+** — real OOXML SEQ field (not literal text). Accepts English + Chinese labels (`Figure`/`Table`/`Equation`/`圖`/`表`/`公式`), 5-way anchor (`paragraph_index` / `after_image_id` / `after_table_index` / `after_text` / `before_text`), optional `STYLEREF` chapter number prefix |
+| `insert_caption` | **v2.0.0+** — real OOXML SEQ field (not literal text). Accepts English + Chinese labels (`Figure`/`Table`/`Equation`/`圖`/`表`/`公式`), 5-way anchor (`paragraph_index` / `after_image_id` / `after_table_index` / `after_text` / `before_text`), optional `STYLEREF` chapter number prefix; `match_options.math_script_insensitive` can match math-script variants such as `H₀` / `H0` |
 | `list_captions` | **v3.1.0** — enumerate caption paragraphs with label / sequence_number / caption_text / paragraph_index |
 | `get_caption` | **v3.1.0** — detailed single caption info including optional `chapter_number` from STYLEREF |
 | `update_caption` | **v3.1.0** — modify caption text or label without breaking the SEQ field structure |
@@ -450,7 +450,7 @@ Even/odd + section linkage (4, **v3.11.0**):
 
 | Tool | Description |
 |------|-------------|
-| `insert_equation` | **v2.0.0+** — emits structurally correct OMML via `MathComponent` AST (9 types). Primary: `components:` tree; fallback: `latex:` subset (`\frac`, `\sqrt`, `x^{y}`, Greek, ∑/∫/∏) |
+| `insert_equation` | **v2.0.0+** — emits structurally correct OMML via `MathComponent` AST (9 types). Primary: `components:` tree; fallback: `latex:` subset (`\frac`, `\sqrt`, `x^{y}`, Greek, ∑/∫/∏). Display-mode text anchors support `match_options.math_script_insensitive` for `H₀` / `H0` matching |
 | `list_equations` | **v3.1.0** — enumerate `<m:oMath>` runs with display_mode flag |
 | `get_equation` | **v3.1.0** — detailed single equation info with component summary |
 | `update_equation` | **v3.1.0** — replace target equation's components tree |
