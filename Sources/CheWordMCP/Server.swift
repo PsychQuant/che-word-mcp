@@ -764,7 +764,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "get_paragraphs",
-                description: "取得所有段落（含格式資訊）（支援 Direct Mode）",
+                description: "取得所有段落（含格式資訊）（支援 Direct Mode）。回傳順序是 get_paragraphs readback index：top-level paragraphs + block-level SDT 內段落；不含 table-cell paragraphs。不要直接當作 body.children 插入索引使用。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -781,7 +781,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "insert_paragraph",
-                description: "插入新段落（需先 open_document）。v3.15.1+ 接受 after_text / before_text / text_instance / into_table_cell / after_image_id anchor（與 insert_image_from_path 對齊）；anchor 與 index 擇一，不傳則加到最後。v3.16.0+ 同時傳多個 anchor 會 return 「Error: insert_paragraph: received conflicting anchors: ...」（先前版本是 silent priority winner）。",
+                description: "插入新段落（需先 open_document）。index 是 body.children 插入索引（top-level OOXML body child；計入 tables / block-level SDTs / bookmark markers / raw blocks）。v3.15.1+ 接受 after_text / before_text / text_instance / into_table_cell / after_image_id anchor（與 insert_image_from_path 對齊）；anchor 與 index 擇一，不傳則加到最後。v3.16.0+ 同時傳多個 anchor 會 return 「Error: insert_paragraph: received conflicting anchors: ...」（先前版本是 silent priority winner）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -795,7 +795,7 @@ actor WordMCPServer {
                         ]),
                         "index": .object([
                             "type": .string("integer"),
-                            "description": .string("插入位置（body 層級索引，從 0 開始）。anchor 擇一，不傳則加到最後")
+                            "description": .string("body.children 插入索引（從 0 開始；計入 tables / block-level SDTs / bookmark markers / raw blocks）。不是 get_paragraphs 的 paragraph readback index。anchor 擇一，不傳則加到最後")
                         ]),
                         "style": .object([
                             "type": .string("string"),
@@ -837,7 +837,7 @@ actor WordMCPServer {
                         ]),
                         "index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）")
                         ]),
                         "text": .object([
                             "type": .string("string"),
@@ -859,7 +859,7 @@ actor WordMCPServer {
                         ]),
                         "index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）")
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("index")])
@@ -939,7 +939,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）")
                         ]),
                         "bold": .object([
                             "type": .string("boolean"),
@@ -997,7 +997,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）")
                         ]),
                         "alignment": .object([
                             "type": .string("string"),
@@ -1043,7 +1043,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）")
                         ]),
                         "style": .object([
                             "type": .string("string"),
@@ -2126,7 +2126,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("要附加註解的段落索引")
+                            "description": .string("要附加註解的 top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`）")
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("text"), .string("author"), .string("paragraph_index")])
@@ -2364,7 +2364,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）")
                         ]),
                         "text": .object([
                             "type": .string("string"),
@@ -2404,7 +2404,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）")
                         ]),
                         "text": .object([
                             "type": .string("string"),
@@ -2476,7 +2476,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）")
                         ]),
                         "name": .object([
                             "type": .string("string"),
@@ -2502,7 +2502,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）")
                         ]),
                         "name": .object([
                             "type": .string("string"),
@@ -2528,7 +2528,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）")
                         ]),
                         "name": .object([
                             "type": .string("string"),
@@ -2612,7 +2612,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）")
                         ]),
                         "border_type": .object([
                             "type": .string("string"),
@@ -2642,7 +2642,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）")
                         ]),
                         "fill": .object([
                             "type": .string("string"),
@@ -2664,7 +2664,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）")
                         ]),
                         "spacing": .object([
                             "type": .string("integer"),
@@ -2686,7 +2686,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("Top-level paragraph ordinal（從 0 開始；不計入 tables / SDTs / bookmarkMarker / rawBlockElement）。詳見 docs/paragraph-index-conventions.md。")
                         ]),
                         "effect": .object([
                             "type": .string("string"),
@@ -3953,7 +3953,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("get_paragraphs readback index（從 0 開始；top-level paragraphs + block-level SDT 內段落，不含 table-cell paragraphs）")
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("paragraph_index")])
@@ -3973,7 +3973,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("指定段落索引（可選，不指定則取得全部）")
+                            "description": .string("指定 get_paragraphs readback index（可選；不指定則取得全部）")
                         ])
                     ]),
                     "required": .array([.string("doc_id")])
@@ -4989,7 +4989,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("插入位置段落索引（五 anchor 擇一；可搭配 position）")
+                            "description": .string("body.children 插入索引（從 0 開始；計入 tables / block-level SDTs / bookmark markers / raw blocks）。五 anchor 擇一；可搭配 position")
                         ]),
                         "after_image_id": .object([
                             "type": .string("string"),
