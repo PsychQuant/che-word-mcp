@@ -9,7 +9,7 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 - **Pure Swift Implementation**: No Node.js, Python, or external runtime required
 - **Direct OOXML Manipulation**: Works directly with XML, no Microsoft Word installation needed
 - **Single Binary**: Just one executable file
-- **233 MCP Tools**: Comprehensive document manipulation across documents, tables, hyperlinks, headers, sections, styles, numbering, content controls, comments, footnotes, equations, fields, and Track Changes
+- **234 MCP Tools**: Comprehensive document manipulation across documents, tables, hyperlinks, headers, sections, styles, numbering, content controls, comments, footnotes, equations, fields, and Track Changes
 - **Office.js OOXML Roadmap P0 = 100%**: All eight P0 sub-issues closed (umbrella [#43](https://github.com/PsychQuant/che-word-mcp/issues/43)). Surface coverage is now competitive with Office.js for the read/write side of every P0 capability.
 - **Round-trip silent corruption closed (v3.13.5, [#56](https://github.com/PsychQuant/che-word-mcp/issues/56))**: 5 sub-stack-completion rounds (R5 / R5-CONT / R5-CONT-2 / R5-CONT-3 / R5-CONT-4) closed 30 findings (16 P0 + 21 P1) across rounds 4-8 of 6-AI cross-verification. Bumps `ooxml-swift` to v0.19.5 (v0.19.4 held back per verify-gate). **No MCP source changes** — fix architecture lives entirely in `ooxml-swift`. Round 4 walker symmetry across headers/footers/footnotes/endnotes (`accept_revision` / `reject_revision` / `get_hyperlinks` / `replace_text` reach all parts). Round 5 per-container relationships round-trip (`update_hyperlink` URL sync targets owning part rels). Round 6 `delete_hyperlink` mirror + container `<w:tbl>` capture preserved. Round 7 `reject_revision` typed clearMarker (file/API state convergence). Round 8 `accept_revision` typed clearMarker (mirror) + matrix-pin asymmetry-guard removal + `Document.repairContainerFileNames` marks `document.xml.rels` + `[Content_Types].xml` dirty. Convergence: Devil's Advocate wrote 5 adversarial tests targeting the convergence-cycle pattern; all PASSED. See [closing summary](https://github.com/PsychQuant/che-word-mcp/issues/56#issuecomment-4322638865) and [v3.13.5 release notes](https://github.com/PsychQuant/che-word-mcp/releases/tag/v3.13.5).
 - **Programmatic Track Changes (v3.12.0+, [#45](https://github.com/PsychQuant/che-word-mcp/issues/45))**: Generate Word-native reviewable redlines via `insert_text_as_revision` / `delete_text_as_revision` / `move_text_as_revision`, plus `as_revision: true` flag on `format_text` / `set_paragraph_format`. Emits `<w:ins>` / `<w:del>` / `<w:moveFrom>` / `<w:moveTo>` / `<w:rPrChange>` / `<w:pPrChange>` markup. Side-effect contract: `as_revision: true` requires track changes enabled; throws `track_changes_not_enabled` otherwise (no silent auto-enable). Author resolution: explicit arg → `revisions.settings.author` → `"Unknown"`.
@@ -177,13 +177,13 @@ search_text: { "source_path": "/path/to/file.docx", "query": "keyword" }
 get_document_info: { "source_path": "/path/to/file.docx" }
 ```
 
-**18 tools support Direct Mode:**
+**19 tools support Direct Mode:**
 
 | Category | Tools |
 |----------|-------|
 | Read content | `get_text`, `get_document_text`, `get_paragraphs`, `get_document_info`, `search_text` |
 | List elements | `list_images`, `list_styles`, `get_tables`, `list_comments`, `list_hyperlinks`, `list_bookmarks`, `list_footnotes`, `list_endnotes`, `get_revisions` |
-| Properties | `get_document_properties`, `get_section_properties`, `get_word_count_by_section` |
+| Properties | `get_document_properties`, `get_section_properties`, `get_word_count_by_section`, `estimate_paragraph_for_page` |
 | Export | `export_markdown` |
 
 ### Session Mode (`doc_id`) — Full read/write lifecycle
@@ -236,7 +236,7 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
   https://raw.githubusercontent.com/PsychQuant/che-word-mcp/main/skills/che-word-mcp/SKILL.md
 ```
 
-## Available Tools (233 Total)
+## Available Tools (234 Total)
 
 ### Paragraph Index Conventions
 
@@ -271,12 +271,13 @@ for the per-tool inventory before reusing an index across tools.
 | `reload_from_disk` | Cooperative reload; requires `force: true` on dirty doc |
 | `check_disk_drift` | Informational — returns `{ drifted, disk_mtime, stored_mtime, disk_hash_matches }` |
 
-### Content Operations (8 tools)
+### Content Operations (9 tools)
 
 | Tool | Description |
 |------|-------------|
 | `get_text` | Get plain text content |
 | `get_paragraphs` | Get all paragraphs with formatting |
+| `estimate_paragraph_for_page` | **v3.18.0+** — estimate a Word UI page number to a `get_paragraphs` candidate range (heuristic JSON with confidence + warning) |
 | `insert_paragraph` | Insert a new paragraph |
 | `update_paragraph` | Update paragraph content |
 | `delete_paragraph` | Delete a paragraph |

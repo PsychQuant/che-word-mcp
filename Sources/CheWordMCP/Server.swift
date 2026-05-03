@@ -4118,6 +4118,36 @@ actor WordMCPServer {
                 ])
             ),
             Tool(
+                name: "estimate_paragraph_for_page",
+                description: "估算 Word UI 第 N 頁大約落在哪些 get_paragraphs 段落索引。OOXML 不儲存頁面邊界；此工具使用 section page size / margins 與字元數啟發式估計，回傳 JSON、confidence 與 warning（支援 Direct Mode）。",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼（Session Mode）")
+                        ]),
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("檔案路徑（Direct Mode，免開啟）")
+                        ]),
+                        "page": .object([
+                            "type": .string("integer"),
+                            "description": .string("Word UI 頁碼（1-based；page=1 表示第一頁）")
+                        ]),
+                        "chars_per_page": .object([
+                            "type": .string("integer"),
+                            "description": .string("可選校準值。若提供，直接使用此每頁字元數；否則依 section page size / margins 估算。")
+                        ]),
+                        "context_paragraphs": .object([
+                            "type": .string("integer"),
+                            "description": .string("可選，向前/向後擴張的段落數（預設 2；設 0 可取得純估計範圍）")
+                        ])
+                    ]),
+                    "required": .array([.string("page")])
+                ])
+            ),
+            Tool(
                 name: "compare_documents",
                 description: "比對兩個 Word 文件的差異（段落層級），只回傳差異部分。支援文字、格式、結構比對模式",
                 inputSchema: .object([
@@ -6200,6 +6230,8 @@ actor WordMCPServer {
             return try await listAllFormattedText(args: args)
         case "get_word_count_by_section":
             return try await getWordCountBySection(args: args)
+        case "estimate_paragraph_for_page":
+            return try await estimateParagraphForPage(args: args)
         case "compare_documents":
             return try await compareDocuments(args: args)
 
@@ -11523,6 +11555,136 @@ actor WordMCPServer {
         output += "  Total: \(formatNumber(totalWords)) words\n"
 
         return output
+    }
+
+    // #266 — Estimate a Word UI page reference back to get_paragraphs indices.
+    // OOXML stores content, not rendered page boundaries; this intentionally
+    // returns a candidate range with confidence/warning rather than a precise
+    // paragraph anchor.
+    private func estimateParagraphForPage(args: [String: Value]) async throws -> String {
+        let (doc, _) = try await resolveDocument(args: args)
+
+        guard let page = args["page"]?.intValue else {
+            throw WordError.missingParameter("page")
+        }
+        // Upper-bound guard prevents (page - 1) * charsPerPage and page * charsPerPage
+        // from triggering Int overflow trap on caller-controlled Int.max input.
+        // 100_000 pages exceeds any real document by ~3 orders of magnitude.
+        guard page >= 1 && page <= 100_000 else {
+            return "Error: estimate_paragraph_for_page: page must be 1..100000, got \(page)"
+        }
+
+        let charsPerPage: Int
+        let layoutBasis: String
+        if let override = args["chars_per_page"]?.intValue {
+            // Same overflow concern: page * charsPerPage with charsPerPage=Int.max.
+            // 200_000 chars/page is far beyond any plausible single-page density.
+            guard override > 0 && override <= 200_000 else {
+                return "Error: estimate_paragraph_for_page: chars_per_page must be 1..200000, got \(override)"
+            }
+            charsPerPage = override
+            layoutBasis = "caller_chars_per_page"
+        } else {
+            charsPerPage = Self.estimateCharsPerPage(from: doc.sectionProperties)
+            layoutBasis = "section_properties"
+        }
+
+        let contextParagraphs = args["context_paragraphs"]?.intValue ?? 2
+        // Upper bound prevents rawStart - contextParagraphs underflow and
+        // rawEnd + contextParagraphs overflow on Int.max input.
+        guard contextParagraphs >= 0 && contextParagraphs <= 1024 else {
+            return "Error: estimate_paragraph_for_page: context_paragraphs must be 0..1024, got \(contextParagraphs)"
+        }
+
+        let paragraphs = doc.getParagraphs()
+        guard !paragraphs.isEmpty else {
+            return try Self.renderJSONString([
+                "error": "empty_document",
+                "estimated_paragraph_range": [],
+                "confidence": "low",
+                "method": "char_count_heuristic",
+                "assumed_chars_per_page": charsPerPage,
+                "warning": Self.pageEstimateWarning,
+            ])
+        }
+
+        var spans: [(start: Int, end: Int)] = []
+        var cumulative = 0
+        for para in paragraphs {
+            let count = Self.estimatedLayoutCharacterCount(for: para)
+            let start = cumulative
+            cumulative += count
+            spans.append((start: start, end: cumulative))
+        }
+
+        let targetStart = (page - 1) * charsPerPage
+        let targetEnd = page * charsPerPage
+        let estimatedTotalPages = max(1, Int(ceil(Double(cumulative) / Double(charsPerPage))))
+        let beyondEstimatedDocument = targetStart >= cumulative
+
+        let rawStart: Int
+        let rawEnd: Int
+        if beyondEstimatedDocument {
+            rawStart = paragraphs.count - 1
+            rawEnd = paragraphs.count - 1
+        } else {
+            rawStart = spans.firstIndex { $0.end > targetStart } ?? (paragraphs.count - 1)
+            rawEnd = spans.lastIndex { $0.start < targetEnd } ?? rawStart
+        }
+
+        let startIndex = max(0, rawStart - contextParagraphs)
+        let endIndex = min(paragraphs.count - 1, rawEnd + contextParagraphs)
+        let confidence = (!beyondEstimatedDocument && layoutBasis == "section_properties" && paragraphs.count >= 3)
+            ? "medium"
+            : "low"
+
+        return try Self.renderJSONString([
+            "estimated_paragraph_range": [startIndex, endIndex],
+            "raw_estimated_paragraph_range": [rawStart, rawEnd],
+            "confidence": confidence,
+            "method": "char_count_heuristic",
+            "layout_basis": layoutBasis,
+            "page": page,
+            "assumed_chars_per_page": charsPerPage,
+            "estimated_total_pages": estimatedTotalPages,
+            "paragraph_count": paragraphs.count,
+            "total_estimated_chars": cumulative,
+            "context_paragraphs": contextParagraphs,
+            "requested_page_beyond_estimated_document": beyondEstimatedDocument,
+            "warning": Self.pageEstimateWarning,
+        ])
+    }
+
+    private static let pageEstimateWarning = "OOXML does not store page boundaries; this is an estimate based on character density and section page setup. Actual page boundaries depend on rendering, fonts, margins, line spacing, images, tables, and Word layout."
+
+    private static func estimatedLayoutCharacterCount(for paragraph: Paragraph) -> Int {
+        let text = paragraph.getText().replacingOccurrences(of: "\n", with: " ")
+        // Empty paragraphs still consume vertical space, so count them as a
+        // small visible unit plus a paragraph break.
+        return max(text.count, 1) + 1
+    }
+
+    private static func estimateCharsPerPage(from props: SectionProperties) -> Int {
+        let usableWidthTwips = max(
+            1440,
+            props.pageSize.width - props.pageMargins.left - props.pageMargins.right - props.pageMargins.gutter
+        )
+        let usableHeightTwips = max(
+            1440,
+            props.pageSize.height - props.pageMargins.top - props.pageMargins.bottom
+        )
+
+        // Conservative 12pt document/review calibration: average character width
+        // ~11pt, line height ~24pt. This intentionally favors a candidate range
+        // over a false-precise point estimate.
+        let charsPerLine = max(20, usableWidthTwips / 220)
+        let linesPerPage = max(10, usableHeightTwips / 480)
+        return max(400, charsPerLine * linesPerPage)
+    }
+
+    private static func renderJSONString(_ object: [String: Any]) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return String(data: data, encoding: .utf8) ?? "{}"
     }
 
     // Helper: 計算字數（支援中英文混合）
