@@ -2185,6 +2185,35 @@ actor WordMCPServer {
                         "source_path": .object([
                             "type": .string("string"),
                             "description": .string("檔案路徑（Direct Mode，免開啟）")
+                        ]),
+                        "include_context": .object([
+                            "type": .string("boolean"),
+                            "description": .string("是否回傳 JSON context preview（預設 false，維持原文字輸出）")
+                        ]),
+                        "context_chars": .object([
+                            "type": .string("integer"),
+                            "description": .string("include_context=true 時，anchor 前後各回傳多少字（預設 50）")
+                        ])
+                    ])
+                ])
+            ),
+            Tool(
+                name: "find_unresolved_comments",
+                description: "列出尚未 resolved 的頂層註解（支援 Direct Mode，可包含 anchor context）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼（Session Mode）")
+                        ]),
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("檔案路徑（Direct Mode，免開啟）")
+                        ]),
+                        "context_chars": .object([
+                            "type": .string("integer"),
+                            "description": .string("anchor 前後各回傳多少字（預設 50）")
                         ])
                     ])
                 ])
@@ -2672,8 +2701,50 @@ actor WordMCPServer {
 
             // 8.1 註解回覆
             Tool(
+                name: "add_comment_reply",
+                description: "回覆現有註解；支援 template/vars 與 resolve=true 一次完成回覆加標記已解決",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ]),
+                        "comment_id": .object([
+                            "type": .string("integer"),
+                            "description": .string("要回覆的註解 ID")
+                        ]),
+                        "reply_text": .object([
+                            "type": .string("string"),
+                            "description": .string("回覆內容；也可用 text alias")
+                        ]),
+                        "text": .object([
+                            "type": .string("string"),
+                            "description": .string("reply_text 的 alias")
+                        ]),
+                        "template": .object([
+                            "type": .string("string"),
+                            "description": .string("內建 template：fix_done, noted, wontfix, more_info_needed")
+                        ]),
+                        "vars": .object([
+                            "type": .string("object"),
+                            "description": .string("template 變數，例如 { commit_sha, issue_number }")
+                        ]),
+                        "resolve": .object([
+                            "type": .string("boolean"),
+                            "description": .string("true 時新增 reply 後同步標記該 comment resolved")
+                        ]),
+                        "author": .object([
+                            "type": .string("string"),
+                            "description": .string("回覆者名稱（預設 'User'）")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("comment_id")])
+                ])
+            ),
+            Tool(
                 name: "reply_to_comment",
-                description: "回覆現有的註解",
+                description: "回覆現有的註解（舊名；同 add_comment_reply，保留 parent_comment_id/text alias）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -2692,9 +2763,21 @@ actor WordMCPServer {
                         "author": .object([
                             "type": .string("string"),
                             "description": .string("回覆者名稱（預設 'Author'）")
+                        ]),
+                        "template": .object([
+                            "type": .string("string"),
+                            "description": .string("內建 template：fix_done, noted, wontfix, more_info_needed")
+                        ]),
+                        "vars": .object([
+                            "type": .string("object"),
+                            "description": .string("template 變數")
+                        ]),
+                        "resolve": .object([
+                            "type": .string("boolean"),
+                            "description": .string("true 時新增 reply 後同步標記該 comment resolved")
                         ])
                     ]),
-                    "required": .array([.string("doc_id"), .string("parent_comment_id"), .string("text")])
+                    "required": .array([.string("doc_id")])
                 ])
             ),
             Tool(
@@ -2717,6 +2800,24 @@ actor WordMCPServer {
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("comment_id")])
+                ])
+            ),
+            Tool(
+                name: "bulk_resolve_comments",
+                description: "批次標記多個註解為 resolved；不中斷於單筆失敗，回傳成功數與 failed 清單",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼")
+                        ]),
+                        "comment_ids": .object([
+                            "type": .string("array"),
+                            "description": .string("要標記為 resolved 的註解 ID 陣列")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("comment_ids")])
                 ])
             ),
 
@@ -3618,6 +3719,35 @@ actor WordMCPServer {
                         ])
                     ]),
                     "required": .array([.string("query")])
+                ])
+            ),
+            Tool(
+                name: "find_inline_math_gaps",
+                description: "掃描段落中疑似遺失 inline math symbol 的連續空白 gap，回傳位置與前後文（支援 Direct Mode）",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("文件識別碼（Session Mode）")
+                        ]),
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("檔案路徑（Direct Mode，免開啟）")
+                        ]),
+                        "min_gap_chars": .object([
+                            "type": .string("integer"),
+                            "description": .string("連續多少空白才算候選 gap（預設 2）")
+                        ]),
+                        "context_chars": .object([
+                            "type": .string("integer"),
+                            "description": .string("gap 前後各回傳多少字（預設 30）")
+                        ]),
+                        "exclude_table_captions": .object([
+                            "type": .string("boolean"),
+                            "description": .string("是否排除表格 caption 樣式段落（預設 true）")
+                        ])
+                    ])
                 ])
             ),
             Tool(
@@ -5866,6 +5996,10 @@ actor WordMCPServer {
             return try await deleteComment(args: args)
         case "list_comments":
             return try await listComments(args: args)
+        case "find_unresolved_comments":
+            return try await findUnresolvedComments(args: args)
+        case "bulk_resolve_comments":
+            return try await bulkResolveComments(args: args)
         case "enable_track_changes":
             return try await enableTrackChanges(args: args)
         case "disable_track_changes":
@@ -5912,7 +6046,7 @@ actor WordMCPServer {
             return try await setTextEffect(args: args)
 
         // 8.1 註解回覆與解析
-        case "reply_to_comment":
+        case "add_comment_reply", "reply_to_comment":
             return try await replyToComment(args: args)
         case "resolve_comment":
             return try await resolveComment(args: args)
@@ -6032,6 +6166,8 @@ actor WordMCPServer {
             return try await getDocumentText(args: args)
         case "search_text":
             return try await searchText(args: args)
+        case "find_inline_math_gaps":
+            return try await findInlineMathGaps(args: args)
         case "search_text_batch":
             return try await searchTextBatch(args: args)
         case "list_hyperlinks":
@@ -8547,12 +8683,26 @@ actor WordMCPServer {
         return "Deleted comment \(commentId)"
     }
 
+    private struct CommentContext {
+        let anchoredRunText: String?
+        let contextBefore: String?
+        let contextAfter: String?
+        let flattenedText: String?
+    }
+
     private func listComments(args: [String: Value]) async throws -> String {
         let (doc, _) = try await resolveDocument(args: args)
 
-        let comments = doc.getComments()
+        let comments = doc.getCommentsFull()
         if comments.isEmpty {
             return "No comments in document"
+        }
+
+        let includeContext = args["include_context"]?.boolValue ?? false
+        let contextChars = max(0, args["context_chars"]?.intValue ?? 50)
+
+        if includeContext {
+            return commentJSON(comments: comments, in: doc, contextChars: contextChars)
         }
 
         let dateFormatter = DateFormatter()
@@ -8564,6 +8714,108 @@ actor WordMCPServer {
         }
 
         return result
+    }
+
+    private func findUnresolvedComments(args: [String: Value]) async throws -> String {
+        let (doc, _) = try await resolveDocument(args: args)
+        let contextChars = max(0, args["context_chars"]?.intValue ?? 50)
+        let unresolved = doc.getCommentsFull().filter { !$0.done && $0.parentId == nil }
+        return commentJSON(comments: unresolved, in: doc, contextChars: contextChars)
+    }
+
+    private func commentJSON(comments: [Comment], in doc: WordDocument, contextChars: Int) -> String {
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd HH:mm"
+
+        let entries = comments.map { comment -> String in
+            let context = commentContext(for: comment, in: doc, contextChars: contextChars)
+            let fields = [
+                "\"id\":\(comment.id)",
+                "\"author\":\"\(Self.jsonEscape(comment.author))\"",
+                "\"date\":\"\(Self.jsonEscape(dateFormatter.string(from: comment.date)))\"",
+                "\"text\":\"\(Self.jsonEscape(comment.text))\"",
+                "\"paragraph_index\":\(comment.paragraphIndex)",
+                "\"resolved\":\(comment.done)",
+                "\"anchored_run_text\":\(jsonOptional(context.anchoredRunText))",
+                "\"context_before\":\(jsonOptional(context.contextBefore))",
+                "\"context_after\":\(jsonOptional(context.contextAfter))",
+                "\"flattened_text\":\(jsonOptional(context.flattenedText))"
+            ]
+            return "{\(fields.joined(separator: ","))}"
+        }
+
+        return "[\(entries.joined(separator: ","))]"
+    }
+
+    private func jsonOptional(_ value: String?) -> String {
+        guard let value = value else { return "null" }
+        return "\"\(Self.jsonEscape(value))\""
+    }
+
+    private func commentContext(for comment: Comment, in doc: WordDocument, contextChars: Int) -> CommentContext {
+        let paragraphs = doc.getParagraphs()
+        guard comment.paragraphIndex >= 0, comment.paragraphIndex < paragraphs.count else {
+            return CommentContext(anchoredRunText: nil, contextBefore: nil, contextAfter: nil, flattenedText: nil)
+        }
+
+        let para = paragraphs[comment.paragraphIndex]
+        let flattened = para.flattenedDisplayText()
+        guard !flattened.isEmpty else {
+            return CommentContext(anchoredRunText: nil, contextBefore: nil, contextAfter: nil, flattenedText: flattened)
+        }
+
+        if let positional = positionalCommentContext(for: comment.id, in: para, fallback: flattened, contextChars: contextChars) {
+            return positional
+        }
+
+        return CommentContext(
+            anchoredRunText: flattened,
+            contextBefore: "",
+            contextAfter: "",
+            flattenedText: flattened
+        )
+    }
+
+    private func positionalCommentContext(
+        for commentId: Int,
+        in para: Paragraph,
+        fallback: String,
+        contextChars: Int
+    ) -> CommentContext? {
+        guard let start = para.commentRangeMarkers.first(where: { $0.id == commentId && $0.kind == .start })?.position,
+              let end = para.commentRangeMarkers.first(where: { $0.id == commentId && $0.kind == .end })?.position,
+              start < end else {
+            return nil
+        }
+
+        let segments = para.runs
+            .filter { !$0.text.isEmpty }
+            .map { (position: $0.position ?? 0, text: $0.text) }
+            .sorted { lhs, rhs in lhs.position < rhs.position }
+
+        guard !segments.isEmpty else { return nil }
+
+        let before = segments.filter { $0.position <= start }.map(\.text).joined()
+        let anchor = segments.filter { $0.position > start && $0.position < end }.map(\.text).joined()
+        let after = segments.filter { $0.position >= end }.map(\.text).joined()
+        guard !anchor.isEmpty else { return nil }
+
+        return CommentContext(
+            anchoredRunText: anchor,
+            contextBefore: suffix(before, maxLength: contextChars),
+            contextAfter: prefix(after, maxLength: contextChars),
+            flattenedText: fallback
+        )
+    }
+
+    private func prefix(_ text: String, maxLength: Int) -> String {
+        guard maxLength >= 0, text.count > maxLength else { return text }
+        return String(text.prefix(maxLength))
+    }
+
+    private func suffix(_ text: String, maxLength: Int) -> String {
+        guard maxLength >= 0, text.count > maxLength else { return text }
+        return String(text.suffix(maxLength))
     }
 
     private func enableTrackChanges(args: [String: Value]) async throws -> String {
@@ -9304,21 +9556,28 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let commentId = args["comment_id"]?.intValue else {
+        guard let commentId = args["comment_id"]?.intValue ?? args["parent_comment_id"]?.intValue else {
             throw WordError.missingParameter("comment_id")
         }
-        guard let replyText = args["reply_text"]?.stringValue else {
-            throw WordError.missingParameter("reply_text")
+        guard let replyText = try resolveCommentReplyText(args: args) else {
+            throw WordError.missingParameter("reply_text or text or template")
         }
         let author = args["author"]?.stringValue ?? "User"
+        let shouldResolve = args["resolve"]?.boolValue ?? false
 
         // 使用 CommentsCollection.addReply 方法
         guard let reply = doc.comments.addReply(to: commentId, author: author, text: replyText) else {
             throw WordError.invalidParameter("comment_id", "Comment with ID \(commentId) not found")
         }
+        if shouldResolve {
+            doc.comments.markAsDone(commentId, done: true)
+        }
+        doc.markPartDirty("word/comments.xml")
+        doc.markPartDirty("word/commentsExtended.xml")
 
         try await storeDocument(doc, for: docId)
-        return "Added reply to comment \(commentId) by \(author) (reply ID: \(reply.id))"
+        let resolvedSuffix = shouldResolve ? " and resolved comment \(commentId)" : ""
+        return "Added reply to comment \(commentId) by \(author) (reply ID: \(reply.id))\(resolvedSuffix)"
     }
 
     private func resolveComment(args: [String: Value]) async throws -> String {
@@ -9335,9 +9594,80 @@ actor WordMCPServer {
 
         // 使用 CommentsCollection.markAsDone 方法
         doc.comments.markAsDone(commentId, done: resolved)
+        doc.markPartDirty("word/commentsExtended.xml")
         try await storeDocument(doc, for: docId)
 
         return "Comment \(commentId) \(resolved ? "resolved" : "reopened")"
+    }
+
+    private func bulkResolveComments(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard var doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+        guard let ids = args["comment_ids"]?.arrayValue else {
+            throw WordError.missingParameter("comment_ids")
+        }
+
+        var resolvedCount = 0
+        var failed: [String] = []
+        for value in ids {
+            guard let id = value.intValue else {
+                failed.append("{\"comment_id\":null,\"error\":\"invalid_id\"}")
+                continue
+            }
+            guard doc.comments.comments.contains(where: { $0.id == id }) else {
+                failed.append("{\"comment_id\":\(id),\"error\":\"not_found\"}")
+                continue
+            }
+            doc.comments.markAsDone(id, done: true)
+            resolvedCount += 1
+        }
+
+        if resolvedCount > 0 {
+            doc.markPartDirty("word/commentsExtended.xml")
+            try await storeDocument(doc, for: docId)
+        }
+
+        return "{\"resolved\":\(resolvedCount),\"failed\":[\(failed.joined(separator: ","))]}"
+    }
+
+    private func resolveCommentReplyText(args: [String: Value]) throws -> String? {
+        if let text = args["reply_text"]?.stringValue ?? args["text"]?.stringValue {
+            return text
+        }
+        guard let templateName = args["template"]?.stringValue else {
+            return nil
+        }
+        let templates = [
+            "fix_done": "Fixed in ${commit_sha} (Refs #${issue_number})",
+            "noted": "Noted.",
+            "wontfix": "Won't fix: ${reason}",
+            "more_info_needed": "Need more information: ${question}"
+        ]
+        guard var rendered = templates[templateName] else {
+            throw WordError.invalidParameter("template", "Unknown template '\(templateName)'")
+        }
+
+        let vars = args["vars"]?.objectValue ?? [:]
+        for (key, value) in vars {
+            if let str = templateVariableString(value) {
+                rendered = rendered.replacingOccurrences(of: "${\(key)}", with: str)
+            }
+        }
+        if rendered.range(of: #"\$\{[^}]+\}"#, options: .regularExpression) != nil {
+            throw WordError.invalidParameter("vars", "Missing template variable for '\(templateName)'")
+        }
+        return rendered
+    }
+
+    private func templateVariableString(_ value: Value) -> String? {
+        if let str = value.stringValue { return str }
+        if let int = value.intValue { return String(int) }
+        if let bool = value.boolValue { return String(bool) }
+        return nil
     }
 
     // MARK: - 8.2 Floating Images
@@ -10360,6 +10690,137 @@ actor WordMCPServer {
             output += "- \(result.location), position \(result.startPosition): \"\(result.text)\"\n"
         }
         return output
+    }
+
+    private func findInlineMathGaps(args: [String: Value]) async throws -> String {
+        let (doc, _) = try await resolveDocument(args: args)
+        // Upper-bound clamps prevent caller-triggered Int overflow trap in
+        // `i + contextChars` (issue #130). 4096 chars is far more context than
+        // any human reads at a glance; min_gap_chars 1024 covers the longest
+        // plausible accidental whitespace run (a fully-blanked paragraph).
+        let minGapChars = min(max(1, args["min_gap_chars"]?.intValue ?? 2), 1024)
+        let contextChars = min(max(0, args["context_chars"]?.intValue ?? 30), 4096)
+        let excludeTableCaptions = args["exclude_table_captions"]?.boolValue ?? true
+
+        struct Gap {
+            let paragraphIndex: Int
+            let location: String
+            let gapPosition: Int
+            let gapLength: Int
+            let contextBefore: String
+            let contextAfter: String
+            let flattenedText: String
+        }
+
+        var gaps: [Gap] = []
+
+        func isWhitespace(_ char: Character) -> Bool {
+            char.unicodeScalars.allSatisfy { CharacterSet.whitespacesAndNewlines.contains($0) }
+        }
+
+        func scanParagraph(_ para: Paragraph, paragraphIndex: Int?, location: String) {
+            let text = para.flattenedDisplayText()
+            guard !text.isEmpty else { return }
+            if excludeTableCaptions && isLikelyTableCaption(text) { return }
+
+            let chars = Array(text)
+            var i = 0
+            while i < chars.count {
+                guard isWhitespace(chars[i]) else {
+                    i += 1
+                    continue
+                }
+
+                let start = i
+                while i < chars.count, isWhitespace(chars[i]) {
+                    i += 1
+                }
+                let length = i - start
+                let hasNonWhitespaceBefore = start > 0 && !isWhitespace(chars[start - 1])
+                let hasNonWhitespaceAfter = i < chars.count && !isWhitespace(chars[i])
+                guard length >= minGapChars, hasNonWhitespaceBefore, hasNonWhitespaceAfter else {
+                    continue
+                }
+
+                let beforeStart = max(0, start - contextChars)
+                let afterEnd = min(chars.count, i + contextChars)
+                gaps.append(Gap(
+                    paragraphIndex: paragraphIndex ?? -1,
+                    location: location,
+                    gapPosition: start,
+                    gapLength: length,
+                    contextBefore: String(chars[beforeStart..<start]),
+                    contextAfter: String(chars[i..<afterEnd]),
+                    flattenedText: text
+                ))
+            }
+        }
+
+        var paragraphCounter = 0
+        var tableCounter = 0
+
+        func scanTable(_ table: Table, tablePath: String) {
+            for (rowIndex, row) in table.rows.enumerated() {
+                for (cellIndex, cell) in row.cells.enumerated() {
+                    for (paraIndex, para) in cell.paragraphs.enumerated() {
+                        scanParagraph(
+                            para,
+                            paragraphIndex: nil,
+                            location: "\(tablePath).row[\(rowIndex)].col[\(cellIndex)].paragraph[\(paraIndex)]"
+                        )
+                    }
+                    for (nestedIndex, nested) in cell.nestedTables.enumerated() {
+                        scanTable(
+                            nested,
+                            tablePath: "\(tablePath).row[\(rowIndex)].col[\(cellIndex)].nested_table[\(nestedIndex)]"
+                        )
+                    }
+                }
+            }
+        }
+
+        func walk(_ children: [BodyChild]) {
+            for child in children {
+                switch child {
+                case .paragraph(let para):
+                    scanParagraph(para, paragraphIndex: paragraphCounter, location: "paragraph[\(paragraphCounter)]")
+                    paragraphCounter += 1
+                case .table(let table):
+                    scanTable(table, tablePath: "table[\(tableCounter)]")
+                    tableCounter += 1
+                case .contentControl(_, children: let inner):
+                    walk(inner)
+                case .bookmarkMarker, .rawBlockElement:
+                    continue
+                }
+            }
+        }
+
+        walk(doc.body.children)
+
+        let entries = gaps.map { gap in
+            [
+                "\"paragraph_index\":\(gap.paragraphIndex)",
+                "\"location\":\"\(Self.jsonEscape(gap.location))\"",
+                "\"gap_position\":\(gap.gapPosition)",
+                "\"gap_length\":\(gap.gapLength)",
+                "\"context_before\":\"\(Self.jsonEscape(gap.contextBefore))\"",
+                "\"context_after\":\"\(Self.jsonEscape(gap.contextAfter))\"",
+                "\"flattened_text\":\"\(Self.jsonEscape(gap.flattenedText))\""
+            ].joined(separator: ",")
+        }.map { "{\($0)}" }
+
+        return "[\(entries.joined(separator: ","))]"
+    }
+
+    private func isLikelyTableCaption(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        return lower.hasPrefix("table ")
+            || lower.hasPrefix("table\t")
+            || trimmed.hasPrefix("表 ")
+            || trimmed.hasPrefix("表\t")
+            || trimmed.hasPrefix("表格")
     }
 
     // 9.4 list_hyperlinks - 列出所有超連結
