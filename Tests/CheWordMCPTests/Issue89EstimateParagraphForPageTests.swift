@@ -69,7 +69,10 @@ final class Issue89EstimateParagraphForPageTests: XCTestCase {
                 "page": .int(0)
             ]
         )
-        XCTAssertTrue(textOf(invalidPage).contains("page must be"))
+        let invalidPageObj = try jsonObject(from: textOf(invalidPage))
+        XCTAssertEqual(invalidPageObj["error"] as? String, "invalid_parameter")
+        XCTAssertEqual(invalidPageObj["field"] as? String, "page")
+        XCTAssertEqual((invalidPageObj["received"] as? NSNumber)?.intValue, 0)
 
         let invalidCalibration = await server.invokeToolForTesting(
             name: "estimate_paragraph_for_page",
@@ -79,7 +82,10 @@ final class Issue89EstimateParagraphForPageTests: XCTestCase {
                 "chars_per_page": .int(0)
             ]
         )
-        XCTAssertTrue(textOf(invalidCalibration).contains("chars_per_page must be"))
+        let invalidCalibrationObj = try jsonObject(from: textOf(invalidCalibration))
+        XCTAssertEqual(invalidCalibrationObj["error"] as? String, "invalid_parameter")
+        XCTAssertEqual(invalidCalibrationObj["field"] as? String, "chars_per_page")
+        XCTAssertEqual((invalidCalibrationObj["received"] as? NSNumber)?.intValue, 0)
     }
 
     // MARK: - Int.max overflow regression (P1 from 6-AI verify)
@@ -87,7 +93,8 @@ final class Issue89EstimateParagraphForPageTests: XCTestCase {
     func testEstimateParagraphForPageRejectsHugePage() async throws {
         // Pre-fix: `(page - 1) * charsPerPage` and `page * charsPerPage` with
         // page = Int.max trapped on arithmetic overflow → MCP server actor
-        // crashed. Post-fix clamps page to 1..100_000.
+        // crashed. Post-fix clamps page to 1..100_000 and returns a structured
+        // invalid_parameter JSON error (#145 unification).
         let url = try docxWithFixedParagraphs(count: 1, charsPerParagraphBeforeBreak: 10)
         defer { try? FileManager.default.removeItem(at: url) }
 
@@ -99,11 +106,12 @@ final class Issue89EstimateParagraphForPageTests: XCTestCase {
                 "page": .int(.max)
             ]
         )
-        let text = textOf(result)
-        XCTAssertTrue(
-            text.contains("page must be") && text.contains("100000"),
-            "expected structured upper-bound rejection, got: \(text)"
-        )
+        let obj = try jsonObject(from: textOf(result))
+        XCTAssertEqual(obj["error"] as? String, "invalid_parameter")
+        XCTAssertEqual(obj["field"] as? String, "page")
+        XCTAssertEqual(obj["reason"] as? String, "must be 1..100000")
+        // received echoes the offending value so an LLM caller can self-correct (#129).
+        XCTAssertEqual((obj["received"] as? NSNumber)?.intValue, .max)
     }
 
     func testEstimateParagraphForPageRejectsHugeCharsPerPage() async throws {
@@ -120,11 +128,10 @@ final class Issue89EstimateParagraphForPageTests: XCTestCase {
                 "chars_per_page": .int(.max)
             ]
         )
-        let text = textOf(result)
-        XCTAssertTrue(
-            text.contains("chars_per_page must be") && text.contains("200000"),
-            "expected structured upper-bound rejection, got: \(text)"
-        )
+        let obj = try jsonObject(from: textOf(result))
+        XCTAssertEqual(obj["error"] as? String, "invalid_parameter")
+        XCTAssertEqual(obj["field"] as? String, "chars_per_page")
+        XCTAssertEqual(obj["reason"] as? String, "must be 1..200000")
     }
 
     func testEstimateParagraphForPageRejectsHugeContextParagraphs() async throws {
@@ -142,11 +149,118 @@ final class Issue89EstimateParagraphForPageTests: XCTestCase {
                 "context_paragraphs": .int(.max)
             ]
         )
-        let text = textOf(result)
-        XCTAssertTrue(
-            text.contains("context_paragraphs must be") && text.contains("1024"),
-            "expected structured upper-bound rejection, got: \(text)"
+        let obj = try jsonObject(from: textOf(result))
+        XCTAssertEqual(obj["error"] as? String, "invalid_parameter")
+        XCTAssertEqual(obj["field"] as? String, "context_paragraphs")
+        XCTAssertEqual(obj["reason"] as? String, "must be 0..1024")
+    }
+
+    // MARK: - Confidence label calibration (#143)
+
+    func testCallerProvidedCharsPerPageGivesHighConfidence() async throws {
+        // Pre-fix: caller-supplied chars_per_page DOWNGRADED confidence to
+        // "low" because layoutBasis switched to "caller_chars_per_page" and
+        // the medium predicate required "section_properties". Inverted —
+        // caller calibration is the most reliable input we have.
+        let url = try docxWithFixedParagraphs(count: 5, charsPerParagraphBeforeBreak: 200)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let server = await WordMCPServer()
+        let result = await server.invokeToolForTesting(
+            name: "estimate_paragraph_for_page",
+            arguments: [
+                "source_path": .string(url.path),
+                "page": .int(1),
+                "chars_per_page": .int(500)
+            ]
         )
+        let obj = try jsonObject(from: textOf(result))
+        XCTAssertEqual(obj["confidence"] as? String, "high")
+        XCTAssertEqual(obj["confidence_reason"] as? String, "caller_provided_chars_per_page")
+        XCTAssertEqual(obj["layout_basis"] as? String, "caller_chars_per_page")
+    }
+
+    func testLongDocumentDefaultHeuristicGivesMediumConfidence() async throws {
+        // 12 paragraphs (>= 10 threshold) on default heuristic → medium.
+        let url = try docxWithFixedParagraphs(count: 12, charsPerParagraphBeforeBreak: 200)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let server = await WordMCPServer()
+        let result = await server.invokeToolForTesting(
+            name: "estimate_paragraph_for_page",
+            arguments: [
+                "source_path": .string(url.path),
+                "page": .int(1)
+            ]
+        )
+        let obj = try jsonObject(from: textOf(result))
+        XCTAssertEqual(obj["confidence"] as? String, "medium")
+        XCTAssertEqual(obj["confidence_reason"] as? String, "default_heuristic_long_doc")
+    }
+
+    func testShortDocumentDefaultHeuristicGivesLowConfidence() async throws {
+        // 3 paragraphs (< 10 threshold) on default heuristic → low.
+        let url = try docxWithFixedParagraphs(count: 3, charsPerParagraphBeforeBreak: 100)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let server = await WordMCPServer()
+        let result = await server.invokeToolForTesting(
+            name: "estimate_paragraph_for_page",
+            arguments: [
+                "source_path": .string(url.path),
+                "page": .int(1)
+            ]
+        )
+        let obj = try jsonObject(from: textOf(result))
+        XCTAssertEqual(obj["confidence"] as? String, "low")
+        XCTAssertEqual(obj["confidence_reason"] as? String, "default_heuristic_short_doc")
+    }
+
+    func testBeyondDocumentRequestKeepsLowConfidence() async throws {
+        // page beyond estimated total → "low" + page_beyond_estimated_document
+        // regardless of layout basis. Caller calibration cannot rescue an
+        // out-of-range page.
+        let url = try docxWithFixedParagraphs(count: 5, charsPerParagraphBeforeBreak: 50)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let server = await WordMCPServer()
+        let result = await server.invokeToolForTesting(
+            name: "estimate_paragraph_for_page",
+            arguments: [
+                "source_path": .string(url.path),
+                "page": .int(99),
+                "chars_per_page": .int(100)
+            ]
+        )
+        let obj = try jsonObject(from: textOf(result))
+        XCTAssertEqual(obj["confidence"] as? String, "low")
+        XCTAssertEqual(obj["confidence_reason"] as? String, "page_beyond_estimated_document")
+        XCTAssertEqual(obj["requested_page_beyond_estimated_document"] as? Bool, true)
+    }
+
+    // MARK: - Empty document path documented (#145)
+
+    func testEmptyDocumentReturnsStructuredErrorWithFullSchema() async throws {
+        // Empty doc still returns method / layout_basis / confidence so callers
+        // can parse uniformly without branching on error key first.
+        let url = try docxWithFixedParagraphs(count: 0, charsPerParagraphBeforeBreak: 0)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let server = await WordMCPServer()
+        let result = await server.invokeToolForTesting(
+            name: "estimate_paragraph_for_page",
+            arguments: [
+                "source_path": .string(url.path),
+                "page": .int(1)
+            ]
+        )
+        let obj = try jsonObject(from: textOf(result))
+        XCTAssertEqual(obj["error"] as? String, "empty_document")
+        XCTAssertEqual(obj["confidence"] as? String, "low")
+        XCTAssertEqual(obj["confidence_reason"] as? String, "empty_document")
+        XCTAssertNotNil(obj["method"])
+        XCTAssertNotNil(obj["layout_basis"])
+        XCTAssertNotNil(obj["warning"])
     }
 
     func testEstimateParagraphForPageSchemaDocumentsHeuristicWarning() throws {

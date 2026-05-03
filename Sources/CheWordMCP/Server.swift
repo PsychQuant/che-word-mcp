@@ -4119,7 +4119,30 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "estimate_paragraph_for_page",
-                description: "估算 Word UI 第 N 頁大約落在哪些 get_paragraphs 段落索引。OOXML 不儲存頁面邊界；此工具使用 section page size / margins 與字元數啟發式估計，回傳 JSON、confidence 與 warning（支援 Direct Mode）。",
+                description: """
+                估算 Word UI 第 N 頁大約落在哪些 get_paragraphs 段落索引（支援 Direct Mode）。
+
+                OOXML 不儲存頁面邊界；此工具用 char-count heuristic + section page size / margins 估計，回傳 JSON 含 estimated_paragraph_range / raw_estimated_paragraph_range / confidence / confidence_reason / warning 等欄位。
+
+                Confidence ladder（confidence + confidence_reason 兩個欄位一起讀）：
+                  - high  / caller_provided_chars_per_page  — caller 提供 chars_per_page，視為 ground truth
+                  - medium / default_heuristic_long_doc      — 預設 heuristic + paragraph_count >= 10
+                  - low   / default_heuristic_short_doc      — 預設 heuristic + 文件較短
+                  - low   / page_beyond_estimated_document   — 請求頁碼超過估算總頁數
+                  - low   / empty_document                   — 文件 0 段落
+
+                錯誤回傳格式（JSON）：
+                  - invalid_parameter — 含 field / reason / received，例如 page > 100000、chars_per_page <= 0、context_paragraphs > 1024
+                  - empty_document    — 文件 0 段落（仍回完整 JSON 含 confidence/method 等欄位，error 標 'empty_document'）
+
+                預設 chars_per_page 推導（內部）：
+                  charsPerLine = max(20, usableWidthTwips / 220)
+                  linesPerPage = max(10, usableHeightTwips / 480)
+                  default = max(400, charsPerLine * linesPerPage)
+                  ≈ A4 default margins → ~1189 chars/page（CJK document 友好）
+                  ≈ US Letter default margins → ~1134 chars/page
+                  英文 IEEE / ACM single-column 約 3000-3500 chars/page，建議用 chars_per_page 校準。
+                """,
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -4133,15 +4156,15 @@ actor WordMCPServer {
                         ]),
                         "page": .object([
                             "type": .string("integer"),
-                            "description": .string("Word UI 頁碼（1-based；page=1 表示第一頁）")
+                            "description": .string("Word UI 頁碼（1-based；page=1 表示第一頁；上限 100000，超過會回 invalid_parameter 防 Int overflow）")
                         ]),
                         "chars_per_page": .object([
                             "type": .string("integer"),
-                            "description": .string("可選校準值。若提供，直接使用此每頁字元數；否則依 section page size / margins 估算。")
+                            "description": .string("可選校準值（範圍 1..200000）。若提供，使用此每頁字元數並升 confidence 為 'high'（caller_provided_chars_per_page）；否則依 section page size / margins 估算（CJK document ≈ 1189，英文 IEEE 建議 ≈ 3000-3500）。")
                         ]),
                         "context_paragraphs": .object([
                             "type": .string("integer"),
-                            "description": .string("可選，向前/向後擴張的段落數（預設 2；設 0 可取得純估計範圍）")
+                            "description": .string("可選，向前/向後擴張的段落數（預設 2，範圍 0..1024；設 0 可取得純估計範圍）")
                         ])
                     ]),
                     "required": .array([.string("page")])
@@ -11571,7 +11594,11 @@ actor WordMCPServer {
         // from triggering Int overflow trap on caller-controlled Int.max input.
         // 100_000 pages exceeds any real document by ~3 orders of magnitude.
         guard page >= 1 && page <= 100_000 else {
-            return "Error: estimate_paragraph_for_page: page must be 1..100000, got \(page)"
+            return try Self.estimateValidationError(
+                field: "page",
+                reason: "must be 1..100000",
+                received: page
+            )
         }
 
         let charsPerPage: Int
@@ -11580,7 +11607,11 @@ actor WordMCPServer {
             // Same overflow concern: page * charsPerPage with charsPerPage=Int.max.
             // 200_000 chars/page is far beyond any plausible single-page density.
             guard override > 0 && override <= 200_000 else {
-                return "Error: estimate_paragraph_for_page: chars_per_page must be 1..200000, got \(override)"
+                return try Self.estimateValidationError(
+                    field: "chars_per_page",
+                    reason: "must be 1..200000",
+                    received: override
+                )
             }
             charsPerPage = override
             layoutBasis = "caller_chars_per_page"
@@ -11593,16 +11624,23 @@ actor WordMCPServer {
         // Upper bound prevents rawStart - contextParagraphs underflow and
         // rawEnd + contextParagraphs overflow on Int.max input.
         guard contextParagraphs >= 0 && contextParagraphs <= 1024 else {
-            return "Error: estimate_paragraph_for_page: context_paragraphs must be 0..1024, got \(contextParagraphs)"
+            return try Self.estimateValidationError(
+                field: "context_paragraphs",
+                reason: "must be 0..1024",
+                received: contextParagraphs
+            )
         }
 
         let paragraphs = doc.getParagraphs()
         guard !paragraphs.isEmpty else {
             return try Self.renderJSONString([
                 "error": "empty_document",
+                "reason": "document has 0 paragraphs",
                 "estimated_paragraph_range": [],
                 "confidence": "low",
+                "confidence_reason": "empty_document",
                 "method": "char_count_heuristic",
+                "layout_basis": layoutBasis,
                 "assumed_chars_per_page": charsPerPage,
                 "warning": Self.pageEstimateWarning,
             ])
@@ -11634,14 +11672,41 @@ actor WordMCPServer {
 
         let startIndex = max(0, rawStart - contextParagraphs)
         let endIndex = min(paragraphs.count - 1, rawEnd + contextParagraphs)
-        let confidence = (!beyondEstimatedDocument && layoutBasis == "section_properties" && paragraphs.count >= 3)
-            ? "medium"
-            : "low"
+
+        // Confidence semantics (see schema description for the full ladder):
+        //
+        //   high   — caller provided a calibrated chars_per_page; we trust their
+        //            ground-truth knowledge of their document over the heuristic.
+        //   medium — default heuristic on section-derived layout with enough
+        //            paragraphs (≥10) to smooth out per-paragraph noise.
+        //   low    — short docs, beyond-document extrapolation, fallback layout,
+        //            or empty document.
+        //
+        // Pre-fix (#143): caller-supplied chars_per_page was DOWNGRADED to "low"
+        // because layoutBasis switched to "caller_chars_per_page", failing the
+        // medium predicate. Inverted semantics — caller calibration is the most
+        // reliable input we have. Fixed: caller-provided is now "high".
+        let confidence: String
+        let confidenceReason: String
+        if beyondEstimatedDocument {
+            confidence = "low"
+            confidenceReason = "page_beyond_estimated_document"
+        } else if layoutBasis == "caller_chars_per_page" {
+            confidence = "high"
+            confidenceReason = "caller_provided_chars_per_page"
+        } else if paragraphs.count >= 10 {
+            confidence = "medium"
+            confidenceReason = "default_heuristic_long_doc"
+        } else {
+            confidence = "low"
+            confidenceReason = "default_heuristic_short_doc"
+        }
 
         return try Self.renderJSONString([
             "estimated_paragraph_range": [startIndex, endIndex],
             "raw_estimated_paragraph_range": [rawStart, rawEnd],
             "confidence": confidence,
+            "confidence_reason": confidenceReason,
             "method": "char_count_heuristic",
             "layout_basis": layoutBasis,
             "page": page,
@@ -11652,6 +11717,25 @@ actor WordMCPServer {
             "context_paragraphs": contextParagraphs,
             "requested_page_beyond_estimated_document": beyondEstimatedDocument,
             "warning": Self.pageEstimateWarning,
+        ])
+    }
+
+    /// Build the structured-JSON validation-error response shared by all
+    /// `estimate_paragraph_for_page` argument guards. Replaces the previous
+    /// plain-text `"Error: estimate_paragraph_for_page: ..."` strings (#145).
+    /// `received` is echoed so an LLM caller can self-correct without guessing
+    /// what it sent (#129 same pattern as PR #115's match_options validators).
+    private static func estimateValidationError(
+        field: String,
+        reason: String,
+        received: Int
+    ) throws -> String {
+        return try renderJSONString([
+            "error": "invalid_parameter",
+            "tool": "estimate_paragraph_for_page",
+            "field": field,
+            "reason": reason,
+            "received": received,
         ])
     }
 
