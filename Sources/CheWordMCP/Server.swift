@@ -11645,6 +11645,126 @@ actor WordMCPServer {
     // OOXML stores content, not rendered page boundaries; this intentionally
     // returns a candidate range with confidence/warning rather than a precise
     // paragraph anchor.
+    /// #142 (v_v2): structural block walker emits typed records for the
+    /// pagination heuristic. Body-paragraph blocks remain the indexable unit
+    /// (so `paragraph_index` semantics across the rest of the MCP API are
+    /// unchanged), but tables / image-only paragraphs / display equation
+    /// paragraphs now contribute their proper visual char weight to the
+    /// heuristic instead of being silently dropped or under-counted.
+    fileprivate enum StructuralBlock {
+        /// Body-stream paragraph (text-bearing, possibly with inline math).
+        /// Maps 1:1 to the `paragraph_index` returned in
+        /// `estimated_paragraph_range`. Char weight = `text.count + 1`.
+        case paragraph(Paragraph)
+
+        /// Table at top level of body. Char weight = `tableRows × avgCellChars`
+        /// (with `200`-per-row fallback for empty tables). NOT a body-stream
+        /// paragraph — does not increment `paragraph_count`.
+        case table(Table)
+
+        /// Body-stream paragraph that contains drawings (`Run.drawing != nil`)
+        /// — visual height much greater than its text content. Counted in
+        /// `paragraph_count` (it IS a body-stream paragraph), but char weight
+        /// gets +200 per drawing on top of the run text.
+        case imageOnlyParagraph(Paragraph, drawingCount: Int)
+
+        /// Body-stream paragraph whose runs are all empty AND whose
+        /// `unrecognizedChildren` carries `<m:oMathPara>` direct-child markup
+        /// (Pandoc display-math pattern, see #99). Counted in
+        /// `paragraph_count`. Char weight = `120` (≈ 1.5 lines under 12pt).
+        case displayEquationParagraph(Paragraph)
+    }
+
+    /// Per-block char weight for the v2 heuristic. Constants calibrated for
+    /// 12pt single-column document layout (matching `estimateCharsPerPage`'s
+    /// `charsPerLine=50` × `linesPerPage=28` ≈ 1400 chars/page baseline).
+    /// Caller can override via `chars_per_page` if their layout differs.
+    fileprivate static let imageCharsPerDrawing = 200       // ~4 lines visual height
+    fileprivate static let displayEquationChars = 120        // ~1.5 lines visual height
+    fileprivate static let emptyTableRowFallbackChars = 200  // for layout-only tables
+
+    fileprivate static func collectStructuralBlocks(from doc: WordDocument) -> [StructuralBlock] {
+        var result: [StructuralBlock] = []
+        for child in doc.body.children {
+            collectStructuralBlocksFrom(child, into: &result)
+        }
+        return result
+    }
+
+    fileprivate static func collectStructuralBlocksFrom(_ child: BodyChild, into result: inout [StructuralBlock]) {
+        switch child {
+        case .paragraph(let para):
+            result.append(classifyParagraph(para))
+        case .table(let table):
+            result.append(.table(table))
+        case .contentControl(_, let children):
+            for c in children { collectStructuralBlocksFrom(c, into: &result) }
+        case .bookmarkMarker, .rawBlockElement:
+            break
+        }
+    }
+
+    /// Classify a body-stream paragraph: pure-text vs. image-bearing vs.
+    /// display-equation. Mutually exclusive: a paragraph with text + drawing
+    /// is `.imageOnlyParagraph` (the drawing weight is additive on top of
+    /// run text), a paragraph that's only `oMathPara` is `.displayEquationParagraph`,
+    /// otherwise `.paragraph`.
+    fileprivate static func classifyParagraph(_ para: Paragraph) -> StructuralBlock {
+        // 1. Display equation heuristic: empty runs + oMathPara in
+        //    unrecognizedChildren (Pandoc display math, see #99).
+        let allRunsEmpty = para.runs.allSatisfy { $0.text.isEmpty }
+        let hasOMathPara = para.unrecognizedChildren.contains { child in
+            child.rawXML.contains("<m:oMathPara") || child.rawXML.contains(":oMathPara")
+        }
+        if allRunsEmpty && hasOMathPara {
+            return .displayEquationParagraph(para)
+        }
+
+        // 2. Image-bearing paragraph: any run carries a drawing
+        let drawingCount = para.runs.reduce(0) { $0 + ($1.drawing != nil ? 1 : 0) }
+        if drawingCount > 0 {
+            return .imageOnlyParagraph(para, drawingCount: drawingCount)
+        }
+
+        // 3. Default: text paragraph
+        return .paragraph(para)
+    }
+
+    /// v2 char-weight calculation per StructuralBlock case. Reuses
+    /// `estimatedLayoutCharacterCount(for: Paragraph)` for the text portion
+    /// of paragraph-bearing cases.
+    fileprivate static func charWeight(for block: StructuralBlock) -> Int {
+        switch block {
+        case .paragraph(let para):
+            return estimatedLayoutCharacterCount(for: para)
+        case .table(let table):
+            return tableCharWeight(table)
+        case .imageOnlyParagraph(let para, let drawingCount):
+            return estimatedLayoutCharacterCount(for: para) + drawingCount * imageCharsPerDrawing
+        case .displayEquationParagraph(_):
+            return displayEquationChars
+        }
+    }
+
+    /// Rough char weight for a table: sum of all cell paragraphs'
+    /// `flattenedDisplayText().count`, with `emptyTableRowFallbackChars`
+    /// fallback per row when cells are empty (e.g. layout-only tables).
+    fileprivate static func tableCharWeight(_ table: Table) -> Int {
+        var total = 0
+        for row in table.rows {
+            var rowChars = 0
+            for cell in row.cells {
+                for cellPara in cell.paragraphs {
+                    let text = cellPara.flattenedDisplayText()
+                    rowChars += max(text.count, 1)  // each non-empty cell para >= 1
+                }
+            }
+            // Fallback for rows where all cells are empty (rare, layout-only)
+            total += rowChars > 0 ? rowChars : emptyTableRowFallbackChars
+        }
+        return total
+    }
+
     private func estimateParagraphForPage(args: [String: Value]) async throws -> String {
         let (doc, _) = try await resolveDocument(args: args)
 
@@ -11680,25 +11800,81 @@ actor WordMCPServer {
             return "Error: estimate_paragraph_for_page: context_paragraphs must be 0..1024, got \(contextParagraphs)"
         }
 
-        let paragraphs = doc.getParagraphs()
-        guard !paragraphs.isEmpty else {
+        // #142: collect structural blocks (text paragraphs + tables + image
+        // paragraphs + display equations). Body-stream paragraphs (everything
+        // except .table) drive paragraph_index/paragraph_count semantics;
+        // tables contribute char weight only.
+        let blocks = Self.collectStructuralBlocks(from: doc)
+
+        // Build the body-paragraph (paragraph-index) list — same set as old
+        // `doc.getParagraphs()`. This preserves estimated_paragraph_range
+        // semantics for callers.
+        var bodyParagraphs: [Paragraph] = []
+        for block in blocks {
+            switch block {
+            case .paragraph(let p), .imageOnlyParagraph(let p, _), .displayEquationParagraph(let p):
+                bodyParagraphs.append(p)
+            case .table:
+                continue  // tables are NOT body-stream paragraphs
+            }
+        }
+
+        guard !bodyParagraphs.isEmpty else {
             return try Self.renderJSONString([
                 "error": "empty_document",
                 "estimated_paragraph_range": [],
                 "confidence": "low",
-                "method": "char_count_heuristic",
+                "method": "char_count_heuristic_v2",
                 "assumed_chars_per_page": charsPerPage,
                 "warning": Self.pageEstimateWarning,
             ])
         }
 
+        // #142: per-paragraph spans align with bodyParagraphs index, but the
+        // cumulative char count walks ALL blocks including tables. When we
+        // hit a `.table`, we add its weight to the running total but do NOT
+        // emit a span (tables are not paragraph-indexable).
+        //
+        // The spans array's ith entry corresponds to bodyParagraphs[i]'s
+        // start/end byte range in the cumulative char stream — including
+        // any tables that came BEFORE it.
         var spans: [(start: Int, end: Int)] = []
         var cumulative = 0
-        for para in paragraphs {
-            let count = Self.estimatedLayoutCharacterCount(for: para)
-            let start = cumulative
-            cumulative += count
-            spans.append((start: start, end: cumulative))
+        // Per-category counters for structural_breakdown
+        var tablesCounted = 0
+        var tablesTotalChars = 0
+        var imageOnlyCount = 0
+        var imageCharsAdded = 0
+        var displayEqCount = 0
+        var equationCharsAdded = 0
+        var pureTextParagraphCount = 0
+
+        for block in blocks {
+            let weight = Self.charWeight(for: block)
+            switch block {
+            case .paragraph:
+                pureTextParagraphCount += 1
+                let start = cumulative
+                cumulative += weight
+                spans.append((start: start, end: cumulative))
+            case .imageOnlyParagraph(_, let drawingCount):
+                imageOnlyCount += 1
+                imageCharsAdded += drawingCount * Self.imageCharsPerDrawing
+                let start = cumulative
+                cumulative += weight
+                spans.append((start: start, end: cumulative))
+            case .displayEquationParagraph:
+                displayEqCount += 1
+                equationCharsAdded += Self.displayEquationChars
+                let start = cumulative
+                cumulative += weight
+                spans.append((start: start, end: cumulative))
+            case .table:
+                tablesCounted += 1
+                tablesTotalChars += weight
+                cumulative += weight
+                // intentionally NO spans.append — tables not paragraph-indexable
+            }
         }
 
         let targetStart = (page - 1) * charsPerPage
@@ -11709,39 +11885,54 @@ actor WordMCPServer {
         let rawStart: Int
         let rawEnd: Int
         if beyondEstimatedDocument {
-            rawStart = paragraphs.count - 1
-            rawEnd = paragraphs.count - 1
+            rawStart = bodyParagraphs.count - 1
+            rawEnd = bodyParagraphs.count - 1
         } else {
-            rawStart = spans.firstIndex { $0.end > targetStart } ?? (paragraphs.count - 1)
+            rawStart = spans.firstIndex { $0.end > targetStart } ?? (bodyParagraphs.count - 1)
             rawEnd = spans.lastIndex { $0.start < targetEnd } ?? rawStart
         }
 
         let startIndex = max(0, rawStart - contextParagraphs)
-        let endIndex = min(paragraphs.count - 1, rawEnd + contextParagraphs)
-        let confidence = (!beyondEstimatedDocument && layoutBasis == "section_properties" && paragraphs.count >= 3)
+        let endIndex = min(bodyParagraphs.count - 1, rawEnd + contextParagraphs)
+        let confidence = (!beyondEstimatedDocument && layoutBasis == "section_properties" && bodyParagraphs.count >= 3)
             ? "medium"
             : "low"
+
+        // #142 structural_breakdown: per-block-type tally so callers can see
+        // what the heuristic counted.
+        let structuralBreakdown: [String: Any] = [
+            "paragraphs_with_text": pureTextParagraphCount,
+            "tables_counted": tablesCounted,
+            "tables_total_chars": tablesTotalChars,
+            "image_only_paragraphs": imageOnlyCount,
+            "image_chars_added": imageCharsAdded,
+            "display_equations": displayEqCount,
+            "equation_chars_added": equationCharsAdded,
+            "estimated_total_chars": cumulative,
+            "char_breakdown_method": "v2_with_structural_weights",
+        ]
 
         return try Self.renderJSONString([
             "estimated_paragraph_range": [startIndex, endIndex],
             "raw_estimated_paragraph_range": [rawStart, rawEnd],
             "confidence": confidence,
-            "method": "char_count_heuristic",
+            "method": "char_count_heuristic_v2",
             "layout_basis": layoutBasis,
             "page": page,
             "assumed_chars_per_page": charsPerPage,
             "estimated_total_pages": estimatedTotalPages,
-            "paragraph_count": paragraphs.count,
+            "paragraph_count": bodyParagraphs.count,
             "total_estimated_chars": cumulative,
             "context_paragraphs": contextParagraphs,
             "requested_page_beyond_estimated_document": beyondEstimatedDocument,
+            "structural_breakdown": structuralBreakdown,
             "warning": Self.pageEstimateWarning,
         ])
     }
 
     private static let pageEstimateWarning = "OOXML does not store page boundaries; this is an estimate based on character density and section page setup. Actual page boundaries depend on rendering, fonts, margins, line spacing, images, tables, and Word layout."
 
-    private static func estimatedLayoutCharacterCount(for paragraph: Paragraph) -> Int {
+    fileprivate static func estimatedLayoutCharacterCount(for paragraph: Paragraph) -> Int {
         let text = paragraph.getText().replacingOccurrences(of: "\n", with: " ")
         // Empty paragraphs still consume vertical space, so count them as a
         // small visible unit plus a paragraph break.

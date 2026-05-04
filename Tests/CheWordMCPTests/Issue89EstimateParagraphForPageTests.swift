@@ -26,7 +26,9 @@ final class Issue89EstimateParagraphForPageTests: XCTestCase {
         let json = try jsonObject(from: textOf(result))
         XCTAssertEqual(intArray(json["estimated_paragraph_range"]), [3, 5])
         XCTAssertEqual(intArray(json["raw_estimated_paragraph_range"]), [3, 5])
-        XCTAssertEqual(json["method"] as? String, "char_count_heuristic")
+        // #142 (v2): method bumped to "char_count_heuristic_v2" with structural weights.
+        // Pure-text fixtures (this test) behave identically — just the version label updated.
+        XCTAssertEqual(json["method"] as? String, "char_count_heuristic_v2")
         XCTAssertEqual(json["layout_basis"] as? String, "caller_chars_per_page")
         XCTAssertEqual(json["assumed_chars_per_page"] as? Int, 300)
         XCTAssertEqual(json["page"] as? Int, 2)
