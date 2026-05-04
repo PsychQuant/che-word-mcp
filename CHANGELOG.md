@@ -5,6 +5,72 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.19.0] - 2026-05-04
+
+### Fixed — `find_inline_math_gaps` caption detection (closes [#136](https://github.com/PsychQuant/che-word-mcp/issues/136))
+
+Two-layer caption detection upgrade. Previous text-only heuristic produced both false negatives (`Figure 1` / `Tab. 1` / `表3-1` / `表　1` / `Caption`-styled body text) AND false positives (`Table reservations are required...` mistaken as caption).
+
+**Layer 1 (primary)**: `Paragraph.style?.lowercased().contains("caption")` — Word's canonical OOXML signal. Catches `Caption` / `ImageCaption` / `TableCaption` etc.
+
+**Layer 2 (fallback)**: 7 English prefixes + 9 CJK prefixes (incl. U+3000 ideographic space) + CJK no-separator regex `^[表圖图]\d` + label-only `表格` / `图表`. Digit-after-prefix guard rejects body sentences like `Table reservations...`.
+
+`isLikelyTableCaption(_ text: String) -> Bool` → `(_ paragraph: Paragraph) -> Bool` (private → internal for `@testable`).
+
+#### Document impact
+
+- 「圖 1.1」「圖 1.2」 → Layer 2 CJK + U+0020 + digit ✓
+- 「表 3.2」 → same path ✓
+- Caption-styled paragraphs without 圖/表 prefix → Layer 1 catches via `style` ✓
+- Body sentences "Table" / "Figure" → Layer 2 digit guard rejects ✓
+
+PR [#157](https://github.com/PsychQuant/che-word-mcp/pull/157) (commit `b40d600`). 17 new tests in `Issue136CaptionDetectionTests.swift`.
+
+### Fixed — `estimate_paragraph_for_page` structural weights v2 (closes [#142](https://github.com/PsychQuant/che-word-mcp/issues/142))
+
+Pre-fix heuristic walked `doc.getParagraphs()` directly, treating each paragraph as `text.count + 1` chars. Three failure modes:
+
+1. Tables silently skipped (`getParagraphs()` has `case .table: break` — correct semantically for paragraph-index purposes, but undercounts vertical space)
+2. Inline images contributed ~2 chars (`flattenedDisplayText()` doesn't walk `Run.drawing`)
+3. Display equations under-counted (OMath transliteration ~10 chars vs visual height 1.5-2 lines)
+
+**Walker upgrade**: new `collectStructuralBlocks()` returning `[StructuralBlock]` enum (`.paragraph` / `.table` / `.imageOnlyParagraph(drawingCount:)` / `.displayEquationParagraph`). Body-paragraph blocks remain the indexable unit (`paragraph_index` semantics preserved).
+
+**Per-block weights** (12pt document calibration):
+- text paragraph: `text.count + 1` (unchanged)
+- table: `tableRows × avgCellChars` (200/row fallback for empty layout-only)
+- image: +200 chars per drawing
+- display equation: 120 chars
+
+**API additions** (additive, non-breaking):
+- New `structural_breakdown` field with 9 sub-fields (paragraphs_with_text / tables_counted / tables_total_chars / image_only_paragraphs / image_chars_added / display_equations / equation_chars_added / estimated_total_chars / char_breakdown_method)
+- `method` field: `"char_count_heuristic"` → `"char_count_heuristic_v2"` (callers can detect upgrade)
+
+#### Document impact (concrete)
+
+| Element | Pre-fix weight | Post-fix weight | Improvement |
+|---|---|---|---|
+| 23 figures | ~50 chars total | ~4600 chars | **~95×** |
+| 14 tables | 0 (silently skipped) | ~1400 chars (cell-precise) | from 0 to detected |
+| 18 display equations | ~10 chars | ~120 chars | ~12× |
+
+Reviewer's "在第14頁，公式不一致" workflow now gets a usable page-to-paragraph mapping on formula-heavy document docs.
+
+PR [#158](https://github.com/PsychQuant/che-word-mcp/pull/158) (commit `0f1bd60`). 6 new tests in `Issue142EstimateParagraphForPageStructuralWeightsTests.swift` + `Issue89` regression check (text-only fixtures unchanged, just `method` literal updated to `_v2`).
+
+#### Backward compatibility
+
+- `getParagraphs()` UNCHANGED — 30+ other callers (paragraph-index family, find_inline_math_gaps, etc.) unaffected
+- `paragraph_count` semantics: still body-paragraph blocks only — `paragraph_index` math invariant preserved
+- `chars_per_page` override path UNCHANGED
+- Pre-existing #266 tests pass unchanged (only `method` literal v1→v2)
+
+### Verification
+
+- `swift build`: clean
+- `swift test`: 289 pass, 9 pre-existing skips, 0 failures
+- 1 P3 follow-up filed: [#159](https://github.com/PsychQuant/che-word-mcp/issues/159) (display-equation fixture limitation, non-blocking)
+
 ## [3.18.1] - 2026-05-03
 
 ### Fixed (transitive) — `search_text` includes inline OMath text content (auto-resolves [#272](https://github.com/PsychQuant/che-word-mcp/issues/272))
