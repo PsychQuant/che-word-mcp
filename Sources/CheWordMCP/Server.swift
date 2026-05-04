@@ -10753,7 +10753,9 @@ actor WordMCPServer {
         func scanParagraph(_ para: Paragraph, paragraphIndex: Int?, location: String) {
             let text = para.flattenedDisplayText()
             guard !text.isEmpty else { return }
-            if excludeTableCaptions && isLikelyTableCaption(text) { return }
+            // #136: pass paragraph (not text) so isLikelyTableCaption can check
+            // Paragraph.properties.style as primary signal, with text-prefix fallback.
+            if excludeTableCaptions && isLikelyTableCaption(para) { return }
 
             let chars = Array(text)
             var i = 0
@@ -10845,14 +10847,96 @@ actor WordMCPServer {
         return "[\(entries.joined(separator: ","))]"
     }
 
-    private func isLikelyTableCaption(_ text: String) -> Bool {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// Detects whether a paragraph is likely a Word caption (Table / Figure / 表 / 圖 / etc.).
+    ///
+    /// Two-layer detection (#136 fix; verify finding from #112):
+    ///
+    /// **Layer 1 — Paragraph.style (primary, ground truth)**: Word's `Caption`
+    /// style is the canonical OOXML signal. Substring match on lowercased
+    /// style name catches `Caption`, `ImageCaption`, `TableCaption`, etc.
+    ///
+    /// **Layer 2 — text prefix (fallback)**: covers paragraphs without
+    /// explicit style attribute (e.g. parsed from imported docx). Expanded
+    /// from 5 to 11 prefix variants to cover Figure / Tab. / Fig. / Listing
+    /// + CJK U+3000 ideographic space + 表数字 / 圖数字 (no separator).
+    ///
+    /// **False-positive guard**: previous text-only impl (`hasPrefix("Table ")`)
+    /// matched body sentences like "Table reservations are required..."
+    /// when no style was set. Layer 1 fires only on style match, so a
+    /// `Heading 1`-styled paragraph beginning with "table" is NOT skipped.
+    ///
+    /// `internal` (not `private`) so `@testable import` tests can exercise
+    /// the heuristic directly without spinning up the full MCP server.
+    internal func isLikelyTableCaption(_ paragraph: Paragraph) -> Bool {
+        // Layer 1: style-based detection (primary)
+        if let style = paragraph.properties.style?.lowercased(),
+           style.contains("caption") {
+            return true
+        }
+
+        // Layer 2: expanded prefix fallback with digit-after-prefix guard
+        //
+        // The digit guard fixes the pre-existing false-positive case where
+        // body sentences starting with "Table " (e.g. "Table reservations are
+        // required..." or "Table of contents") were misidentified as captions.
+        // Real captions virtually always have a number after the prefix:
+        // "Table 1", "Figure 2", "圖 1", "表3-1". Body sentences don't.
+        let trimmed = paragraph.flattenedDisplayText().trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = trimmed.lowercased()
-        return lower.hasPrefix("table ")
-            || lower.hasPrefix("table\t")
-            || trimmed.hasPrefix("表 ")
-            || trimmed.hasPrefix("表\t")
-            || trimmed.hasPrefix("表格")
+
+        // Helper: char immediately after a matched prefix is a digit.
+        func nextCharIsDigit(after prefix: String, in source: String) -> Bool {
+            guard source.count > prefix.count else { return false }
+            let idx = source.index(source.startIndex, offsetBy: prefix.count)
+            return source[idx].isNumber
+        }
+
+        // English caption prefixes (case-insensitive) — require digit follow-up
+        let englishPrefixes = ["table ", "table\t", "figure ", "figure\t", "tab. ", "fig. ", "listing "]
+        for prefix in englishPrefixes where lower.hasPrefix(prefix) {
+            if nextCharIsDigit(after: prefix, in: lower) {
+                return true
+            }
+            // Matched prefix but no digit after → likely body text ("Table of contents",
+            // "Figure shows that..."). Don't return true; fall through to other layers
+            // (none, but be explicit).
+            return false
+        }
+
+        // CJK caption prefixes — separator variants + U+3000 ideographic space
+        // Same digit-after-prefix guard for symmetry.
+        let cjkPrefixes = [
+            "表 ", "表\t", "表\u{3000}",
+            "圖 ", "圖\t", "圖\u{3000}",
+            "图 ", "图\t", "图\u{3000}"
+        ]
+        for prefix in cjkPrefixes where trimmed.hasPrefix(prefix) {
+            if nextCharIsDigit(after: prefix, in: trimmed) {
+                return true
+            }
+            return false
+        }
+
+        // 表格 / 图表 — multi-char CJK forms commonly used as caption labels
+        // (less ambiguous than bare 表 / 圖). Keep accepting these without digit guard.
+        if trimmed.hasPrefix("表格") || trimmed.hasPrefix("图表") {
+            return true
+        }
+
+        // CJK no-separator forms: 表3-1 / 圖1 / 图2.5
+        // Match `^[表圖图]\d` (prefix is one CJK char + digit; covers 表3-1, 圖1.2, 图2;
+        // excludes 表面 / 圖案 / 图案 since second char must be digit).
+        if let firstChar = trimmed.first,
+           "表圖图".contains(firstChar),
+           trimmed.count >= 2 {
+            let secondIndex = trimmed.index(after: trimmed.startIndex)
+            let secondChar = trimmed[secondIndex]
+            if secondChar.isNumber {
+                return true
+            }
+        }
+
+        return false
     }
 
     // 9.4 list_hyperlinks - 列出所有超連結
