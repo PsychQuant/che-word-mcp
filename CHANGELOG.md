@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.20.0] - 2026-05-04
+
+### Added — `splice_omath_from_source` + `splice_paragraph_omath_from_source` MCP tools (closes [#273](https://github.com/PsychQuant/che-word-mcp/issues/273))
+
+Two new MCP tools wrapping ooxml-swift v0.24.0's [`spliceOMath`](https://github.com/PsychQuant/ooxml-swift/issues/211) API for cross-document verbatim copy of `<m:oMath>` XML blocks. Unblocks the <private-repo> Phase 7 inline-math restoration pipeline.
+
+#### `splice_omath_from_source` (single-OMath, low-level)
+
+```typescript
+{
+  // Source side (one of):
+  source_path?: string,        // Direct mode (read-only, opens temporarily)
+  source_doc_id?: string,      // Session mode (already-open doc)
+  source_paragraph_index: number,    // body-paragraph index in source
+
+  // Target side (Session mode required):
+  doc_id: string,
+  target_paragraph_index: number,
+
+  // Splice config:
+  position: "atStart" | "atEnd" | "afterText" | "beforeText",
+  anchor?: string,             // required when position="afterText" / "beforeText"
+  instance?: number,           // 1-based anchor occurrence (default 1)
+  omath_index?: number,        // 0-based, default 0 (joint document-order across both source carriers)
+  rpr_mode?: "full" | "omathOnly" | "discard",  // default "full"
+  namespace_policy?: "lenient" | "strict"        // default "lenient"
+}
+```
+
+Returns `Spliced 1 OMath block (...)` on success or structured `Error: splice_omath_from_source: ...` on failure (covers `sourceHasNoOMath` / `omathIndexOutOfRange` / `targetParagraphOutOfRange` / `anchorNotFound` / `namespaceMismatch`).
+
+#### `splice_paragraph_omath_from_source` (paragraph-level batch, high-level)
+
+Same surface as `splice_omath_from_source` minus `position` / `anchor` / `instance` / `omath_index` — splices ALL OMath blocks from source paragraph in source-document order, auto-deriving anchor for each from ~10 chars of source-text-context. Returns `Spliced N OMath block(s) into target_paragraph_index=K` or `Error: ...: context anchor not found for omath_index=I, snippet='...'` (with partial-success state remaining in target).
+
+#### Tests
+
+`Issue160SpliceOMathFromSourceTests` — 8 cases covering Direct/Session source modes, atEnd / afterText positions, missing-arg / out-of-range / no-OMath errors, batch mode, and rPr `.discard` mode.
+
+#### Dependencies
+
+- ooxml-swift bumped from `0.21.0` → `0.24.0` (required by new splice API)
+- Full suite: 297 tests, 0 failures, 9 pre-existing skips
+
 ## [3.19.0] - 2026-05-04
 
 ### Fixed — `find_inline_math_gaps` caption detection (closes [#136](https://github.com/PsychQuant/che-word-mcp/issues/136))

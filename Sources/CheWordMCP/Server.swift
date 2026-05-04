@@ -5214,6 +5214,102 @@ actor WordMCPServer {
                 ])
             ),
 
+            // 12.1c splice_omath_from_source - 跨 doc 拷貝 verbatim <m:oMath> XML (Refs #273 / ooxml-swift#211)
+            Tool(
+                name: "splice_omath_from_source",
+                description: "v3.20.0+ (Refs #273 / ooxml-swift#211): 跨 document 拷貝 verbatim `<m:oMath>` XML 區塊。從 source paragraph 抽出第 N 個 OMath（按 source-document order，跨 Run.rawXML / unrecognizedChildren 兩種 carrier 統一排序），splice 進 target paragraph 的指定位置。Source 用 `source_path`（直接讀 disk）或 `source_doc_id`（已開啟的 doc）；target 必須是 session-mode `doc_id`。Position 支援 atStart / atEnd / afterText (anchor instance) / beforeText (anchor instance)。`rpr_mode` 控制 source Run rPr 怎麼帶到 target Run（full=verbatim default、omathOnly=白名單 rFonts/sz/lang/bold/italic、discard=空 rPr）。`namespace_policy` 預設 lenient（接受 m: vs mml: prefix 不同但 URI 相同）；strict 任何 prefix 不同就 throw。返回成功 splice 的 OMath 數量（單調 1）。",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("source docx 路徑（Direct mode；read-only）。與 source_doc_id 二擇一。")
+                        ]),
+                        "source_doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("已開啟之 source docx doc_id。與 source_path 二擇一。")
+                        ]),
+                        "source_paragraph_index": .object([
+                            "type": .string("integer"),
+                            "description": .string("source 中的 body-paragraph index（從 0 開始；只計 body.children 中的 .paragraph）")
+                        ]),
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("target doc_id（session mode；必須 already-open）")
+                        ]),
+                        "target_paragraph_index": .object([
+                            "type": .string("integer"),
+                            "description": .string("target 的 body-paragraph index（同 source_paragraph_index 計法）")
+                        ]),
+                        "position": .object([
+                            "type": .string("string"),
+                            "description": .string("splice 位置：'atStart' / 'atEnd' / 'afterText' / 'beforeText'。後兩者需配合 anchor + 可選 instance。")
+                        ]),
+                        "anchor": .object([
+                            "type": .string("string"),
+                            "description": .string("position=afterText/beforeText 時必填。target paragraph 的文字 anchor。")
+                        ]),
+                        "instance": .object([
+                            "type": .string("integer"),
+                            "description": .string("anchor 的第 N 次匹配（1-based，預設 1）")
+                        ]),
+                        "omath_index": .object([
+                            "type": .string("integer"),
+                            "description": .string("source paragraph 中第 N 個 OMath（0-based，預設 0；按 source-document order 跨 carrier 排序）")
+                        ]),
+                        "rpr_mode": .object([
+                            "type": .string("string"),
+                            "description": .string("source Run rPr 傳遞模式：'full'（預設，verbatim copy）、'omathOnly'（白名單 rFonts/sz/lang/bold/italic）、'discard'（空 rPr）")
+                        ]),
+                        "namespace_policy": .object([
+                            "type": .string("string"),
+                            "description": .string("namespace 處理模式：'lenient'（預設，URI 相同就接受）、'strict'（prefix 或 URI 不同就 throw）")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("source_paragraph_index"), .string("target_paragraph_index"), .string("position")])
+                ])
+            ),
+
+            // 12.1d splice_paragraph_omath_from_source - paragraph-level batch (Refs #273 / ooxml-swift#211)
+            Tool(
+                name: "splice_paragraph_omath_from_source",
+                description: "v3.20.0+ (Refs #273 / ooxml-swift#211): paragraph-level batch — 把 source paragraph 內所有 OMath 區塊按 source-document order splice 到 target paragraph 對應位置（內部用 ~10 chars source-text-context 自動推 anchor）。回傳成功 splice 的 OMath 數量。任一 OMath 的 context anchor 在 target 找不到 → throw `contextAnchorNotFound(omath_index, snippet)`，partial-success state 已留在 target paragraph。",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("source docx 路徑（Direct mode；read-only）")
+                        ]),
+                        "source_doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("已開啟之 source docx doc_id")
+                        ]),
+                        "source_paragraph_index": .object([
+                            "type": .string("integer"),
+                            "description": .string("source 中的 body-paragraph index")
+                        ]),
+                        "doc_id": .object([
+                            "type": .string("string"),
+                            "description": .string("target doc_id（session mode；必須 already-open）")
+                        ]),
+                        "target_paragraph_index": .object([
+                            "type": .string("integer"),
+                            "description": .string("target 的 body-paragraph index")
+                        ]),
+                        "rpr_mode": .object([
+                            "type": .string("string"),
+                            "description": .string("rPr 傳遞模式：'full' (預設) / 'omathOnly' / 'discard'")
+                        ]),
+                        "namespace_policy": .object([
+                            "type": .string("string"),
+                            "description": .string("namespace 處理：'lenient' (預設) / 'strict'")
+                        ])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("source_paragraph_index"), .string("target_paragraph_index")])
+                ])
+            ),
+
             // 12.2 insert_cross_reference - 插入交互參照
             Tool(
                 name: "insert_cross_reference",
@@ -6365,6 +6461,10 @@ actor WordMCPServer {
             return try await updateEquationHandler(args: args)
         case "delete_equation":
             return try await deleteEquationHandler(args: args)
+        case "splice_omath_from_source":
+            return try await spliceOMathFromSource(args: args)
+        case "splice_paragraph_omath_from_source":
+            return try await spliceParagraphOMathFromSource(args: args)
         case "insert_cross_reference":
             return try await insertCrossReference(args: args)
         case "insert_table_of_figures":
@@ -9339,6 +9439,159 @@ actor WordMCPServer {
         try await storeDocument(doc, for: docId)
 
         return "Inserted equation (display mode: \(displayMode), \(anchorInfo))"
+    }
+
+    // MARK: - splice_omath_from_source / splice_paragraph_omath_from_source (#273)
+
+    /// Resolve source paragraph from either source_path (Direct mode, read-only)
+    /// or source_doc_id (already-open doc). Returns the Paragraph.
+    private func resolveSourceParagraph(args: [String: Value]) async throws -> Paragraph {
+        guard let sourceParaIdx = args["source_paragraph_index"]?.intValue else {
+            throw WordError.missingParameter("source_paragraph_index")
+        }
+        let sourceDoc: WordDocument
+        if let sourcePath = args["source_path"]?.stringValue {
+            guard FileManager.default.fileExists(atPath: sourcePath) else {
+                throw WordError.fileNotFound(sourcePath)
+            }
+            sourceDoc = try DocxReader.read(from: URL(fileURLWithPath: sourcePath))
+        } else if let sourceDocId = args["source_doc_id"]?.stringValue {
+            guard let opened = openDocuments[sourceDocId] else {
+                throw WordError.documentNotFound(sourceDocId)
+            }
+            sourceDoc = opened
+        } else {
+            throw WordError.missingParameter("source_path or source_doc_id")
+        }
+
+        // Body-paragraph index (counts only `.paragraph` body children)
+        var paraCounter = 0
+        for child in sourceDoc.body.children {
+            if case .paragraph(let p) = child {
+                if paraCounter == sourceParaIdx { return p }
+                paraCounter += 1
+            }
+        }
+        throw WordError.invalidFormat("source_paragraph_index \(sourceParaIdx) out of range (only \(paraCounter) body paragraphs in source)")
+    }
+
+    private func parseRpRMode(_ s: String?) -> OMathSpliceRpRMode {
+        switch s {
+        case "omathOnly": return .omathOnly
+        case "discard":   return .discard
+        default:          return .full  // default + "full"
+        }
+    }
+
+    private func parseNamespacePolicy(_ s: String?) -> OMathSpliceNamespacePolicy {
+        s == "strict" ? .strict : .lenient
+    }
+
+    private func formatSpliceError(_ err: OMathSpliceError, tool: String) -> String {
+        switch err {
+        case .sourceHasNoOMath:
+            return "Error: \(tool): source paragraph contains no OMath blocks"
+        case .omathIndexOutOfRange(let req, let avail):
+            return "Error: \(tool): omath_index \(req) out of range (source has \(avail) OMath block\(avail == 1 ? "" : "s"))"
+        case .targetParagraphOutOfRange(let idx):
+            return "Error: \(tool): target_paragraph_index \(idx) out of range"
+        case .anchorNotFound(let anchor, let instance):
+            return "Error: \(tool): anchor '\(anchor)' not found in target paragraph (instance \(instance))"
+        case .namespaceMismatch(let src, let tgt):
+            return "Error: \(tool): namespace mismatch — source URI '\(src)' vs target URI '\(tgt)'"
+        case .contextAnchorNotFound(let i, let snippet):
+            return "Error: \(tool): context anchor not found for omath_index=\(i), snippet='\(snippet)' (reviewer edit may have changed surrounding prose)"
+        }
+    }
+
+    private func spliceOMathFromSource(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard var target = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+        guard let targetParaIdx = args["target_paragraph_index"]?.intValue else {
+            throw WordError.missingParameter("target_paragraph_index")
+        }
+        guard let positionRaw = args["position"]?.stringValue else {
+            throw WordError.missingParameter("position")
+        }
+
+        let sourcePara = try await resolveSourceParagraph(args: args)
+
+        // Build OMathSplicePosition.
+        let position: OMathSplicePosition
+        let instance = args["instance"]?.intValue ?? 1
+        if instance < 1 {
+            return "Error: splice_omath_from_source: instance must be ≥ 1, got \(instance)"
+        }
+        switch positionRaw {
+        case "atStart":
+            position = .atStart
+        case "atEnd":
+            position = .atEnd
+        case "afterText":
+            guard let anchor = args["anchor"]?.stringValue, !anchor.isEmpty else {
+                return "Error: splice_omath_from_source: position='afterText' requires non-empty 'anchor' argument"
+            }
+            position = .afterText(anchor, instance: instance)
+        case "beforeText":
+            guard let anchor = args["anchor"]?.stringValue, !anchor.isEmpty else {
+                return "Error: splice_omath_from_source: position='beforeText' requires non-empty 'anchor' argument"
+            }
+            position = .beforeText(anchor, instance: instance)
+        default:
+            return "Error: splice_omath_from_source: position must be one of 'atStart' / 'atEnd' / 'afterText' / 'beforeText', got '\(positionRaw)'"
+        }
+
+        let omathIndex = args["omath_index"]?.intValue ?? 0
+        let rPrMode = parseRpRMode(args["rpr_mode"]?.stringValue)
+        let nsPolicy = parseNamespacePolicy(args["namespace_policy"]?.stringValue)
+
+        do {
+            let n = try target.spliceOMath(
+                from: sourcePara,
+                toBodyParagraphIndex: targetParaIdx,
+                position: position,
+                omathIndex: omathIndex,
+                rPrMode: rPrMode,
+                namespacePolicy: nsPolicy
+            )
+            try await storeDocument(target, for: docId)
+            return "Spliced \(n) OMath block (omath_index=\(omathIndex), position=\(positionRaw), rpr_mode=\(args["rpr_mode"]?.stringValue ?? "full"), namespace_policy=\(args["namespace_policy"]?.stringValue ?? "lenient"))"
+        } catch let err as OMathSpliceError {
+            return formatSpliceError(err, tool: "splice_omath_from_source")
+        }
+    }
+
+    private func spliceParagraphOMathFromSource(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard var target = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+        guard let targetParaIdx = args["target_paragraph_index"]?.intValue else {
+            throw WordError.missingParameter("target_paragraph_index")
+        }
+
+        let sourcePara = try await resolveSourceParagraph(args: args)
+        let rPrMode = parseRpRMode(args["rpr_mode"]?.stringValue)
+        let nsPolicy = parseNamespacePolicy(args["namespace_policy"]?.stringValue)
+
+        do {
+            let n = try target.spliceParagraphOMath(
+                from: sourcePara,
+                toBodyParagraphIndex: targetParaIdx,
+                rPrMode: rPrMode,
+                namespacePolicy: nsPolicy
+            )
+            try await storeDocument(target, for: docId)
+            return "Spliced \(n) OMath block(s) into target_paragraph_index=\(targetParaIdx) (rpr_mode=\(args["rpr_mode"]?.stringValue ?? "full"), namespace_policy=\(args["namespace_policy"]?.stringValue ?? "lenient"))"
+        } catch let err as OMathSpliceError {
+            return formatSpliceError(err, tool: "splice_paragraph_omath_from_source")
+        }
     }
 
     // MARK: - Math parsers (insert_equation helpers)
