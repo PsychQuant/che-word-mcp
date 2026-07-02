@@ -13,6 +13,12 @@
 # installs hard-fail. Gate requirement string MUST stay in lockstep with
 # the wrapper's verify_binary() (macdoc plugins/*/bin/*-wrapper.sh).
 #
+# SCOPE HONESTY (verify DA-1): this gate protects releases made THROUGH
+# this script. A manual `gh release upload` bypasses it — the backstops
+# for that path are process discipline and the wrappers' fail-closed
+# install gate (which turns an unsigned asset into a loud install failure
+# rather than a silent compromise).
+#
 # Refs PsychQuant/macdoc#119.
 
 set -euo pipefail
@@ -25,17 +31,23 @@ REQUIREMENT='=anchor apple generic and certificate 1[field.1.2.840.113635.100.6.
 
 VERSION="${1:-}"
 [[ -n "$VERSION" ]] || { echo "usage: scripts/release.sh <version>  (e.g. 0.2.0, no leading v)" >&2; exit 2; }
-[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$ ]] || { echo "error: version '$VERSION' is not semver" >&2; exit 2; }
+[[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] || { echo "error: version '$VERSION' is not semver (MAJOR.MINOR.PATCH[-prerelease], no leading zeros)" >&2; exit 2; }
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 echo "→ [0/7] pre-flight: notary profile alive?"
 xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1 \
     || { echo "error: notary profile '$NOTARY_PROFILE' unusable — run: xcrun notarytool store-credentials $NOTARY_PROFILE (interactive, user-only)" >&2; exit 3; }
-git diff --quiet && git diff --cached --quiet \
-    || { echo "error: working tree not clean — commit or stash first" >&2; exit 3; }
-if git rev-parse "v$VERSION" >/dev/null 2>&1; then
-    echo "error: tag v$VERSION already exists" >&2; exit 3
+[[ -z "$(git status --porcelain)" ]] \
+    || { echo "error: working tree not clean (including untracked files — they could leak into the build) — commit, stash, or clean first" >&2; exit 3; }
+if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null 2>&1; then
+    echo "error: local tag v$VERSION already exists" >&2; exit 3
+fi
+if [[ -n "$(git ls-remote --tags origin "refs/tags/v$VERSION" 2>/dev/null)" ]]; then
+    echo "error: remote tag v$VERSION already exists" >&2; exit 3
+fi
+if gh release view "v$VERSION" --repo "$REPO" >/dev/null 2>&1; then
+    echo "error: release v$VERSION already exists on $REPO" >&2; exit 3
 fi
 
 echo "→ [1/7] universal release build"
@@ -49,8 +61,9 @@ codesign --force --options runtime --timestamp --sign "$DEVELOPER_ID" "$BIN"
 echo "→ [3/7] PRE-UPLOAD SIGNATURE GATE (requirement-based, matches wrapper)"
 codesign --verify --strict -R "$REQUIREMENT" "$BIN" \
     || { echo "error: GATE FAILED — asset is not a Developer ID Application binary of Team 6W377FS7BS; refusing to release (this is the che-word-mcp#165 guard)" >&2; exit 5; }
-lipo -info "$BIN" | grep -q "x86_64 arm64\|arm64 x86_64" \
-    || { echo "error: GATE FAILED — binary is not universal (arm64+x86_64): $(lipo -info "$BIN")" >&2; exit 5; }
+ARCHS=" $(lipo -archs "$BIN" 2>/dev/null) "
+[[ "$ARCHS" == *" arm64 "* && "$ARCHS" == *" x86_64 "* ]] \
+    || { echo "error: GATE FAILED — binary is not universal (need arm64 + x86_64, got:$ARCHS)" >&2; exit 5; }
 
 echo "→ [4/7] notarize (must be Accepted)"
 WORKDIR=$(mktemp -d)
@@ -64,12 +77,15 @@ echo "→ [5/7] sha256 asset"
 cp "$BIN" "$WORKDIR/$BINARY_NAME"
 shasum -a 256 "$WORKDIR/$BINARY_NAME" | awk '{print $1}' > "$WORKDIR/$BINARY_NAME.sha256"
 
-echo "→ [6/7] tag v$VERSION + push"
-git tag "v$VERSION"
-git push origin "v$VERSION"
+echo "→ [6/7] FINAL GATE — re-verify the exact upload artifact (TOCTOU guard)"
+codesign --verify --strict -R "$REQUIREMENT" "$WORKDIR/$BINARY_NAME" \
+    || { echo "error: FINAL GATE FAILED — upload artifact no longer passes the signature requirement (mutated after step 3?)" >&2; exit 5; }
+[[ "$(shasum -a 256 "$WORKDIR/$BINARY_NAME" | awk '{print $1}')" == "$(cat "$WORKDIR/$BINARY_NAME.sha256")" ]] \
+    || { echo "error: FINAL GATE FAILED — sha256 asset does not match upload artifact" >&2; exit 5; }
 
-echo "→ [7/7] gh release create"
+echo "→ [7/7] gh release create (creates tag v$VERSION at HEAD — no pre-pushed tag, so a create failure leaves no dead-end state)"
 gh release create "v$VERSION" --repo "$REPO" \
+    --target "$(git rev-parse HEAD)" \
     --title "v$VERSION" \
     --notes "Developer ID signed + Apple notarized universal binary (arm64 + x86_64). Released via scripts/release.sh (pre-upload signature gate, PsychQuant/macdoc#119)." \
     "$WORKDIR/$BINARY_NAME" "$WORKDIR/$BINARY_NAME.sha256"
