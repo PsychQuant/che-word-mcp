@@ -50,6 +50,20 @@ if gh release view "v$VERSION" --repo "$REPO" >/dev/null 2>&1; then
     echo "error: release v$VERSION already exists on $REPO" >&2; exit 3
 fi
 
+# Script-pipeline parity gate (PsychQuant/macdoc#167). The ungated
+# ScriptPipelineParityTests always run here; the CLI cross-check + JPA
+# coverage parity tests additionally run when their env gates are present.
+# The maintainer's release machine has both MACDOC_TEMPLATE_DIR and a macdoc
+# binary, so on the release path this hard-requires MCP↔CLI parity; a machine
+# without the private template still runs the ungated tests and only warns
+# about the skipped cross-check (loud, never silent — the whole point of #167).
+echo "→ [0.5/7] pre-flight: script-pipeline parity tests"
+if [[ -z "${MACDOC_TEMPLATE_DIR:-}" || -z "${MACDOC_CLI_PATH:-}" ]]; then
+    echo "  ⚠ gated cross-check will SKIP — set MACDOC_TEMPLATE_DIR + MACDOC_CLI_PATH to run the full MCP↔CLI byte-equal parity check (ungated parity tests still run below)." >&2
+fi
+swift test --filter ScriptPipelineParityTests \
+    || { echo "error: script-pipeline parity tests failed — refusing to release a binary whose MCP tools drifted from the CLI" >&2; exit 3; }
+
 echo "→ [1/7] universal release build"
 swift build -c release --arch arm64 --arch x86_64
 BIN=".build/apple/Products/Release/$BINARY_NAME"
