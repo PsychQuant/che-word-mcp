@@ -5972,7 +5972,7 @@ actor WordMCPServer {
                                 "type": .string("object"),
                                 "properties": .object([
                                     "name": .object(["type": .string("string"), "description": .string("slot 名（小寫 Swift identifier）")]),
-                                    "para_id": .object(["type": .string("string"), "description": .string("目標段落的 w14:paraId hex 字串")])
+                                    "para_id": .object(["type": .string("string"), "description": .string("目標段落的 paragraph id（w14:paraId 屬性值，逐字比對——不限 hex 形式）")])
                                 ]),
                                 "required": .array([.string("name"), .string("para_id")])
                             ])

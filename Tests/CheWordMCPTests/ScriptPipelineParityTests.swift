@@ -272,6 +272,156 @@ final class ScriptPipelineParityTests: XCTestCase {
         }
     }
 
+    // MARK: - Verify R1 fixes (#134 findings B1/B2/F1/F5)
+
+    /// B1: `output_path == verify_byte_equal_against` must compare against
+    /// the PRE-write reference bytes — a script that does NOT rebuild the
+    /// reference byte-equal must yield verified:false, never the
+    /// output-vs-output false positive.
+    func testExecuteSamePathVerificationIsNotFalsePositive() throws {
+        let dir = try makeScratch()
+        let reference = dir.appendingPathComponent("target.docx")
+        try makeFiveLayerDocx(at: reference)
+        // A DIFFERENT document's script.
+        var other = WordDocument.emptyAuthoringDocument()
+        try other.apply(operations: [
+            .appendParagraph(in: nil, paragraph: ParagraphPayload(text: "別的內容", paraId: "Q1")),
+        ])
+        let otherDocx = dir.appendingPathComponent("other.docx")
+        try other.writeAuthoringPackage(to: otherDocx)
+        let script = dir.appendingPathComponent("other.mdocx.swift")
+        _ = try scriptPipelineExport(sourcePath: otherDocx.path, outputPath: script.path)
+
+        // Execute the OTHER script with output overwriting the reference,
+        // verifying against that same path.
+        let result = try scriptPipelineExecute(
+            scriptPath: script.path, outputPath: reference.path,
+            verifyAgainst: reference.path)
+        XCTAssertEqual(result.verified, false,
+                       "same-path verification must compare against pre-write bytes")
+        XCTAssertFalse(result.brokenParts.isEmpty)
+    }
+
+    /// B1(b): a mistyped reference path errors BEFORE any output is written.
+    func testExecuteMissingReferenceLeavesNoSideEffect() throws {
+        let dir = try makeScratch()
+        let source = dir.appendingPathComponent("reference.docx")
+        try makeFiveLayerDocx(at: source)
+        let script = dir.appendingPathComponent("ref.mdocx.swift")
+        _ = try scriptPipelineExport(sourcePath: source.path, outputPath: script.path)
+        let output = dir.appendingPathComponent("out.docx")
+
+        XCTAssertThrowsError(try scriptPipelineExecute(
+            scriptPath: script.path, outputPath: output.path,
+            verifyAgainst: dir.appendingPathComponent("typo.docx").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path),
+                       "no output may be written when the reference path is invalid")
+    }
+
+    /// B2: script parse failures surface the transcoder's location-bearing
+    /// reason through the MCP error (task 3.4 contract).
+    func testExecuteScriptToolParseFailureCarriesLocation() async throws {
+        let dir = try makeScratch()
+        let script = dir.appendingPathComponent("broken.mdocx.swift")
+        try "let document = WordDocument {\n    Nonsense(!!)\n}\n"
+            .write(to: script, atomically: true, encoding: .utf8)
+
+        let server = await WordMCPServer()
+        let result = await server.invokeToolForTesting(name: "execute_script", arguments: [
+            "script_path": .string(script.path),
+            "output_path": .string(dir.appendingPathComponent("out.docx").path),
+        ])
+        XCTAssertEqual(result.isError, true)
+        XCTAssertTrue(resultText(result).contains("line"),
+                      "parse error must carry a location; got: \(resultText(result))")
+    }
+
+    /// F1: present-but-mistyped optional params must error, never silently
+    /// degrade (slots as object; verify_byte_equal_against as number).
+    func testMistypedOptionalParamsErrorLoudly() async throws {
+        let dir = try makeScratch()
+        let source = dir.appendingPathComponent("reference.docx")
+        try makeFiveLayerDocx(at: source)
+        let script = dir.appendingPathComponent("out.mdocx.swift")
+
+        let server = await WordMCPServer()
+        let export = await server.invokeToolForTesting(name: "export_script", arguments: [
+            "source_path": .string(source.path),
+            "output_path": .string(script.path),
+            "slots": .object(["name": .string("t"), "para_id": .string("P1")]),  // not an array
+        ])
+        XCTAssertEqual(export.isError, true, "non-array slots must error")
+
+        _ = await server.invokeToolForTesting(name: "export_script", arguments: [
+            "source_path": .string(source.path),
+            "output_path": .string(script.path),
+        ])
+        let exec = await server.invokeToolForTesting(name: "execute_script", arguments: [
+            "script_path": .string(script.path),
+            "output_path": .string(dir.appendingPathComponent("o.docx").path),
+            "verify_byte_equal_against": .int(123),  // not a string
+        ])
+        XCTAssertEqual(exec.isError, true, "non-string verify path must error")
+    }
+
+    /// F5: raw-form op-level slot substitution through the MCP surface —
+    /// the OTHER half of the slot requirement (issue Expected #2). A
+    /// formatted paragraph (rich pPr forces the raw `// @op` escape, text in
+    /// a single-run setRuns) is slotted, substituted, and executed; the new
+    /// text lands while every other part stays byte-equal.
+    func testExecuteScriptToolOpLevelSlotSubstitution() async throws {
+        let dir = try makeScratch()
+        var doc = WordDocument.emptyAuthoringDocument()
+        try doc.apply(operations: [
+            .appendParagraph(in: nil, paragraph: ParagraphPayload(
+                text: "", paraId: "R1",
+                indentFirstLine: 180, indentFirstLineChars: 100,
+                paragraphMarkRun: RunPayload(
+                    text: "", fontAscii: "Times New Roman", sizeHalfPoints: 36))),
+            .setRuns(target: ElementID(rawString: "w14:paraId=R1"), runs: [RunPayload(
+                text: "原文の見出し", bold: true, fontEastAsia: "ＭＳ ゴシック",
+                sizeHalfPoints: 36)]),
+        ])
+        let source = dir.appendingPathComponent("formatted.docx")
+        try doc.writeAuthoringPackage(to: source)
+        let script = dir.appendingPathComponent("slotted.mdocx.swift")
+
+        let server = await WordMCPServer()
+        let export = await server.invokeToolForTesting(name: "export_script", arguments: [
+            "source_path": .string(source.path),
+            "output_path": .string(script.path),
+            "slots": .array([.object([
+                "name": .string("heading"), "para_id": .string("R1"),
+            ])]),
+        ])
+        XCTAssertNotEqual(export.isError, true, resultText(export))
+        var scriptText = try String(contentsOfFile: script.path, encoding: .utf8)
+        XCTAssertTrue(scriptText.contains("// @slot heading R1"),
+                      "raw-form paragraph must take the op-level slot directive")
+
+        scriptText = scriptText.replacingOccurrences(
+            of: "heading: \"原文の見出し\"", with: "heading: \"置換後の見出し\"")
+        try scriptText.write(toFile: script.path, atomically: true, encoding: .utf8)
+
+        let rebuilt = dir.appendingPathComponent("substituted.docx")
+        let exec = await server.invokeToolForTesting(name: "execute_script", arguments: [
+            "script_path": .string(script.path),
+            "output_path": .string(rebuilt.path),
+        ])
+        XCTAssertNotEqual(exec.isError, true, resultText(exec))
+
+        let reference = try RawPartChannel.readAllParts(from: source)
+        let substituted = try RawPartChannel.readAllParts(from: rebuilt)
+        let docXML = String(decoding: substituted["word/document.xml"] ?? Data(), as: UTF8.self)
+        XCTAssertTrue(docXML.contains("置換後の見出し"), "op-level slot text must land")
+        XCTAssertFalse(docXML.contains("原文の見出し"))
+        XCTAssertTrue(docXML.contains("w:firstLineChars=\"100\""),
+                      "raw-form formatting must survive substitution")
+        for (path, bytes) in reference where path != "word/document.xml" {
+            XCTAssertEqual(substituted[path], bytes)
+        }
+    }
+
     // MARK: - Layer 2: gated MCP-vs-CLI cross-check (task 3.5)
 
     /// Spec scenario "Gated cross-check skips loudly" + the cross-check
@@ -342,6 +492,49 @@ final class ScriptPipelineParityTests: XCTestCase {
         let partsCLI = try RawPartChannel.readAllParts(from: rebuiltFromCLI)
         XCTAssertTrue(PartFidelity.stageB(reference: partsMCP, rebuilt: partsCLI),
                       "rebuilds from the two surfaces' scripts must be byte-identical")
+
+        // (3) Slotted exports byte-identical too (#134 verify R1, F6 —
+        //     Expected #3 names reverse → SLOT → rebuild). Pick the first
+        //     op-level-substitutable paragraph (single-run setRuns with
+        //     non-empty text) from the template's log via public APIs.
+        let templateParts = try RawPartChannel.readAllParts(from: template)
+        let log = try ReverseExtractor.reverse(parts: templateParts).log
+        var slotParaId: String?
+        for entry in log.entries {
+            if case .setRuns(let target, let runs) = entry.op,
+               runs.count == 1, !runs[0].text.isEmpty,
+               target.raw.hasPrefix("w14:paraId=") {
+                slotParaId = String(target.raw.dropFirst("w14:paraId=".count))
+                break
+            }
+        }
+        let paraId = try XCTUnwrap(slotParaId, "template must have a slottable paragraph")
+
+        let cliSlotted = dir.appendingPathComponent("cli-slotted.mdocx.swift")
+        let slotProcess = Process()
+        slotProcess.executableURL = URL(fileURLWithPath: cliPath)
+        slotProcess.arguments = ["word", "reverse", template.path,
+                                 "--to-mdocx", cliSlotted.path,
+                                 "--slot", "slot0=\(paraId)"]
+        let slotPipe = Pipe()
+        slotProcess.standardError = slotPipe
+        slotProcess.standardOutput = slotPipe
+        try slotProcess.run()
+        slotProcess.waitUntilExit()
+        XCTAssertEqual(slotProcess.terminationStatus, 0, String(
+            decoding: slotPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self))
+
+        let mcpSlotted = dir.appendingPathComponent("mcp-slotted.mdocx.swift")
+        let slottedExport = await server.invokeToolForTesting(name: "export_script", arguments: [
+            "source_path": .string(template.path),
+            "output_path": .string(mcpSlotted.path),
+            "slots": .array([.object([
+                "name": .string("slot0"), "para_id": .string(paraId),
+            ])]),
+        ])
+        XCTAssertNotEqual(slottedExport.isError, true, resultText(slottedExport))
+        XCTAssertEqual(try Data(contentsOf: cliSlotted), try Data(contentsOf: mcpSlotted),
+                       "slotted exports from the two surfaces must be byte-identical")
     }
 
     /// Without verify_byte_equal_against the verdict is absent (nil), not a
