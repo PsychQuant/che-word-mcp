@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.21.1] - 2026-07-16
+
+### Fixed — 6-AI verify findings (R1 blocking + R2 in-scope; Refs [PsychQuant/macdoc#134](https://github.com/PsychQuant/macdoc/issues/134))
+
+- **execute_script verification integrity**: the reference is now pinned in
+  memory BEFORE the output is written — `output_path ==
+  verify_byte_equal_against` no longer produces a guaranteed-true
+  output-vs-output comparison, and a mistyped reference path errors before
+  any write side effect (R1 B1).
+- **Location-bearing parse errors**: TranscodeError now maps to MCP errors
+  carrying line/column and the transcoder's reason (R1 B2); export-side
+  errors are attributed to the correct parameter (slots vs source_path,
+  R2 #1).
+- **Strict typing on optional params**: present-but-mistyped `slots` /
+  `verify_byte_equal_against` error loudly; explicit JSON null counts as
+  absent (R1 F1, R2 #11). Verdict fields ride the execute response only
+  when verification actually ran (R1 F2).
+- **Deterministic arrays**: coverage parts and broken_parts are sorted at
+  the MCP layer (R2 #5).
+- **Test hardening**: raw-form op-level slot demonstrated through the MCP
+  surface; gated cross-check gains the slot step AND a live CLI --coverage
+  aggregate comparison; part-set-asymmetry regression pins compareParts'
+  union semantics (R1 F5/F6, R2 #2/#4). Suite: 312 tests.
+- **CHANGELOG**: restored the 3.20.0 header eaten during the 3.21.0 entry
+  insertion (R1 B3). Ungated suite count at 3.21.0 release time was 306;
+  the number grew to 312 with the verify-round tests in this release.
+
 ## [3.21.0] - 2026-07-16
 
 ### Added — script-pipeline tools: word-imitation parity with the macdoc CLI (Refs [PsychQuant/macdoc#134](https://github.com/PsychQuant/macdoc/issues/134))
