@@ -5,7 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.20.0] - 2026-05-04
+## [3.21.0] - 2026-07-16
+
+### Added — script-pipeline tools: word-imitation parity with the macdoc CLI (Refs [PsychQuant/macdoc#134](https://github.com/PsychQuant/macdoc/issues/134))
+
+Three MCP tools riding the exact ooxml-swift transcoder code path that
+`macdoc word reverse` uses — parity by construction (zero reimplemented
+transcode logic; Spectra change che-word-mcp-script-pipeline-parity):
+
+- **`export_script`** — docx → full-fidelity `.mdocx.swift` rebuild script
+  (raw byte-equal floor + typed DSL upgrades). Optional strict-mode content
+  slots (`{name, para_id}`): designation failure = tool error naming the
+  slot, no file written.
+- **`get_script_coverage`** — dual-track coverage (per-part DSL/raw channel,
+  bytes, ratio + aggregate), same numbers as the CLI `--coverage` report.
+- **`execute_script`** — script → rebuilt docx, optional Stage-B byte-equal
+  verification against a reference (broken-part list on mismatch).
+
+Two-layer parity guard: ungated in-process export→execute Stage-B test, plus
+a dual-gated cross-check (`MACDOC_TEMPLATE_DIR` + `MACDOC_CLI_PATH`) proving
+MCP and CLI export byte-identical scripts for a real Word template.
+
+### Changed — dependency line: ooxml-swift 0.24 → 1.4.0
+
+Cross-major bump (with word-to-md-swift 0.7.0, latex-math-swift 0.2.0)
+measured empty: zero source changes. Full suite green (306 tests).
+
+
 
 ### Added — `splice_omath_from_source` + `splice_paragraph_omath_from_source` MCP tools (closes [#160](https://github.com/PsychQuant/che-word-mcp/issues/160))
 
