@@ -117,7 +117,7 @@ func scriptPipelineCoverage(sourcePath: String) throws -> ScriptCoverageReport {
     let result = try ReverseExtractor.reverse(parts: parts)
     let report = RawPartChannel.partLevelCoverage(parts: parts, dslParts: result.dslParts)
     return ScriptCoverageReport(
-        parts: report.parts.map { part in
+        parts: report.parts.sorted { $0.partPath < $1.partPath }.map { part in
             ScriptCoverageRow(
                 partPath: part.partPath,
                 channel: part.dslBytes > 0 ? "dsl" : "raw",
@@ -171,6 +171,7 @@ func scriptPipelineExecute(
     let broken = PartFidelity.compareParts(reference: reference, rebuilt: rebuilt)
         .filter { !$0.isEqual }
         .map(\.partPath)
+        .sorted()
     return ScriptExecuteResult(
         written: outputPath, verified: broken.isEmpty, brokenParts: broken)
 }
@@ -194,9 +195,11 @@ extension WordMCPServer {
             throw WordError.missingParameter("output_path")
         }
         var slots: [SlotDesignation] = []
-        if let rawSlotsValue = args["slots"] {
+        if let rawSlotsValue = args["slots"], rawSlotsValue != .null {
             // Strict typing (#134 verify R1, F1): a present-but-mistyped
             // `slots` must error, never silently degrade to "no slots".
+            // Explicit JSON null counts as absent (verify R2 #11), not a
+            // type error.
             guard let rawSlots = rawSlotsValue.arrayValue else {
                 throw WordError.invalidParameter(
                     "slots", "必須是陣列（收到非陣列型別）")
@@ -217,9 +220,13 @@ extension WordMCPServer {
                 sourcePath: sourcePath, outputPath: outputPath, slots: slots)
         } catch let error as TranscodeError {
             // Strict mode: surface the transcoder's location/name-bearing
-            // reason (spec scenario "Strict slot failure surfaces as a tool
-            // error"; B2 mapping for the remaining TranscodeError cases).
-            throw WordError.invalidParameter("slots", describeTranscodeError(error))
+            // reason (B2). Attribution split per verify R2 #1: only a
+            // designation failure is a `slots` problem — any other
+            // TranscodeError came from processing the SOURCE document.
+            if case .slotDesignationFailure = error {
+                throw WordError.invalidParameter("slots", describeTranscodeError(error))
+            }
+            throw WordError.invalidParameter("source_path", describeTranscodeError(error))
         }
         return try scriptPipelineJSON([
             "dsl_parts": summary.dslParts,
@@ -257,7 +264,7 @@ extension WordMCPServer {
         // Strict typing (#134 verify R1, F1): present-but-mistyped
         // verification parameter must error, never silently skip verification.
         var verifyAgainst: String?
-        if let rawVerify = args["verify_byte_equal_against"] {
+        if let rawVerify = args["verify_byte_equal_against"], rawVerify != .null {
             guard let path = rawVerify.stringValue else {
                 throw WordError.invalidParameter(
                     "verify_byte_equal_against", "必須是字串路徑（收到非字串型別）")

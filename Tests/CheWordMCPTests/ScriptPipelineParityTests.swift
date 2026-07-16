@@ -333,7 +333,9 @@ final class ScriptPipelineParityTests: XCTestCase {
         ])
         XCTAssertEqual(result.isError, true)
         XCTAssertTrue(resultText(result).contains("line"),
-                      "parse error must carry a location; got: \(resultText(result))")
+                      "parse error must carry a line; got: \(resultText(result))")
+        XCTAssertTrue(resultText(result).contains("column"),
+                      "parse error must carry a column (verify R2 #7); got: \(resultText(result))")
     }
 
     /// F1: present-but-mistyped optional params must error, never silently
@@ -420,6 +422,42 @@ final class ScriptPipelineParityTests: XCTestCase {
         for (path, bytes) in reference where path != "word/document.xml" {
             XCTAssertEqual(substituted[path], bytes)
         }
+    }
+
+    /// R2 #4: part-set asymmetry must break verification — a reference
+    /// carrying a part the rebuilt package lacks yields verified:false
+    /// (pins compareParts' union semantics in THIS repo's suite, independent
+    /// of content differences on shared parts). Construction: export the
+    /// script FIRST, then append an extra entry into the reference zip.
+    func testExecuteMissingPartBreaksVerification() throws {
+        let dir = try makeScratch()
+        let source = dir.appendingPathComponent("reference.docx")
+        try makeFiveLayerDocx(at: source)
+        let script = dir.appendingPathComponent("ref.mdocx.swift")
+        _ = try scriptPipelineExport(sourcePath: source.path, outputPath: script.path)
+
+        // Append an extra XML part to the reference AFTER export — the
+        // rebuilt package cannot contain it.
+        let extraDir = dir.appendingPathComponent("customXml", isDirectory: true)
+        try FileManager.default.createDirectory(at: extraDir, withIntermediateDirectories: true)
+        try "<extra/>".write(to: extraDir.appendingPathComponent("extra.xml"),
+                             atomically: true, encoding: .utf8)
+        let zip = Process()
+        zip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        zip.currentDirectoryURL = dir
+        zip.arguments = ["-q", source.lastPathComponent, "customXml/extra.xml"]
+        try zip.run()
+        zip.waitUntilExit()
+        XCTAssertEqual(zip.terminationStatus, 0)
+
+        let result = try scriptPipelineExecute(
+            scriptPath: script.path,
+            outputPath: dir.appendingPathComponent("out.docx").path,
+            verifyAgainst: source.path)
+        XCTAssertEqual(result.verified, false,
+                       "a reference part missing from the rebuild must break Stage-B verification")
+        XCTAssertTrue(result.brokenParts.contains("customXml/extra.xml"),
+                      "broken parts must name the asymmetric part; got \(result.brokenParts)")
     }
 
     // MARK: - Layer 2: gated MCP-vs-CLI cross-check (task 3.5)
@@ -535,6 +573,39 @@ final class ScriptPipelineParityTests: XCTestCase {
         XCTAssertNotEqual(slottedExport.isError, true, resultText(slottedExport))
         XCTAssertEqual(try Data(contentsOf: cliSlotted), try Data(contentsOf: mcpSlotted),
                        "slotted exports from the two surfaces must be byte-identical")
+
+        // (4) Coverage aggregate vs the LIVE CLI --coverage report (verify
+        //     R2 #2 — no more reliance on the documented 0.535 literal).
+        let covScript = dir.appendingPathComponent("cov.mdocx.swift")
+        let covProcess = Process()
+        covProcess.executableURL = URL(fileURLWithPath: cliPath)
+        covProcess.arguments = ["word", "reverse", template.path,
+                                "--to-mdocx", covScript.path, "--coverage"]
+        let covPipe = Pipe()
+        covProcess.standardOutput = covPipe
+        covProcess.standardError = Pipe()
+        try covProcess.run()
+        let covData = covPipe.fileHandleForReading.readDataToEndOfFile()
+        covProcess.waitUntilExit()
+        XCTAssertEqual(covProcess.terminationStatus, 0)
+        let covOut = String(decoding: covData, as: UTF8.self)
+        // "--- Aggregate: 53.5% DSL (71771 / 134050 XML bytes across 13 parts) ---"
+        let fraction = try XCTUnwrap(
+            covOut.components(separatedBy: "(").last?
+                .components(separatedBy: " XML bytes").first,
+            "CLI coverage output must carry the byte fraction; got: \(covOut)")
+        let numbers = fraction.components(separatedBy: " / ").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+        XCTAssertEqual(numbers.count, 2, "unexpected fraction shape: \(fraction)")
+        let cliAggregate = Double(numbers[0]) / Double(numbers[1])
+
+        let coverage = await server.invokeToolForTesting(name: "get_script_coverage", arguments: [
+            "source_path": .string(template.path),
+        ])
+        let covJSON = try XCTUnwrap(try JSONSerialization.jsonObject(
+            with: Data(resultText(coverage).utf8)) as? [String: Any])
+        let mcpAggregate = try XCTUnwrap(covJSON["aggregate_ratio"] as? Double)
+        XCTAssertEqual(mcpAggregate, cliAggregate, accuracy: 1e-9,
+                       "MCP aggregate must equal the live CLI aggregate")
     }
 
     /// Without verify_byte_equal_against the verdict is absent (nil), not a
