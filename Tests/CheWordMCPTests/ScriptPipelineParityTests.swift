@@ -490,8 +490,12 @@ final class ScriptPipelineParityTests: XCTestCase {
         process.standardError = pipe
         process.standardOutput = pipe
         try process.run()
-        process.waitUntilExit()
+        // Drain the pipe BEFORE waitUntilExit (verify R2 #6): if the CLI's
+        // combined stdout+stderr exceeds the pipe buffer (~64KB), the child
+        // blocks on write while we block on waitUntilExit → deadlock.
+        // readDataToEndOfFile drains to EOF (child death), then wait reaps.
         let cliOutput = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
         XCTAssertEqual(process.terminationStatus, 0, "CLI export failed: \(cliOutput)")
 
         // MCP surface: export_script.
@@ -558,9 +562,10 @@ final class ScriptPipelineParityTests: XCTestCase {
         slotProcess.standardError = slotPipe
         slotProcess.standardOutput = slotPipe
         try slotProcess.run()
+        let slotOutput = String(  // drain before wait (verify R2 #6, deadlock-safe)
+            decoding: slotPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         slotProcess.waitUntilExit()
-        XCTAssertEqual(slotProcess.terminationStatus, 0, String(
-            decoding: slotPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self))
+        XCTAssertEqual(slotProcess.terminationStatus, 0, slotOutput)
 
         let mcpSlotted = dir.appendingPathComponent("mcp-slotted.mdocx.swift")
         let slottedExport = await server.invokeToolForTesting(name: "export_script", arguments: [
