@@ -33,6 +33,8 @@ measured empty: zero source changes. Full suite green (306 tests).
 
 
 
+## [3.20.0] - 2026-05-04
+
 ### Added — `splice_omath_from_source` + `splice_paragraph_omath_from_source` MCP tools (closes [#160](https://github.com/PsychQuant/che-word-mcp/issues/160))
 
 Two new MCP tools wrapping ooxml-swift v0.24.0's [`spliceOMath`](https://github.com/PsychQuant/ooxml-swift/issues/57) API for cross-document verbatim copy of `<m:oMath>` XML blocks. Unblocks the kiki830621/collaboration_guo_analysis Phase 7 inline-math restoration pipeline.
