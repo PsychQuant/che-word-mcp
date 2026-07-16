@@ -5946,6 +5946,78 @@ actor WordMCPServer {
                     ]),
                     "required": .array([.string("doc_id")])
                 ])
+            ),
+
+            // Spectra change che-word-mcp-script-pipeline-parity (task 3.2) —
+            // script-pipeline tools ride the exact CLI transcoder code path
+            // (handlers in ScriptPipelineTools.swift, design Decision 1/5).
+            Tool(
+                name: "export_script",
+                description: "docx → full-fidelity .mdocx.swift 重建腳本（與 macdoc word reverse 同一條 transcoder code path：raw byte-equal floor + typed DSL 升級）。可選 slots 指定具名內容槽（strict mode：指定失敗即錯誤、不寫檔）。回傳 JSON summary（dsl_parts / form_gaps_empty / slot_count / output_path）。",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("來源 .docx 路徑")
+                        ]),
+                        "output_path": .object([
+                            "type": .string("string"),
+                            "description": .string("輸出 .mdocx.swift 路徑（已存在則覆寫）")
+                        ]),
+                        "slots": .object([
+                            "type": .string("array"),
+                            "description": .string("具名內容 slot 指定（strict mode，不推斷）"),
+                            "items": .object([
+                                "type": .string("object"),
+                                "properties": .object([
+                                    "name": .object(["type": .string("string"), "description": .string("slot 名（小寫 Swift identifier）")]),
+                                    "para_id": .object(["type": .string("string"), "description": .string("目標段落的 w14:paraId hex 字串")])
+                                ]),
+                                "required": .array([.string("name"), .string("para_id")])
+                            ])
+                        ])
+                    ]),
+                    "required": .array([.string("source_path"), .string("output_path")])
+                ])
+            ),
+
+            Tool(
+                name: "get_script_coverage",
+                description: "docx 的 dual-track 覆蓋率報告（與 macdoc word reverse --coverage 同數字）：每個 XML part 的 DSL/raw channel、位元組數、DSL ratio，加 aggregate。回傳 JSON。",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("來源 .docx 路徑")
+                        ])
+                    ]),
+                    "required": .array([.string("source_path")])
+                ])
+            ),
+
+            Tool(
+                name: "execute_script",
+                description: ".mdocx.swift 重建腳本 → docx（ScriptImporter 同一條 code path）。可選 verify_byte_equal_against 對照參考檔做 Stage-B byte-equal 驗證，回傳 verdict 與 broken_parts。回傳 JSON（written / verified? / broken_parts）。",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "script_path": .object([
+                            "type": .string("string"),
+                            "description": .string(".mdocx.swift 腳本路徑")
+                        ]),
+                        "output_path": .object([
+                            "type": .string("string"),
+                            "description": .string("輸出 .docx 路徑（已存在則覆寫）")
+                        ]),
+                        "verify_byte_equal_against": .object([
+                            "type": .string("string"),
+                            "description": .string("參考 .docx 路徑；提供時對 rebuilt XML part set 做 Stage-B byte-equal 驗證")
+                        ])
+                    ]),
+                    "required": .array([.string("script_path"), .string("output_path")])
+                ])
             )
         ]
     }
@@ -6515,6 +6587,14 @@ actor WordMCPServer {
             return try await checkpoint(args: args)
         case "recover_from_autosave":
             return try await recoverFromAutosave(args: args)
+
+        // Script-pipeline tools (che-word-mcp-script-pipeline-parity)
+        case "export_script":
+            return try await exportScriptTool(args: args)
+        case "get_script_coverage":
+            return try await getScriptCoverageTool(args: args)
+        case "execute_script":
+            return try await executeScriptTool(args: args)
 
         default:
             throw WordError.unknownTool(name)
