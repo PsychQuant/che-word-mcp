@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **insert_watermark actually inserts a watermark**: the tool was a stub that
+  returned `"Watermark inserted: …"` without touching the document (reported
+  against an engine-built docx with `footer1.xml` but no `header*.xml`; the
+  saved archive contained no header part and no watermark text anywhere).
+  It now writes Word's own VML WordArt watermark (`PowerPlusWaterMarkObject`
+  textpath shape, `o:spt="136"`) into the default page header, honoring the
+  `font` / `color` / `size` / `semitransparent` / `rotation` parameters:
+  - **Existing default header**: the watermark paragraph (self-contained
+    inline xmlns declarations) is appended to the header's typed
+    `bodyChildren` and the part is re-emitted on save.
+  - **No header part** (source-loaded doc): the header is created and wired
+    surgically in the preserved archive — relationship in
+    `word/_rels/document.xml.rels`, Override in `[Content_Types].xml`, and
+    `<w:headerReference>` inserted into the existing body-level `<w:sectPr>`
+    in place — BEFORE the typed Header is registered, so DocxWriter's
+    overlay gates stay closed and the source rels/Content_Types are
+    preserved verbatim (the typed rels rebuild hardcodes rId1-3 and drops or
+    remaps source `styles.xml` / `numbering.xml` relationships).
+  - A second insert refuses with an error instead of stacking duplicate
+    shapes; `remove_watermark` first.
+- **remove_watermark actually removes**: previously a stub returning
+  `"Watermark removed"` unconditionally. Now strips watermark paragraphs
+  from every header (typed raw-block watermarks and source-parsed
+  `w:pict` runs), and errors honestly when no watermark exists.
+- **insert_image_watermark honest error**: previously returned
+  `"Image watermark inserted"` while writing nothing. Now returns a
+  not-implemented error until media-part plumbing exists.
+- **sectPr no longer collapses to defaults on typed re-emission**:
+  `open_document` now hydrates `sectionProperties` (header/footer references
+  incl. first/even, page size + orientation, margins, columns, titlePg,
+  section break type, pgNumType, vAlign, line numbers, docGrid) from the
+  source body-level `<w:sectPr>`. DocxReader leaves these at defaults
+  (documented library stub), so any typed re-emission of `word/document.xml`
+  — `insert_paragraph`, `add_header`, … — silently dropped the source's
+  footer reference, custom margins, and page geometry. Regression:
+  `SectPrPreservationProbeTests`, `WatermarkInsertRegressionTests`.
+
 ## [3.21.1] - 2026-07-16
 
 ### Fixed — 6-AI verify findings (R1 blocking + R2 in-scope; Refs [PsychQuant/macdoc#134](https://github.com/PsychQuant/macdoc/issues/134))

@@ -6648,6 +6648,134 @@ actor WordMCPServer {
         return "Created new document with id: \(docId). Track changes is enabled by default."
     }
 
+    /// Extract `attr="value"` from an XML element string. Returns nil when absent.
+    private func xmlAttr(_ element: String, _ attr: String) -> String? {
+        let pattern = "\\b\(NSRegularExpression.escapedPattern(for: attr))=\"([^\"]*)\""
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let ns = element as NSString
+        guard let m = regex.firstMatch(in: element, range: NSRange(location: 0, length: ns.length)),
+              m.numberOfRanges >= 2 else { return nil }
+        return ns.substring(with: m.range(at: 1))
+    }
+
+    private func xmlIntAttr(_ element: String, _ attr: String) -> Int? {
+        return xmlAttr(element, attr).flatMap { Int($0) }
+    }
+
+    /// First match of `pattern` (whole-match capture) in `xml`, or nil.
+    private func firstXMLElement(_ xml: String, _ pattern: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else { return nil }
+        let ns = xml as NSString
+        guard let m = regex.firstMatch(in: xml, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        return ns.substring(with: m.range)
+    }
+
+    /// Populate `doc.sectionProperties` from the source document.xml's
+    /// body-level `<w:sectPr>`. DocxReader currently skips sectPr entirely
+    /// (typed model keeps `SectionProperties()` defaults), so without this any
+    /// typed re-emission of word/document.xml — insert_paragraph, add_header,
+    /// insert_watermark, … — rebuilds sectPr from defaults and silently drops
+    /// the source's headerReference/footerReference, custom margins, page
+    /// size/orientation, titlePg, etc. Hydration limits the loss to fields the
+    /// typed model cannot represent (footnotePr, rsid attrs, exotic children).
+    private func hydrateSectionProperties(into doc: inout WordDocument) {
+        guard let archiveTempDir = doc.archiveTempDir,
+              let xml = try? String(
+                contentsOf: archiveTempDir.appendingPathComponent("word/document.xml"),
+                encoding: .utf8) else { return }
+        // Body-level sectPr is the LAST sectPr in the document (mid-document
+        // section breaks live earlier, inside w:pPr).
+        guard let regex = try? NSRegularExpression(
+            pattern: #"<w:sectPr[\s>].*?</w:sectPr>|<w:sectPr/>"#,
+            options: [.dotMatchesLineSeparators]) else { return }
+        let ns = xml as NSString
+        let matches = regex.matches(in: xml, range: NSRange(location: 0, length: ns.length))
+        guard let last = matches.last else { return }
+        let sectPr = ns.substring(with: last.range)
+
+        var props = doc.sectionProperties
+
+        // Header / footer references by type.
+        if let refRegex = try? NSRegularExpression(
+            pattern: #"<w:(headerReference|footerReference)\b[^>]*/?>"#) {
+            let sp = sectPr as NSString
+            for m in refRegex.matches(in: sectPr, range: NSRange(location: 0, length: sp.length)) {
+                let el = sp.substring(with: m.range)
+                guard let rId = xmlAttr(el, "r:id") else { continue }
+                let type = xmlAttr(el, "w:type") ?? "default"
+                let isHeader = el.contains("headerReference")
+                switch (isHeader, type) {
+                case (true, "first"): props.headerReferences.firstRef = rId
+                case (true, "even"): props.headerReferences.evenRef = rId
+                case (true, _):
+                    props.headerReferences.defaultRef = rId
+                    props.headerReference = rId
+                case (false, "first"): props.footerReferences.firstRef = rId
+                case (false, "even"): props.footerReferences.evenRef = rId
+                case (false, _):
+                    props.footerReferences.defaultRef = rId
+                    props.footerReference = rId
+                }
+            }
+        }
+
+        if let pgSz = firstXMLElement(sectPr, #"<w:pgSz\b[^>]*/?>"#) {
+            if let w = xmlIntAttr(pgSz, "w:w"), let h = xmlIntAttr(pgSz, "w:h") {
+                props.pageSize = PageSize(width: w, height: h)
+            }
+            props.orientation = xmlAttr(pgSz, "w:orient") == "landscape" ? .landscape : .portrait
+        }
+        if let pgMar = firstXMLElement(sectPr, #"<w:pgMar\b[^>]*/?>"#) {
+            var m = props.pageMargins
+            if let v = xmlIntAttr(pgMar, "w:top") { m.top = v }
+            if let v = xmlIntAttr(pgMar, "w:right") { m.right = v }
+            if let v = xmlIntAttr(pgMar, "w:bottom") { m.bottom = v }
+            if let v = xmlIntAttr(pgMar, "w:left") { m.left = v }
+            if let v = xmlIntAttr(pgMar, "w:header") { m.header = v }
+            if let v = xmlIntAttr(pgMar, "w:footer") { m.footer = v }
+            if let v = xmlIntAttr(pgMar, "w:gutter") { m.gutter = v }
+            props.pageMargins = m
+        }
+        if let cols = firstXMLElement(sectPr, #"<w:cols\b[^>]*/?>"#),
+           let num = xmlIntAttr(cols, "w:num") {
+            props.columns = num
+        }
+        if sectPr.contains("<w:titlePg") {
+            props.titlePageDistinct = true
+        }
+        if let type = firstXMLElement(sectPr, #"<w:type\b[^>]*/?>"#),
+           let val = xmlAttr(type, "w:val"),
+           let breakType = SectionBreakType(rawValue: val) {
+            props.sectionBreakType = breakType
+        }
+        if let pgNum = firstXMLElement(sectPr, #"<w:pgNumType\b[^>]*/?>"#) {
+            if let fmt = xmlAttr(pgNum, "w:fmt"),
+               let format = SectionPageNumberFormat(rawValue: fmt) {
+                props.pageNumberFormat = format
+                props.pageNumberStartValue = xmlIntAttr(pgNum, "w:start")
+            }
+        }
+        if let vAlign = firstXMLElement(sectPr, #"<w:vAlign\b[^>]*/?>"#),
+           let val = xmlAttr(vAlign, "w:val"),
+           let alignment = SectionVerticalAlignment(rawValue: val) {
+            props.verticalAlignment = alignment
+        }
+        if let ln = firstXMLElement(sectPr, #"<w:lnNumType\b[^>]*/?>"#),
+           let countBy = xmlIntAttr(ln, "w:countBy") {
+            let restart = xmlAttr(ln, "w:restart")
+                .flatMap { LineNumberRestart(rawValue: $0) } ?? .continuous
+            props.lineNumbers = LineNumbers(
+                countBy: countBy, start: xmlIntAttr(ln, "w:start"), restart: restart)
+        }
+        if let grid = firstXMLElement(sectPr, #"<w:docGrid\b[^>]*/?>"#),
+           let linePitch = xmlIntAttr(grid, "w:linePitch") {
+            props.docGrid = DocumentGrid(
+                linePitch: linePitch, charSpace: xmlIntAttr(grid, "w:charSpace"))
+        }
+
+        doc.sectionProperties = props
+    }
+
     private func openDocument(args: [String: Value]) async throws -> String {
         guard let path = args["path"]?.stringValue else {
             throw WordError.missingParameter("path")
@@ -6668,6 +6796,13 @@ actor WordMCPServer {
 
         let url = URL(fileURLWithPath: path)
         var doc = try DocxReader.read(from: url)
+        // DocxReader leaves `sectionProperties` at defaults (sectPr tree-walking
+        // is a documented library stub). Any later typed re-emission of
+        // word/document.xml would then rebuild <w:sectPr> from defaults,
+        // silently dropping the source's header/footer references, margins,
+        // page size, etc. Hydrate the typed model from the source sectPr so
+        // re-emission round-trips the fields the model can represent.
+        hydrateSectionProperties(into: &doc)
         if trackChanges && !doc.isTrackChangesEnabled() {
             doc.enableTrackChanges(author: defaultRevisionAuthor)
         }
@@ -13345,6 +13480,218 @@ actor WordMCPServer {
     // MARK: - Phase 2: 浮水印與文件保護
 
     /// 插入文字浮水印
+    /// Escape a string for use inside a double-quoted XML attribute value.
+    private func xmlAttrEscape(_ s: String) -> String {
+        return s
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+    }
+
+    /// Build the VML WordArt watermark paragraph — the same mechanism Word's
+    /// Insert > Watermark uses: a `v:textpath` shape (`o:spt="136"`) in the
+    /// page header, centered on the page. Namespaces are declared inline on
+    /// `<w:p>` so the paragraph is self-contained regardless of which xmlns
+    /// declarations the header's `<w:hdr>` root carries.
+    private func watermarkParagraphXML(
+        text: String, font: String, color: String, size: Int,
+        semitransparent: Bool, rotation: Int
+    ) -> String {
+        // Word expresses the diagonal watermark as rotation:315 (== -45).
+        let cssRotation = ((rotation % 360) + 360) % 360
+        let rotationStyle = cssRotation == 0 ? "" : ";rotation:\(cssRotation)"
+        // Known-good geometry (Word's own auto-size for a 72pt-class watermark
+        // on Letter). `fitshape` scales the text to the shape, so `size`
+        // scales the shape box relative to that 72pt baseline.
+        let factor = Double(max(size, 1)) / 72.0
+        let width = String(format: "%.2f", 527.85 * factor)
+        let height = String(format: "%.2f", 131.95 * factor)
+        let fill = color.hasPrefix("#") ? color : "#\(color)"
+        let fillXML = semitransparent ? "<v:fill opacity=\".5\"/>" : ""
+        let escText = xmlAttrEscape(text)
+        let escFont = xmlAttrEscape(font)
+        let escFill = xmlAttrEscape(fill)
+        return """
+        <w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" \
+        xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" \
+        xmlns:v="urn:schemas-microsoft-com:vml" \
+        xmlns:o="urn:schemas-microsoft-com:office:office">\
+        <w:pPr><w:pStyle w:val="Header"/></w:pPr>\
+        <w:r><w:rPr><w:noProof/></w:rPr><w:pict>\
+        <v:shapetype id="_x0000_t136" coordsize="21600,21600" o:spt="136" adj="10800" \
+        path="m@7,l@8,m@5,21600l@6,21600e">\
+        <v:formulas>\
+        <v:f eqn="sum #0 0 10800"/>\
+        <v:f eqn="prod #0 2 1"/>\
+        <v:f eqn="sum 21600 0 @1"/>\
+        <v:f eqn="sum 0 0 @2"/>\
+        <v:f eqn="sum 21600 0 @3"/>\
+        <v:f eqn="if @0 @3 0"/>\
+        <v:f eqn="if @0 21600 @1"/>\
+        <v:f eqn="if @0 0 @2"/>\
+        <v:f eqn="if @0 @4 21600"/>\
+        <v:f eqn="mid @5 @6"/>\
+        <v:f eqn="mid @8 @5"/>\
+        <v:f eqn="mid @7 @8"/>\
+        <v:f eqn="mid @6 @7"/>\
+        <v:f eqn="sum @6 0 @5"/>\
+        </v:formulas>\
+        <v:path textpathok="t" o:connecttype="custom" \
+        o:connectlocs="@9,0;@10,10800;@11,21600;@12,10800" \
+        o:connectangles="270,180,90,0"/>\
+        <v:textpath on="t" fitshape="t"/>\
+        <v:handles><v:h position="#0,bottomRight" xrange="6629,14971"/></v:handles>\
+        <o:lock v:ext="edit" text="t" shapetype="t"/>\
+        </v:shapetype>\
+        <v:shape id="PowerPlusWaterMarkObject1" o:spid="_x0000_s2049" type="#_x0000_t136" \
+        style="position:absolute;margin-left:0;margin-top:0;width:\(width)pt;height:\(height)pt\(rotationStyle);z-index:-251654144;mso-position-horizontal:center;mso-position-horizontal-relative:margin;mso-position-vertical:center;mso-position-vertical-relative:margin" \
+        o:allowincell="f" fillcolor="\(escFill)" stroked="f">\
+        \(fillXML)\
+        <v:textpath style="font-family:&quot;\(escFont)&quot;;font-size:1pt" string="\(escText)"/>\
+        </v:shape>\
+        </w:pict></w:r></w:p>
+        """
+    }
+
+    /// Watermark fingerprint check on a typed header's bodyChildren (covers
+    /// both watermarks we appended as `.rawBlockElement` and source-loaded
+    /// watermarks captured as `w:pict` raw elements inside parsed runs).
+    private func typedHeaderHasWatermark(_ header: Header) -> Bool {
+        for child in header.bodyChildren {
+            switch child {
+            case .rawBlockElement(let raw):
+                if headerHasWatermark(raw.xml) { return true }
+            case .paragraph(let para):
+                for run in para.runs {
+                    for raw in run.rawElements ?? [] where headerHasWatermark(raw.xml) {
+                        return true
+                    }
+                }
+            default:
+                continue
+            }
+        }
+        return false
+    }
+
+    /// Create and wire a new default header carrying the watermark for a
+    /// source-loaded document that has no header part.
+    ///
+    /// The wiring (relationship, Content_Types Override, sectPr
+    /// headerReference) is patched surgically into the preserved archive
+    /// BEFORE the typed Header is registered. Order matters: with the rId and
+    /// part pre-declared in the archive files, DocxWriter's overlay gates
+    /// (`hasNewTypedRelationships` / `hasNewTypedParts`) stay false, so the
+    /// writer preserves the source rels/[Content_Types].xml verbatim instead
+    /// of rebuilding them from the typed model (a rebuild drops source
+    /// relationships the typed model doesn't track — styles.xml,
+    /// numbering.xml, stylesWithEffects.xml…). document.xml is likewise
+    /// patched in place (headerReference inserted into the existing sectPr)
+    /// so rsid attributes and unmodeled sectPr children survive.
+    ///
+    /// The header PART itself is emitted from the typed model on save
+    /// (markPartDirty), so list_headers / get_header / remove_watermark see
+    /// it like any other header.
+    private func wireNewWatermarkHeader(
+        into doc: inout WordDocument, watermarkXML: String
+    ) throws {
+        guard let archiveTempDir = doc.archiveTempDir else {
+            throw WordError.parseError("no preserved archive")
+        }
+        let relsURL = archiveTempDir.appendingPathComponent("word/_rels/document.xml.rels")
+        let ctURL = archiveTempDir.appendingPathComponent("[Content_Types].xml")
+        let docURL = archiveTempDir.appendingPathComponent("word/document.xml")
+        guard var rels = try? String(contentsOf: relsURL, encoding: .utf8),
+              var contentTypes = try? String(contentsOf: ctURL, encoding: .utf8),
+              var documentXML = try? String(contentsOf: docURL, encoding: .utf8),
+              rels.contains("</Relationships>"),
+              contentTypes.contains("</Types>") else {
+            throw WordError.parseError(
+                "preserved archive incomplete (document.xml / rels / [Content_Types].xml)")
+        }
+
+        // Allocate a header fileName unused by both the archive and the typed model.
+        var n = 1
+        while FileManager.default.fileExists(
+                atPath: archiveTempDir.appendingPathComponent("word/header\(n).xml").path)
+            || doc.headers.contains(where: { $0.fileName == "header\(n).xml" }) {
+            n += 1
+        }
+        let fileName = "header\(n).xml"
+
+        // Allocate an rId above every numeric rId in the source rels and the
+        // typed model (the typed allocator only counts typed collections and
+        // can collide with source-only relationships).
+        var maxId = 0
+        if let regex = try? NSRegularExpression(pattern: #"Id="rId(\d+)""#) {
+            let ns = rels as NSString
+            for m in regex.matches(in: rels, range: NSRange(location: 0, length: ns.length))
+            where m.numberOfRanges >= 2 {
+                maxId = max(maxId, Int(ns.substring(with: m.range(at: 1))) ?? 0)
+            }
+        }
+        for header in doc.headers {
+            if header.id.hasPrefix("rId"), let v = Int(header.id.dropFirst(3)) { maxId = max(maxId, v) }
+        }
+        let rId = "rId\(maxId + 1)"
+
+        // 1. Relationship for the new header part.
+        rels = rels.replacingOccurrences(
+            of: "</Relationships>",
+            with: "<Relationship Id=\"\(rId)\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/header\" Target=\"\(fileName)\"/></Relationships>")
+
+        // 2. Content type Override for the new header part.
+        contentTypes = contentTypes.replacingOccurrences(
+            of: "</Types>",
+            with: "<Override PartName=\"/word/\(fileName)\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml\"/></Types>")
+
+        // 3. headerReference as first child of the body-level (last) sectPr —
+        // first because ECMA-376 schema order puts headerReference* before
+        // footerReference* and page geometry.
+        let refXML = "<w:headerReference w:type=\"default\" r:id=\"\(rId)\"/>"
+        if let regex = try? NSRegularExpression(
+                pattern: #"<w:sectPr(?:\s[^>]*)?/>|<w:sectPr(?:\s[^>]*)?>"#),
+           let last = regex.matches(
+                in: documentXML,
+                range: NSRange(location: 0, length: (documentXML as NSString).length)).last {
+            let ns = documentXML as NSString
+            let openTag = ns.substring(with: last.range)
+            let replacement: String
+            if openTag.hasSuffix("/>") {
+                // Self-closing empty sectPr: expand it around the reference.
+                let opened = String(openTag.dropLast(2)) + ">"
+                replacement = opened + refXML + "</w:sectPr>"
+            } else {
+                replacement = openTag + refXML
+            }
+            documentXML = ns.replacingCharacters(in: last.range, with: replacement)
+        } else if let bodyClose = documentXML.range(of: "</w:body>") {
+            // No sectPr at all — synthesize a minimal one.
+            documentXML.replaceSubrange(
+                bodyClose, with: "<w:sectPr>\(refXML)</w:sectPr></w:body>")
+        } else {
+            throw WordError.parseError("document.xml has no <w:sectPr> and no </w:body>")
+        }
+
+        // Write the three patched parts WITHOUT dirty-marking them — non-dirty
+        // parts are zipped verbatim from the preserved archive, which is
+        // exactly what keeps the writer from rebuilding them.
+        try rels.write(to: relsURL, atomically: true, encoding: .utf8)
+        try contentTypes.write(to: ctURL, atomically: true, encoding: .utf8)
+        try documentXML.write(to: docURL, atomically: true, encoding: .utf8)
+
+        // 4. Register the typed header (part content emitted from here on
+        // save) and mirror the reference into sectionProperties so a later
+        // typed re-emission of document.xml keeps it.
+        var header = Header(id: rId, paragraphs: [], type: .default, originalFileName: fileName)
+        header.bodyChildren = [.rawBlockElement(RawElement(name: "p", xml: watermarkXML))]
+        doc.headers.append(header)
+        doc.sectionProperties.headerReference = rId
+        doc.sectionProperties.headerReferences.defaultRef = rId
+        doc.markPartDirty("word/\(fileName)")
+    }
+
     private func insertWatermark(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -13352,7 +13699,7 @@ actor WordMCPServer {
         guard let text = args["text"]?.stringValue else {
             throw WordError.missingParameter("text")
         }
-        guard openDocuments[docId] != nil else {
+        guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
 
@@ -13362,9 +13709,45 @@ actor WordMCPServer {
         let semitransparent = args["semitransparent"]?.boolValue ?? true
         let rotation = args["rotation"]?.intValue ?? -45
 
-        // 浮水印需要在 header 中加入 VML 或 DrawingML
-        // 目前 OOXMLSwift 沒有直接支援浮水印
-        // 這裡先回傳設定訊息
+        // Refuse a second watermark: duplicate PowerPlusWaterMarkObject shapes
+        // (and duplicate _x0000_t136 shapetype declarations) confuse Word.
+        for header in doc.headers where header.type == .default {
+            let archiveXML = readHeaderFooterXML(docId: docId, fileName: header.fileName) ?? ""
+            if headerHasWatermark(archiveXML) || typedHeaderHasWatermark(header) {
+                return "Error: document already has a watermark (header \(header.id)). Use remove_watermark first."
+            }
+        }
+
+        let wmXML = watermarkParagraphXML(
+            text: text, font: font, color: color, size: size,
+            semitransparent: semitransparent, rotation: rotation)
+
+        if let idx = doc.headers.firstIndex(where: { $0.type == .default }) {
+            // Existing default header: append the watermark paragraph.
+            doc.headers[idx].bodyChildren.append(
+                .rawBlockElement(RawElement(name: "p", xml: wmXML)))
+            doc.markPartDirty("word/\(doc.headers[idx].fileName)")
+        } else if doc.archiveTempDir == nil {
+            // Initializer-built document (scratch mode): the pure typed path
+            // is safe — the writer emits every part from the typed model.
+            let header = doc.addHeader(text: "", type: .default)
+            if let idx = doc.headers.firstIndex(where: { $0.id == header.id }) {
+                // Replace the placeholder empty paragraph with the watermark.
+                doc.headers[idx].bodyChildren = [
+                    .rawBlockElement(RawElement(name: "p", xml: wmXML))]
+            }
+        } else {
+            // Source-loaded document with no header part (the reported repro:
+            // engine-built docx with footer1.xml only). Wire the new header
+            // surgically in the preserved archive rather than via addHeader —
+            // addHeader marks document.xml/rels/[Content_Types].xml typed-dirty,
+            // and the writer's typed rebuild of document.xml.rels hardcodes
+            // rId1-3 (styles/settings/fontTable), silently dropping or
+            // remapping the source's styles.xml / numbering.xml relationships.
+            try wireNewWatermarkHeader(into: &doc, watermarkXML: wmXML)
+        }
+
+        try await storeDocument(doc, for: docId)
 
         var result = "Watermark inserted: \"\(text)\""
         result += " (font: \(font), color: #\(color), size: \(size)pt"
@@ -13387,21 +13770,15 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let scale = args["scale"]?.intValue ?? 100
-        let washout = args["washout"]?.boolValue ?? true
-
         // 檢查檔案是否存在
         guard FileManager.default.fileExists(atPath: imagePath) else {
             return "Error: Image file not found at '\(imagePath)'"
         }
 
-        var result = "Image watermark inserted from: \(imagePath)"
-        result += " (scale: \(scale)%"
-        if washout {
-            result += ", washout enabled"
-        }
-        result += ")"
-        return result
+        // Image watermarks need a media part + header rels plumbing that
+        // isn't implemented yet. Return an honest error rather than the
+        // pre-v3.5.1 false success (which wrote nothing).
+        return "Error: insert_image_watermark is not implemented yet — no changes were made. Use insert_watermark for text watermarks."
     }
 
     /// 移除浮水印
@@ -13409,12 +13786,37 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard openDocuments[docId] != nil else {
+        guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
 
-        // 浮水印移除需要清除 header 中的相關元素
-        return "Watermark removed from document"
+        var removedCount = 0
+        for idx in doc.headers.indices {
+            let before = doc.headers[idx].bodyChildren.count
+            doc.headers[idx].bodyChildren.removeAll { child in
+                switch child {
+                case .rawBlockElement(let raw):
+                    return headerHasWatermark(raw.xml)
+                case .paragraph(let para):
+                    return para.runs.contains { run in
+                        (run.rawElements ?? []).contains { headerHasWatermark($0.xml) }
+                    }
+                default:
+                    return false
+                }
+            }
+            let removed = before - doc.headers[idx].bodyChildren.count
+            if removed > 0 {
+                removedCount += removed
+                doc.markPartDirty("word/\(doc.headers[idx].fileName)")
+            }
+        }
+
+        guard removedCount > 0 else {
+            return "Error: no watermark found in document headers."
+        }
+        try await storeDocument(doc, for: docId)
+        return "Watermark removed from document (\(removedCount) watermark paragraph\(removedCount == 1 ? "" : "s"))"
     }
 
     /// 設定文件保護
