@@ -45,5 +45,5 @@ xcuserdata/
 mcpb/server/*
 !mcpb/server/.gitkeep
 
-# IDD tree-lock (idd-tree-lock.sh #183) — per-machine session state, not tracked
-.claude/.idd/tree-lock
+# IDD session-local state (attachments cache / tree-lock / unattended flag) — per-machine, not tracked
+.claude/.idd/
