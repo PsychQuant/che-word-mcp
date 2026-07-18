@@ -5953,7 +5953,7 @@ actor WordMCPServer {
             // (handlers in ScriptPipelineTools.swift, design Decision 1/5).
             Tool(
                 name: "export_script",
-                description: "docx → full-fidelity .mdocx.swift 重建腳本（與 macdoc word reverse 同一條 transcoder code path：raw byte-equal floor + typed DSL 升級）。可選 slots 指定具名內容槽（strict mode：指定失敗即錯誤、不寫檔）。回傳 JSON summary（dsl_parts / form_gaps_empty / slot_count / output_path）。DSL 升級邊界：本 MCP 自產（ooxml-swift 1.5.0+）與真實 Word 的純段落內容可升級；rich tables 與 legacy 無 w14:paraId 的舊自產檔停留 raw channel（byte-equal 可重播、不可讀編輯）。",
+                description: "docx → full-fidelity .mdocx.swift 重建腳本（與 macdoc word reverse 同一條 transcoder code path：raw byte-equal floor + typed DSL 升級）。可選 slots 指定具名內容槽（strict mode：指定失敗即錯誤、不寫檔）。回傳 JSON summary（dsl_parts / form_gaps_empty / slot_count / output_path）。DSL 升級邊界：只有 word/document.xml 嘗試 DSL 升級（sibling parts 一律 raw by design），且為 part-level 全有全無——本 MCP 自產（ooxml-swift 1.5.0+）與真實 Word 的純段落文件可升級；文件內含 rich table 或 legacy 無 w14:paraId 段落時整個 part 停留 raw channel（byte-equal 可重播、不可讀編輯）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -5984,7 +5984,7 @@ actor WordMCPServer {
 
             Tool(
                 name: "get_script_coverage",
-                description: "docx 的 dual-track 覆蓋率報告（與 macdoc word reverse --coverage 同數字）：每個 XML part 的 DSL/raw channel、位元組數、DSL ratio，加 aggregate。回傳 JSON。注意：只有 word/document.xml 會嘗試 DSL 升級（sibling parts 一律 raw by design）；legacy 無 w14:paraId 的舊自產檔與 rich tables 內容停留 raw。",
+                description: "docx 的 dual-track 覆蓋率報告（與 macdoc word reverse --coverage 同數字）：每個 XML part 的 DSL/raw channel、位元組數、DSL ratio，加 aggregate。回傳 JSON。注意：只有 word/document.xml 會嘗試 DSL 升級（sibling parts 一律 raw by design），且升級是 part-level 全有全無——文件內含 rich table 或 legacy 無 w14:paraId 段落時，整個 document.xml 降 raw（非 subtree 局部降級）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([

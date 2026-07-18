@@ -33,12 +33,18 @@ final class Issue173SelfProducedDSLUpgradeTests: XCTestCase {
     private func makeSelfProducedDocx(at path: String) async throws {
         let server = await WordMCPServer()
         let docId = "issue173"
-        _ = await server.invokeToolForTesting(name: "create_document", arguments: [
+        let create = await server.invokeToolForTesting(name: "create_document", arguments: [
             "doc_id": .string(docId),
         ])
-        _ = await server.invokeToolForTesting(name: "disable_track_changes", arguments: [
+        XCTAssertNotEqual(create.isError, true, resultText(create))
+        // Track changes is orthogonal to the DSL upgrade (insert_paragraph
+        // never emits <w:ins>; verify #173 DA probe), but the issue's repro
+        // disables it — assert the step so a silent tool failure can't drift
+        // this fixture away from the documented reproduction shape.
+        let disable = await server.invokeToolForTesting(name: "disable_track_changes", arguments: [
             "doc_id": .string(docId),
         ])
+        XCTAssertNotEqual(disable.isError, true, resultText(disable))
         for text in ["自產文件第一段", "第二段：純段落內容", "第三段"] {
             let r = await server.invokeToolForTesting(name: "insert_paragraph", arguments: [
                 "doc_id": .string(docId),
