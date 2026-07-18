@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.22.0] - 2026-07-18
+
+### Changed
+
+- **Self-produced docx now upgrades to the typed DSL channel** — bumps
+  ooxml-swift 1.4.0 → 1.5.0 (upstream PsychQuant/ooxml-swift#85: authoring
+  path emits transcoder-canonical document.xml with chokepoint-stamped
+  `w14:paraId`). `export_script` on MCP-authored pure-paragraph documents
+  reports `word/document.xml` on the `dsl` channel (per-part ratio 1.0) and
+  named content `slots` anchor on the stamped paraIds. Previously all parts
+  fell to the raw carryPart floor (`dsl_ratio: 0`). Refs #173 (PR #174,
+  6-AI verify PASS, tag `idd-173-verified`).
+- **DSL-upgrade honesty boundary in tool descriptions** —
+  `export_script` / `get_script_coverage` now state the part-level
+  all-or-nothing semantics: only `word/document.xml` attempts DSL upgrade;
+  a rich table (or legacy paraId-less paragraph) demotes the whole part to
+  raw. Mixed documents (e.g. the original 8-table reproduction) stay raw
+  until upstream rich-table canonical coverage lands
+  (PsychQuant/ooxml-swift#86).
+
 ## [3.21.1] - 2026-07-16
 
 ### Fixed — 6-AI verify findings (R1 blocking + R2 in-scope; Refs [PsychQuant/macdoc#134](https://github.com/PsychQuant/macdoc/issues/134))
