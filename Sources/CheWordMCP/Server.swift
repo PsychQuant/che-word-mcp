@@ -1087,7 +1087,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "get_tables",
-                description: "取得文件中所有表格的資訊（支援 Direct Mode）",
+                description: "取得文件中所有表格的完整內容（支援 Direct Mode）。預設回傳每個表格的所有列、所有欄、每格完整文字；傳 summarize: true 才做省略（列／欄／長文字三種省略都會標示）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1098,7 +1098,8 @@ actor WordMCPServer {
                         "source_path": .object([
                             "type": .string("string"),
                             "description": .string("檔案路徑（Direct Mode，免開啟）")
-                        ])
+                        ]),
+                        "summarize": .object(["type": .string("boolean"), "description": .string("是否對長文字做頭尾摘要（預設 false）；為 true 時另限縮為前 3 列 × 前 3 欄，並標示省略了幾列／幾欄")])
                     ])
                 ])
             ),
@@ -7617,22 +7618,48 @@ actor WordMCPServer {
             return "No tables in document"
         }
 
+        // Spec word-mcp-markdown-export — Requirement: Truncation policy via
+        // summarize parameter. Default (summarize omitted/false) SHALL return
+        // complete content with no upper bound. #177: this tool previously
+        // truncated unconditionally (first-row column count in the header,
+        // 3 rows, 3 columns, 15 characters per cell) and disclosed only the
+        // row truncation, so its own header contradicted its own body.
+        let summarize = args["summarize"]?.boolValue ?? false
+        let summarizedRowCap = 3
+        let summarizedColCap = 3
+
         var result = "Tables in document:\n"
         for (index, table) in tables.enumerated() {
             let rows = table.rows.count
-            let cols = table.rows.first?.cells.count ?? 0
-            result += "[\(index)] \(rows)x\(cols) table\n"
-
-            // 顯示表格內容預覽
-            for (rowIdx, row) in table.rows.prefix(3).enumerated() {
-                let cellPreviews = row.cells.prefix(3).map { cell -> String in
-                    let preview = String(cell.getText().prefix(15))
-                    return preview.isEmpty ? "(empty)" : preview
-                }
-                result += "  Row \(rowIdx): \(cellPreviews.joined(separator: " | "))\n"
+            // Header reports the widest row, not the first one: a ragged table
+            // (rows differing in <w:tc> count, e.g. after a horizontal merge)
+            // has no single width, and reporting the first row's understates
+            // which column indices are addressable.
+            let widths = table.rows.map { $0.cells.count }
+            let maxCols = widths.max() ?? 0
+            let minCols = widths.min() ?? 0
+            if minCols == maxCols {
+                result += "[\(index)] \(rows)x\(maxCols) table\n"
+            } else {
+                result += "[\(index)] \(rows)x\(maxCols) table (ragged: \(minCols)..\(maxCols) columns per row)\n"
             }
-            if table.rows.count > 3 {
-                result += "  ... (\(table.rows.count - 3) more rows)\n"
+
+            let shownRows = summarize ? Array(table.rows.prefix(summarizedRowCap)) : table.rows
+            for (rowIdx, row) in shownRows.enumerated() {
+                let shownCells = summarize ? Array(row.cells.prefix(summarizedColCap)) : row.cells
+                var cellTexts = shownCells.map { cell -> String in
+                    let text = truncateText(cell.getText(), summarize: summarize)
+                    return text.isEmpty ? "(empty)" : text
+                }
+                let hiddenCols = row.cells.count - shownCells.count
+                if hiddenCols > 0 {
+                    cellTexts.append("... (\(hiddenCols) more column\(hiddenCols == 1 ? "" : "s"))")
+                }
+                result += "  Row \(rowIdx): \(cellTexts.joined(separator: " | "))\n"
+            }
+            let hiddenRows = table.rows.count - shownRows.count
+            if hiddenRows > 0 {
+                result += "  ... (\(hiddenRows) more row\(hiddenRows == 1 ? "" : "s"))\n"
             }
         }
         return result
