@@ -7,9 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.23.0] - 2026-08-18
 
-> **v3.22.0 從未打 tag。** 其 CHANGELOG 區塊（見下）寫於 2026-07-18 但 release 未發出；
-> 該內容隨本版一併出貨。無 v3.22.0 git tag、無 v3.22.0 GitHub Release。
-
 ### Changed
 
 - **`get_tables` 預設回傳完整內容**（#177，PR #179）。先前它不接受 `summarize`，
