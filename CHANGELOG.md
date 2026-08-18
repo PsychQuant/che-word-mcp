@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.23.0] - 2026-08-18
+
+> **v3.22.0 從未打 tag。** 其 CHANGELOG 區塊（見下）寫於 2026-07-18 但 release 未發出；
+> 該內容隨本版一併出貨。無 v3.22.0 git tag、無 v3.22.0 GitHub Release。
+
+### Changed
+
+- **`get_tables` 預設回傳完整內容**（#177，PR #179）。先前它不接受 `summarize`，
+  並用四個硬寫常數無條件截斷：header 取首列欄數、3 列、3 欄、每格 15 字。三種截斷裡
+  **只有列會印 `... (N more rows)`**，欄與字數截斷完全靜默——造成工具自己的輸出前後矛盾
+  （一個規則的 2×5 表格，header 說 5 欄、body 只給 3 欄，中間沒有交代）。
+
+  這違反 spec `word-mcp-markdown-export` 的 normative SHALL：「on **every** tool that
+  returns potentially long text」預設須回傳完整內容、無上界。修法照 repo 既有 doctrine
+  （#1 → #5 建立、`truncateText` helper、`summarize` 已在 5 個工具的 schema）：
+
+  - schema 加 `summarize: Bool`（預設 false）
+  - 預設輸出所有列、所有欄、每格完整文字
+  - `summarize: true` 才省略，且**三種省略都標示**（列／欄／cell 文字走 `truncateText`）
+  - header 改報**最寬列**而非首列，不規則時標 `(ragged: min..max columns per row)`
+
+  **行為變更（刻意）**：既有呼叫端會看到更長的輸出。需要精簡輸出者傳 `summarize: true`。
+  規則表格的 header 輸出不變。
+
+  同型缺陷仍在另外四個工具（`get_paragraphs` / `list_footnotes` / `list_endnotes` /
+  `list_all_formatted_text`）→ #178。
+
+- **bump ooxml-swift 1.5.0 → 2.0.1** — Word round-trip fidelity。一次 mutation 不再
+  靜默改寫文件。以真實 A4 官方表單走一次 `update_cell` 實測：
+
+  | 元素 | 升級前 | 升級後 |
+  |---|---|---|
+  | `<w:tcBorders>` | 40 → **0** | 40 |
+  | `<w:tcMar>` | 40 → **0** | 40 |
+  | `<w:tblCellMar>` / `<w:tblLook>` | 1 → **0** | 1 |
+  | `<w:tblLayout>` | 1 → **2**（重複，無效 OOXML） | 1 |
+  | `<w:pgSz>` | A4 → **US Letter** | A4 |
+  | `<w:footerReference>` | **消失** | 保留 |
+  | `<w:docGrid>` | `type` 掉失、`linePitch` 571 → 360 | 原樣 |
+
+  上游 refs：ooxml-swift #99（`tcBorders`）、#101（`tcMar`）、#97（`tblPr`）、
+  #84（`sectPr`）、#104（`appendParagraph` typed-view 迴歸）。
+  升級鏈另含 latex-math-swift v0.3.0 與 word-to-md-swift v0.8.0。
+
+### Verification
+
+- 全套 322 tests / 11 skipped / 0 failures（清乾淨重建，從 GitHub 解析真實 tag）
+- 真實表單端到端走完整 MCP 工具鏈（`open_document` → `update_cell` → `save_document`）：
+  十個元素與原檔全數相符
+- `get_tables`：8 個新測試（含兩個防「修過頭」的控制組）＋三份真實官方表單的 header 驗證
+
 ## [3.22.0] - 2026-07-18
 
 ### Changed
