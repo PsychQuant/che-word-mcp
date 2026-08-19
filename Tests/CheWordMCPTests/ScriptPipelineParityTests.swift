@@ -294,9 +294,12 @@ final class ScriptPipelineParityTests: XCTestCase {
 
         // Execute the OTHER script with output overwriting the reference,
         // verifying against that same path.
+        // `overwrite` is explicit: this pattern necessarily targets a file
+        // that already exists, so the gate applies on the same terms as any
+        // other pre-existing output.
         let result = try scriptPipelineExecute(
             scriptPath: script.path, outputPath: reference.path,
-            verifyAgainst: reference.path)
+            verifyAgainst: reference.path, overwrite: true)
         XCTAssertEqual(result.verified, false,
                        "same-path verification must compare against pre-write bytes")
         XCTAssertFalse(result.brokenParts.isEmpty)
@@ -458,6 +461,114 @@ final class ScriptPipelineParityTests: XCTestCase {
                        "a reference part missing from the rebuild must break Stage-B verification")
         XCTAssertTrue(result.brokenParts.contains("customXml/extra.xml"),
                       "broken parts must name the asymmetric part; got \(result.brokenParts)")
+    }
+
+    // MARK: - Failure signalling and the overwrite gate
+    //
+    // Spectra change `script-pipeline-failure-contract`, task 3.2.
+    // che-word-mcp#180: a failing verdict rode a SUCCESSFUL response, so a
+    // caller checking only call success read failure as pass.
+    // che-word-mcp#181: the overwrite gate existed only on the CLI face.
+
+    /// Build a reference that the exported script provably cannot rebuild,
+    /// by appending an XML part to the reference AFTER the export.
+    private func makeDivergentPair(in dir: URL) throws -> (script: URL, reference: URL) {
+        let reference = dir.appendingPathComponent("reference.docx")
+        try makeFiveLayerDocx(at: reference)
+        let script = dir.appendingPathComponent("ref.mdocx.swift")
+        _ = try scriptPipelineExport(sourcePath: reference.path, outputPath: script.path)
+
+        let extraDir = dir.appendingPathComponent("customXml", isDirectory: true)
+        try FileManager.default.createDirectory(at: extraDir, withIntermediateDirectories: true)
+        try "<extra/>".write(to: extraDir.appendingPathComponent("extra.xml"),
+                             atomically: true, encoding: .utf8)
+        let zip = Process()
+        zip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        zip.currentDirectoryURL = dir
+        zip.arguments = ["-q", reference.lastPathComponent, "customXml/extra.xml"]
+        try zip.run()
+        zip.waitUntilExit()
+        XCTAssertEqual(zip.terminationStatus, 0)
+        return (script, reference)
+    }
+
+    /// A failing verdict must be an ERROR, not a successful response carrying
+    /// `verified: false`. A caller that branches only on call success is the
+    /// whole point: under the old shape it read a failed rebuild as a pass.
+    func testExecuteScriptToolFailedVerificationIsAToolError() async throws {
+        let dir = try makeScratch()
+        let pair = try makeDivergentPair(in: dir)
+        let output = dir.appendingPathComponent("out.docx")
+
+        let server = await WordMCPServer()
+        let result = await server.invokeToolForTesting(name: "execute_script", arguments: [
+            "script_path": .string(pair.script.path),
+            "output_path": .string(output.path),
+            "verify_byte_equal_against": .string(pair.reference.path),
+        ])
+
+        XCTAssertEqual(result.isError, true,
+                       "a failing verdict must surface as a tool error: \(resultText(result))")
+        XCTAssertTrue(resultText(result).contains("customXml/extra.xml"),
+                      "the error must name the differing part; got: \(resultText(result))")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output.path),
+                       "a failed verification must publish nothing")
+    }
+
+    /// The overwrite gate reaches the MCP face. Default is refuse.
+    func testExecuteScriptToolRefusesExistingOutputWithoutOverwrite() async throws {
+        let dir = try makeScratch()
+        let source = dir.appendingPathComponent("reference.docx")
+        try makeFiveLayerDocx(at: source)
+        let script = dir.appendingPathComponent("ref.mdocx.swift")
+        _ = try scriptPipelineExport(sourcePath: source.path, outputPath: script.path)
+        let output = dir.appendingPathComponent("out.docx")
+        try Data("這份檔案先前就在輸出路徑上".utf8).write(to: output)
+        let before = try Data(contentsOf: output)
+
+        let server = await WordMCPServer()
+        let refused = await server.invokeToolForTesting(name: "execute_script", arguments: [
+            "script_path": .string(script.path),
+            "output_path": .string(output.path),
+        ])
+        XCTAssertEqual(refused.isError, true,
+                       "an existing output must be refused by default: \(resultText(refused))")
+        XCTAssertEqual(try Data(contentsOf: output), before,
+                       "the refused run must leave the existing file untouched")
+
+        // ... and the parameter actually reaches the shared entry point.
+        let permitted = await server.invokeToolForTesting(name: "execute_script", arguments: [
+            "script_path": .string(script.path),
+            "output_path": .string(output.path),
+            "overwrite": .bool(true),
+        ])
+        XCTAssertNotEqual(permitted.isError, true, resultText(permitted))
+        XCTAssertNotEqual(try Data(contentsOf: output), before,
+                          "with overwrite requested the rebuild must replace the file")
+    }
+
+    /// A successful response never carries a null written path — the key is
+    /// either a real string or absent. Assigning an Optional into the JSON
+    /// payload would emit `"written":null`, which is a shape no caller was
+    /// told to expect.
+    func testExecuteScriptToolSuccessCarriesStringWrittenPath() async throws {
+        let dir = try makeScratch()
+        let source = dir.appendingPathComponent("reference.docx")
+        try makeFiveLayerDocx(at: source)
+        let script = dir.appendingPathComponent("ref.mdocx.swift")
+        _ = try scriptPipelineExport(sourcePath: source.path, outputPath: script.path)
+        let output = dir.appendingPathComponent("out.docx")
+
+        let server = await WordMCPServer()
+        let result = await server.invokeToolForTesting(name: "execute_script", arguments: [
+            "script_path": .string(script.path),
+            "output_path": .string(output.path),
+        ])
+        XCTAssertNotEqual(result.isError, true, resultText(result))
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(
+            with: Data(resultText(result).utf8)) as? [String: Any])
+        XCTAssertTrue(json["written"] is String,
+                      "written must be a string on success; got: \(resultText(result))")
     }
 
     // MARK: - Layer 2: gated MCP-vs-CLI cross-check (task 3.5)

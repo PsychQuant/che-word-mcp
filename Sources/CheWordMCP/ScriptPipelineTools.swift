@@ -59,6 +59,26 @@ func describeTranscodeError(_ error: TranscodeError) -> String {
     }
 }
 
+/// A failing Stage-B verdict.
+///
+/// #180: this MUST be an error rather than a field on a successful response.
+/// The old shape returned `verified: false` inside a normal result, so a
+/// caller that branched only on call success read a failed rebuild as a pass.
+///
+/// The differing parts travel in the message rather than as a structured
+/// list: `handleToolCall` renders a thrown error as plain text and returns a
+/// JSON body only on success, so carrying both would mean changing the shape
+/// every tool handler returns. That restructuring is tracked separately; the
+/// information is destructured here, not lost.
+struct ScriptVerificationFailure: LocalizedError {
+    let brokenParts: [String]
+
+    var errorDescription: String? {
+        let parts = brokenParts.map { "  - \($0)" }.joined(separator: "\n")
+        return "byte-equal 驗證失敗，未寫出任何檔案。以下 part 與參考檔不符：\n\(parts)"
+    }
+}
+
 // MARK: - Handlers (pure functions; MCP plumbing stays in Server.swift)
 
 /// docx → full-fidelity `.mdocx.swift` rebuild script. Strict mode: slot
@@ -205,16 +225,42 @@ extension WordMCPServer {
             }
             verifyAgainst = path
         }
+        // #181: the overwrite gate itself lives in the shared entry point, so
+        // this only parses the argument and hands it over. Adding a
+        // file-existence check here would rebuild the very defect being
+        // fixed — a guard on one wrapper that the other face does not share.
+        var overwrite = false
+        if let rawOverwrite = args["overwrite"], rawOverwrite != .null {
+            guard let flag = rawOverwrite.boolValue else {
+                throw WordError.invalidParameter(
+                    "overwrite", "必須是布林值（收到非布林型別）")
+            }
+            overwrite = flag
+        }
         let result: ScriptExecuteResult
         do {
             result = try scriptPipelineExecute(
-                scriptPath: scriptPath, outputPath: outputPath, verifyAgainst: verifyAgainst)
+                scriptPath: scriptPath, outputPath: outputPath,
+                verifyAgainst: verifyAgainst, overwrite: overwrite)
         } catch let error as TranscodeError {
             // B2: parse failures surface the transcoder's location-bearing
             // reason (task 3.4 contract).
             throw WordError.invalidParameter("script_path", describeTranscodeError(error))
         }
-        var payload: [String: Any] = ["written": result.written]
+        // #180: a failing verdict is a FAILED call, not a successful one
+        // carrying bad news. Nothing was published, so there is no result to
+        // report either way.
+        if result.verified == false {
+            throw ScriptVerificationFailure(brokenParts: result.brokenParts)
+        }
+        var payload: [String: Any] = [:]
+        if let written = result.written {
+            // Absent, never null: assigning the Optional straight into the
+            // payload emits `"written":null`, a shape no caller was told to
+            // expect. Absence already means "did not happen" here, matching
+            // the verdict fields below.
+            payload["written"] = written
+        }
         if let verified = result.verified {
             // F2: verdict fields ride the response ONLY when verification
             // actually ran — an unconditional broken_parts: [] reads as a

@@ -6000,7 +6000,7 @@ actor WordMCPServer {
 
             Tool(
                 name: "execute_script",
-                description: ".mdocx.swift 重建腳本 → docx（ScriptImporter 同一條 code path）。可選 verify_byte_equal_against 對照參考檔做 Stage-B byte-equal 驗證，回傳 verdict 與 broken_parts。回傳 JSON（written / verified? / broken_parts）。",
+                description: ".mdocx.swift 重建腳本 → docx（ScriptImporter 同一條 code path）。可選 verify_byte_equal_against 對照參考檔做 Stage-B byte-equal 驗證。驗證失敗會以 tool error 回報並列出不符的 part，且不寫出任何檔案——輸出路徑維持原狀。成功時回傳 JSON（written / verified? / broken_parts）；沒給參考檔就沒有 verified 與 broken_parts 欄位，缺席不等於通過。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -6010,11 +6010,15 @@ actor WordMCPServer {
                         ]),
                         "output_path": .object([
                             "type": .string("string"),
-                            "description": .string("輸出 .docx 路徑（已存在則覆寫）")
+                            "description": .string("輸出 .docx 路徑（已存在時預設拒絕，需帶 overwrite）")
                         ]),
                         "verify_byte_equal_against": .object([
                             "type": .string("string"),
-                            "description": .string("參考 .docx 路徑；提供時對 rebuilt XML part set 做 Stage-B byte-equal 驗證")
+                            "description": .string("參考 .docx 路徑；提供時對 rebuilt XML part set 做 Stage-B byte-equal 驗證。驗證失敗即為 tool error，且不會寫出檔案")
+                        ]),
+                        "overwrite": .object([
+                            "type": .string("boolean"),
+                            "description": .string("允許覆寫已存在的 output_path。預設 false（拒絕）。把同一路徑同時當 output_path 與 verify_byte_equal_against 時必須設為 true，因為那必然指向既有檔案")
                         ])
                     ]),
                     "required": .array([.string("script_path"), .string("output_path")])
