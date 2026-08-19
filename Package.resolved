@@ -41,8 +41,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/PsychQuant/ooxml-swift.git",
       "state" : {
-        "revision" : "524d475218992386c365b5d22546755884ae7b0c",
-        "version" : "3.0.1"
+        "revision" : "05ec35aa59932f6617b199c54c212cedb1d8d180",
+        "version" : "3.1.0"
       }
     },
     {
@@ -104,8 +104,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/PsychQuant/word-to-md-swift.git",
       "state" : {
-        "revision" : "81d84a301f4f1b9accb6e06826061cd2c1bcfc9a",
-        "version" : "0.8.1"
+        "revision" : "53a451f2f0ed0f769ead03afc7ec9354ef8b6909",
+        "version" : "1.0.0"
       }
     },
     {

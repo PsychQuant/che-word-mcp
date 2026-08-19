@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.1] - 2026-08-19
+
+### Fixed
+
+- 帶進 ooxml-swift **3.1.0**：`execute_script` 的 `output_path` 指向**既有目錄**時不再把
+  該目錄換成檔案並回報成功（ooxml-swift#109）。舊行為在 `overwrite: true` 下會讓目錄
+  連同內容變成一份 docx、回傳成功。已確認是長期潛伏而非近期迴歸——完全早於覆寫閘與
+  staging 的 0.6.0 CLI 行為相同。
+
+### Changed
+
+- 依賴 `word-to-md-swift` **1.0.0**，其 module 由 `WordToMDSwift` 更名為 `WordToMD`
+  （repo 名帶語言、module 名不帶，對齊 Swift 生態系慣例）。純內部依賴變更，**tool
+  schema 與回應形狀零改動**。
+
 ## [4.0.0] - 2026-08-19
 
 ### Breaking
