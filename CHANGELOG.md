@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.0] - 2026-08-19
+
+### Breaking
+
+- **`execute_script` 驗證失敗改為 tool error**（#180）。舊行為把 `verified: false` 放進一個
+  **成功**回應，所以只判斷「呼叫有沒有成功」的 client 會把 byte-inequality 讀成通過。實測
+  修正前的回應：
+
+  ```
+  isError: nil
+  {"broken_parts":["customXml/extra.xml"],"verified":false,"written":null}
+  ```
+
+  現在不符時整個 tool call 失敗，錯誤文字列出每一個不符的 part。代價是該清單降級成字串
+  而非結構化陣列——要同時保留錯誤旗標與 JSON body，得改動每個 tool 都經過的 dispatch
+  形狀，追蹤於 #182。
+
+- **`execute_script` 新增 `overwrite`，預設拒絕**（#181）。`output_path` 已存在時不再無條件
+  覆寫；未帶 `overwrite: true` 即失敗並具名該路徑，檔案不動。把同一路徑同時當 `output_path`
+  與 `verify_byte_equal_against` 時必須帶 `overwrite: true`，因為那必然指向既有檔案。
+
+  這道閘刻意放在共用入口 `scriptPipelineExecute` 而非本 wrapper。CLI 早有 `--force`、本面
+  完全沒有保護，正是因為它長在 wrapper 上——「兩個 face 共用實作所以行為一致」這句保證
+  **只涵蓋共用函式內部**。
+
+### Fixed
+
+- **驗證失敗不再破壞輸出路徑**（#181）。舊實作先把重建結果寫到最終路徑再讀回比對，所以
+  「驗證失敗」這個結論永遠在原檔已被摧毀之後才抵達。現在重建結果寫到輸出檔**同目錄**的
+  暫存路徑，驗過才搬進位。
+
+- **回應不再出現 `"written": null`**。沒 publish 時該欄位整個缺席，與 verdict 欄位同一規則。
+
+### Notes
+
+- 需要 ooxml-swift 3.0.1（含覆寫閘的 publish-branch 修正）。
+- 本版經 #180/#181 的 5-lens 驗證輪；該輪另抓到一條本 repo 的空轉測試（宣稱守護 `if let`
+  unwrap，實測還原修正後仍會通過）並已修正。跨模型 Codex 驗證因配額未執行，該輪報告有記載。
+
 ## [3.23.0] - 2026-08-18
 
 ### Changed
