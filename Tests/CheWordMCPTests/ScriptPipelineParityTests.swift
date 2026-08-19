@@ -547,10 +547,18 @@ final class ScriptPipelineParityTests: XCTestCase {
                           "with overwrite requested the rebuild must replace the file")
     }
 
-    /// A successful response never carries a null written path — the key is
-    /// either a real string or absent. Assigning an Optional into the JSON
-    /// payload would emit `"written":null`, which is a shape no caller was
-    /// told to expect.
+    /// Pins the exact shape of a successful response.
+    ///
+    /// HONEST LIMIT — this does NOT guard the `if let written` unwrap in the
+    /// handler, and no MCP-level test can. Verified by measurement: a non-nil
+    /// `Optional<String>` assigned straight into the payload bridges to
+    /// NSString and serialises as an ordinary string, so the naive form and
+    /// the guarded form produce byte-identical output here. The two only
+    /// diverge when `written` is nil — and nil is coupled exclusively to a
+    /// failing verdict, which throws before any payload is built. The unwrap
+    /// is therefore defensive, not load-bearing, and this test was originally
+    /// written claiming to guard it. It does not. What it does guard is the
+    /// success shape: `written` present as a string, no JSON null anywhere.
     func testExecuteScriptToolSuccessCarriesStringWrittenPath() async throws {
         let dir = try makeScratch()
         let source = dir.appendingPathComponent("reference.docx")
@@ -569,6 +577,12 @@ final class ScriptPipelineParityTests: XCTestCase {
             with: Data(resultText(result).utf8)) as? [String: Any])
         XCTAssertTrue(json["written"] is String,
                       "written must be a string on success; got: \(resultText(result))")
+        XCTAssertFalse(json.values.contains { $0 is NSNull },
+                       "no successful response field may be JSON null: \(resultText(result))")
+        XCTAssertNil(json["verified"],
+                     "no reference was supplied, so the verdict fields must be absent")
+        XCTAssertNil(json["broken_parts"],
+                     "broken_parts must not appear when no verification ran")
     }
 
     // MARK: - Layer 2: gated MCP-vs-CLI cross-check (task 3.5)
