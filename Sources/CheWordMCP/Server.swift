@@ -1,7 +1,7 @@
 import Foundation
 import MCP
 import OOXMLSwift
-import WordToMDSwift
+import WordToMD
 import CommonConverterSwift
 import LaTeXMathSwift
 
