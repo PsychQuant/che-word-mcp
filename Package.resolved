@@ -23,8 +23,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/PsychQuant/latex-math-swift.git",
       "state" : {
-        "revision" : "fa1a5aa99b81d351681d8aa13868fa8de3a68328",
-        "version" : "0.3.0"
+        "revision" : "6157f7bff0d397ea6d82ea9e1ec61393dd92a7ab",
+        "version" : "0.3.1"
       }
     },
     {
@@ -41,8 +41,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/PsychQuant/ooxml-swift.git",
       "state" : {
-        "revision" : "2abf788e83a88745e3d06b19f40d9eeae54d41c9",
-        "version" : "2.1.0"
+        "revision" : "6d6a23842592f1ada0325197026e93d90d574470",
+        "version" : "3.0.0"
       }
     },
     {
@@ -104,8 +104,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/PsychQuant/word-to-md-swift.git",
       "state" : {
-        "revision" : "ec77ac9478277ff3d16844011feb09c1e661dd81",
-        "version" : "0.8.0"
+        "revision" : "81d84a301f4f1b9accb6e06826061cd2c1bcfc9a",
+        "version" : "0.8.1"
       }
     },
     {
