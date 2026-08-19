@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.2] - 2026-08-19
+
+### Fixed
+
+- 帶進 ooxml-swift **3.2.0**（ooxml-swift#99 的兩個殘留）：
+
+  - **儲存格的 `insideH` / `insideV` 邊框在 mutation 後不再消失**。`CellBorders` model
+    原本沒有這兩個欄位，所以 reader 讀不進、writer 也寫不出——與 `<w:tcMar>` 當初
+    （#101）是同一種「三側皆無」。實測：帶六個子元素的儲存格經 `update_cell` + save
+    後只剩四個。
+  - **`<w:tcBorders>` 子元素改依 `CT_TcBorders` 的 `xsd:sequence` 輸出**。原本輸出
+    `top, bottom, left, right`——四個邊都在、看起來沒遺失，但那是 schema-invalid；Word
+    容忍它，所以一直沒被發現。
+
+### Notes
+
+- 同族的 ooxml-swift#101（`tcMar`）與 PsychQuant/macdoc#142（`tblPr` 子元素）經同一輪
+  驗證確認**已修好**，本版不含它們的修正——它們早就在了。
+- **驗證方法**：該輪先後用「數元素個數」與「regex 抓自閉合標籤」檢查，各自給出一個有
+  信心而且相反的錯誤答案。writer 從自閉合改成顯式結束標籤就足以讓 regex 全盤誤判。
+  要複驗表格屬性，請解析 XML。
+- tool schema 與回應形狀零改動。
+
 ## [4.0.1] - 2026-08-19
 
 ### Fixed
