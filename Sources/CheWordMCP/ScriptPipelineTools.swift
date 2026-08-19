@@ -40,27 +40,9 @@ struct ScriptCoverageReport: Sendable {
     let aggregateRatio: Double
 }
 
-struct ScriptExecuteResult: Sendable {
-    /// Path the rebuilt docx was written to.
-    let written: String
-    /// Stage-B verdict when verification was requested; nil when it was not.
-    let verified: Bool?
-    /// Part paths that failed byte equality (empty unless verified == false).
-    let brokenParts: [String]
-}
 
 // MARK: - Errors
 
-enum ScriptPipelineError: LocalizedError {
-    case fileNotFound(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .fileNotFound(let path):
-            return "找不到輸入檔案: \(path)"
-        }
-    }
-}
 
 /// TranscodeError is not LocalizedError — without this mapping a script
 /// parse failure surfaces as a useless generic message. Task 3.4 contract:
@@ -127,54 +109,6 @@ func scriptPipelineCoverage(sourcePath: String) throws -> ScriptCoverageReport {
         aggregateRatio: report.aggregateRatio)
 }
 
-/// `.mdocx.swift` script → rebuilt docx. When `verifyAgainst` names a
-/// reference docx, the rebuilt XML part set is compared for Stage-B byte
-/// equality and the verdict (with broken part paths) rides the result.
-///
-/// Ordering contract (#134 verify R1, findings B1): the reference is read
-/// and pinned in memory BEFORE the output is written. This (a) makes
-/// `output_path == verify_byte_equal_against` compare against the
-/// PRE-write reference bytes instead of the tool's own output (which would
-/// be a guaranteed false-positive `verified: true`), and (b) surfaces a
-/// mistyped reference path before any write side effect.
-func scriptPipelineExecute(
-    scriptPath: String,
-    outputPath: String,
-    verifyAgainst: String? = nil
-) throws -> ScriptExecuteResult {
-    let scriptURL = URL(fileURLWithPath: scriptPath)
-    guard FileManager.default.fileExists(atPath: scriptURL.path) else {
-        throw ScriptPipelineError.fileNotFound(scriptPath)
-    }
-    let source = try String(contentsOf: scriptURL, encoding: .utf8)
-    let log = try ScriptImporter.parse(source: source)
-
-    // Pin the reference BEFORE any write (see ordering contract above).
-    var reference: [String: Data]?
-    if let referencePath = verifyAgainst {
-        let referenceURL = URL(fileURLWithPath: referencePath)
-        guard FileManager.default.fileExists(atPath: referenceURL.path) else {
-            throw ScriptPipelineError.fileNotFound(referencePath)
-        }
-        reference = try RawPartChannel.readAllParts(from: referenceURL)
-    }
-
-    var document = WordDocument.emptyAuthoringDocument()
-    try document.apply(operations: log.entries.map(\.op))
-    let outputURL = URL(fileURLWithPath: outputPath)
-    try document.writeAuthoringPackage(to: outputURL)
-
-    guard let reference else {
-        return ScriptExecuteResult(written: outputPath, verified: nil, brokenParts: [])
-    }
-    let rebuilt = try RawPartChannel.readAllParts(from: outputURL)
-    let broken = PartFidelity.compareParts(reference: reference, rebuilt: rebuilt)
-        .filter { !$0.isEqual }
-        .map(\.partPath)
-        .sorted()
-    return ScriptExecuteResult(
-        written: outputPath, verified: broken.isEmpty, brokenParts: broken)
-}
 
 // MARK: - MCP arg-parsing wrappers (dispatch cases live in Server.swift)
 
