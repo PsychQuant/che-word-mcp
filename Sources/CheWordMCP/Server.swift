@@ -15,6 +15,35 @@ import LaTeXMathSwift
 /// without synchronization, causing corruption + save-time crash. The atomic
 /// rename in v3.5.3 prevents data loss when the crash hits, but the underlying
 /// race remained — closed by this actor refactor.
+
+/// A tool that is declared but does not do what it says.
+///
+/// #172: five document-protection tools validated their arguments and returned
+/// a success string while writing nothing — `protect_document` never wrote
+/// `<w:documentProtection>`, `restrict_editing_region` never wrote
+/// `<w:permStart>`/`<w:permEnd>`, `set_document_password` never encrypted
+/// anything. A user who read-only-protected a document before sending it got
+/// an unprotected document *and was told otherwise*.
+///
+/// Failing is worse than working and better than lying. An error costs the
+/// caller a workaround; a false success costs them the thing they were
+/// protecting against, and they find out from someone else.
+///
+/// This is deliberately a local type rather than a new `WordError` case: the
+/// enum lives in ooxml-swift, and needing an upstream release to stop a tool
+/// from lying would be the wrong trade.
+struct ToolNotImplemented: LocalizedError {
+    let tool: String
+    /// The OOXML this tool would have to write to be real. Naming it turns the
+    /// error into a starting point rather than a dead end.
+    let missing: String
+
+    var errorDescription: String? {
+        "\(tool) is not implemented: it would have to write \(missing), and does not. "
+        + "It previously reported success without doing so (#172); it now fails instead of misleading you."
+    }
+}
+
 actor WordMCPServer {
     private let server: Server
     private let transport: StdioTransport
@@ -13517,14 +13546,9 @@ actor WordMCPServer {
             return "Error: Invalid protection type. Valid options: \(validTypes.joined(separator: ", "))"
         }
 
-        let hasPassword = args["password"]?.stringValue != nil
-
-        // 文件保護需要在 settings.xml 中加入 <w:documentProtection>
-        var result = "Document protection enabled: \(protectionType)"
-        if hasPassword {
-            result += " (password protected)"
-        }
-        return result
+        throw ToolNotImplemented(
+            tool: "protect_document",
+            missing: "<w:documentProtection w:edit=\"\(protectionType)\" w:enforcement=\"1\"/> into word/settings.xml")
     }
 
     /// 移除文件保護
@@ -13536,9 +13560,9 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let _ = args["password"]?.stringValue  // 保留以備驗證
-
-        return "Document protection removed"
+        throw ToolNotImplemented(
+            tool: "unprotect_document",
+            missing: "the removal of <w:documentProtection> from word/settings.xml")
     }
 
     /// 設定文件開啟密碼
@@ -13553,9 +13577,13 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        // 文件加密需要在儲存時處理
-        // OOXML 使用 OLE Compound Document 加密
-        return "Document password set (password length: \(password.count) characters)"
+        _ = password
+        // Not merely unwritten — out of reach of this stack. An open-password
+        // is OLE Compound Document encryption of the whole container, not an
+        // OOXML part, so no amount of settings.xml work reaches it.
+        throw ToolNotImplemented(
+            tool: "set_document_password",
+            missing: "OLE Compound Document encryption of the whole .docx container (not an OOXML part)")
     }
 
     /// 移除文件開啟密碼
@@ -13570,7 +13598,9 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        return "Document password removed"
+        throw ToolNotImplemented(
+            tool: "remove_document_password",
+            missing: "decryption of the OLE Compound Document container (not an OOXML part)")
     }
 
     /// 限制編輯區域
@@ -13599,12 +13629,10 @@ actor WordMCPServer {
             throw WordError.invalidIndex(endParagraph)
         }
 
-        // 編輯限制需要在段落中加入 <w:permStart> 和 <w:permEnd>
-        var result = "Editable region set: paragraphs \(startParagraph) to \(endParagraph)"
-        if let editorName = editor {
-            result += " (editor: \(editorName))"
-        }
-        return result
+        _ = editor
+        throw ToolNotImplemented(
+            tool: "restrict_editing_region",
+            missing: "<w:permStart>/<w:permEnd> around paragraphs \(startParagraph)..\(endParagraph)")
     }
 
     // MARK: - Phase 3: 學術功能
