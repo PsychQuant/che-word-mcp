@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.3] - 2026-08-20
+
+### Changed
+
+- 依賴更新至 ooxml-swift **3.3.0**（含 ooxml-swift#106 的部分修法：body-level
+  bookmark marker 不再於 typed-view resync 時從 `body.children` 消失）。
+
+### 誠實邊界：這一版對現有工具表面沒有行為改變
+
+上游修的是 **typed view**，不是位元組——bookmark 的 XML 在修法前就完好地留在
+`xmlTrees` 裡、存檔照樣寫出來。受害的一直是 `body.children` 這個投影。
+
+而本 server 觸及該修法的唯一路徑是 `execute_script`（其他工具都不走
+`apply(operations:)`），且 `execute_script` 只回傳 `written` / `verified` /
+`broken_parts`，**從不讀 `body.children`**。
+
+所以：**不要**把這一版當成「修好了什麼」。它是一次乾淨的依賴前移，價值在於下一個真正
+的修法不必同時扛一次未經測試的依賴跳版。上游修法真正有意義的消費者，是會在 apply 之後
+讀 `body.children` 的呼叫者——目前本 server 不是。
+
+驗證：325 tests、11 skipped、0 failures（對 ooxml-swift 3.3.0）。
+
 ## [4.0.2] - 2026-08-19
 
 ### Fixed
