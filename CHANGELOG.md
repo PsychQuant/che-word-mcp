@@ -24,6 +24,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ooxml-swift **3.4.0** 帶進）。A4 表單只做 `update_cell` / `replace_text` 這類非版面
   編輯，欄間距 425 仍會在存檔時變成 720。
 
+- **新建文件不再以「追蹤修訂模式 ON」出貨**（#170）。`create_document` 無條件開啟追蹤
+  修訂，於是它產出的每一份文件都在 `settings.xml` 帶著 `<w:trackChanges/>`——收件人在
+  Word 打開時「追蹤修訂」按鈕是亮的，一動手就變紅字。
+
+  症狀不是交付檔裡有紅字（插入的內容是乾淨的、`get_revisions` 也回報沒有修訂），而是
+  **模式**被一起交出去。全新文件沒有東西需要被追蹤：審閱模式的語意是「標記對既有內容的
+  變更」，而新文件沒有既有內容。
+
+  v3.0.0（#13）其實已經翻過這個預設——只翻了 `open_document`。兩個開啟 session 的入口
+  修了一個，而且兩邊都各自宣稱有預設值、只是值不同，這個分岔撐了兩個 major 版本沒被發現。
+
+  **只改 handler 不夠**，這點是測試抓到的：`enforceTrackChangesIfNeeded` 在每次 dirty
+  存檔都會依 `documentTrackChangesEnforced` 重新開啟，而該旗標由 `initializeSession`
+  硬寫成 true。`open_document` 隨後覆寫，`create_document` 從來沒有。現在兩邊一致。
+
+  測試斷言的是**存出來的位元組**而非記憶體旗標——收件人拿到的是 `settings.xml`，只驗旗標
+  的測試會在缺陷仍然出貨時通過。另有一條釘住「兩個入口回報相同預設」，那正是這次真正
+  失效的性質。
+
 ### 驗證方式（因為測試是在修法之後寫的）
 
 `TruncationPolicySweepTests` 九條，**雙向驗證**：stash 掉原始碼改動 → 9 條全紅；還原 →
@@ -33,7 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 只准剩三處 UUID slice。這條才是防止下一個 50 字上限被手寫回來的東西 —— 這個缺陷的成本
 從來不是修法（每處一行），而是**記得其他幾處存在**。
 
-全套：334 tests、11 skipped、0 failures（對 ooxml-swift 3.4.0）。
+全套：338 tests、11 skipped、0 failures（對 ooxml-swift 3.4.0）。
 
 ## [4.0.3] - 2026-08-20
 
