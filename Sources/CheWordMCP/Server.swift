@@ -775,7 +775,8 @@ actor WordMCPServer {
                         "source_path": .object([
                             "type": .string("string"),
                             "description": .string("檔案路徑（Direct Mode，免開啟）")
-                        ])
+                        ]),
+                        "summarize": .object(["type": .string("boolean"), "description": .string("是否對超過 5000 字的單筆文字做頭尾摘要（預設 false，回傳完整文字）")])
                     ])
                 ])
             ),
@@ -3826,7 +3827,8 @@ actor WordMCPServer {
                         "source_path": .object([
                             "type": .string("string"),
                             "description": .string("檔案路徑（Direct Mode，免開啟）")
-                        ])
+                        ]),
+                        "summarize": .object(["type": .string("boolean"), "description": .string("是否對超過 5000 字的單筆文字做頭尾摘要（預設 false，回傳完整文字）")])
                     ])
                 ])
             ),
@@ -3845,7 +3847,8 @@ actor WordMCPServer {
                         "source_path": .object([
                             "type": .string("string"),
                             "description": .string("檔案路徑（Direct Mode，免開啟）")
-                        ])
+                        ]),
+                        "summarize": .object(["type": .string("boolean"), "description": .string("是否對超過 5000 字的單筆文字做頭尾摘要（預設 false，回傳完整文字）")])
                     ])
                 ])
             ),
@@ -4086,7 +4089,8 @@ actor WordMCPServer {
                         "paragraph_end": .object([
                             "type": .string("integer"),
                             "description": .string("結束段落索引（可選）")
-                        ])
+                        ]),
+                        "summarize": .object(["type": .string("boolean"), "description": .string("是否對超過 5000 字的單筆文字做頭尾摘要（預設 false，回傳完整文字）")])
                     ]),
                     "required": .array([.string("doc_id"), .string("format_type")])
                 ])
@@ -7045,11 +7049,19 @@ actor WordMCPServer {
             return "No paragraphs in document"
         }
 
+        // Spec word-mcp-markdown-export — Requirement: Truncation policy via
+        // summarize parameter. #178: this cut every paragraph at 50 characters
+        // and appended "..." UNCONDITIONALLY, so a paragraph reading "Hi" was
+        // printed as "Hi..." — the reader could not tell a short paragraph from
+        // a truncated one. Wrong in both directions at once: it truncated
+        // without being asked, and claimed elision that had not happened.
+        let summarize = args["summarize"]?.boolValue ?? false
+
         var result = "Paragraphs:\n"
         for (index, para) in paragraphs.enumerated() {
             let style = para.properties.style ?? "Normal"
-            let preview = String(para.getText().prefix(50))
-            result += "[\(index)] (\(style)) \(preview)...\n"
+            let text = truncateText(para.getText(), summarize: summarize)
+            result += "[\(index)] (\(style)) \(text)\n"
         }
         return result
     }
@@ -11346,10 +11358,14 @@ actor WordMCPServer {
             return "No footnotes in document"
         }
 
+        // #178 — same shape as get_paragraphs: unconditional 50-char cut plus
+        // an unconditional "..." that claimed an elision which may not have
+        // happened.
+        let summarize = args["summarize"]?.boolValue ?? false
+
         var output = "Footnotes in document (\(footnotes.count)):\n"
         for footnote in footnotes {
-            let preview = String(footnote.text.prefix(50))
-            output += "[\(footnote.id)] \(preview)...\n"
+            output += "[\(footnote.id)] \(truncateText(footnote.text, summarize: summarize))\n"
         }
         return output
     }
@@ -11363,10 +11379,12 @@ actor WordMCPServer {
             return "No endnotes in document"
         }
 
+        // #178 — same shape as get_paragraphs / list_footnotes.
+        let summarize = args["summarize"]?.boolValue ?? false
+
         var output = "Endnotes in document (\(endnotes.count)):\n"
         for endnote in endnotes {
-            let preview = String(endnote.text.prefix(50))
-            output += "[\(endnote.id)] \(preview)...\n"
+            output += "[\(endnote.id)] \(truncateText(endnote.text, summarize: summarize))\n"
         }
         return output
     }
@@ -11874,10 +11892,14 @@ actor WordMCPServer {
             return "No \(formatType) text found\(rangeInfo)"
         }
 
+        // #178 — this one already gated its ellipsis on length, so it never
+        // claimed an elision that had not happened. What it violated is the
+        // other half of the SHALL: a 60-character ceiling nobody asked for.
+        let summarize = args["summarize"]?.boolValue ?? false
+
         var output = "Found \(results.count) \(formatType) text segment(s):\n"
         for result in results {
-            // 截斷過長的文字
-            let displayText = result.text.count > 60 ? String(result.text.prefix(57)) + "..." : result.text
+            let displayText = truncateText(result.text, summarize: summarize)
             output += "[Para \(result.paraIndex)] \"\(displayText)\"\n"
         }
         return output
