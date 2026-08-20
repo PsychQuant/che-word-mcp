@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.4] - 2026-08-20
+
+### Fixed
+
+- **四個工具不再截斷沒人要求截斷的文字**（#178）。`get_paragraphs` / `list_footnotes` /
+  `list_endnotes` 過去砍在 50 字，並且**無條件**補上省略號 —— 於是內容只有 `Hi` 的段落
+  印成 `Hi...`，讀者無從分辨「短」與「被截斷」。靜默截斷是**該說沒說**；無條件省略號是
+  **不該說卻說了**。兩者都讓輸出不可信，只是方向相反。
+
+  `list_all_formatted_text` 的省略號本來就依長度判斷、從未謊報，它違反的是另一半：一個
+  沒人要求的 60 字上限。
+
+  四者現在都讀 `summarize` 並改走共用的 `truncateText`（5000 字門檻、` [...] ` 標記），
+  schema 也補上該參數，讓契約對呼叫者可見而非隱含。
+
+- **`<w:cols w:space>` 不再被固定改寫成 720**（#176 的最後一項實質損壞，隨
+  ooxml-swift **3.4.0** 帶進）。A4 表單只做 `update_cell` / `replace_text` 這類非版面
+  編輯，欄間距 425 仍會在存檔時變成 720。
+
+### 驗證方式（因為測試是在修法之後寫的）
+
+`TruncationPolicySweepTests` 九條，**雙向驗證**：stash 掉原始碼改動 → 9 條全紅；還原 →
+9 條全綠。綠燈本身不構成證據，紅過才算。
+
+其中一條不是行為測試而是 #178 自己的 sweep 驗收：掃 `Server.swift` 的硬寫數字 `prefix(`，
+只准剩三處 UUID slice。這條才是防止下一個 50 字上限被手寫回來的東西 —— 這個缺陷的成本
+從來不是修法（每處一行），而是**記得其他幾處存在**。
+
+全套：334 tests、11 skipped、0 failures（對 ooxml-swift 3.4.0）。
+
 ## [4.0.3] - 2026-08-20
 
 ### Changed
