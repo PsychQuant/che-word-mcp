@@ -554,7 +554,8 @@ actor WordMCPServer {
                         "autosave": .object([
                             "type": .string("boolean"),
                             "description": .string("是否在每次編輯後自動存檔到已知路徑（新文件仍需先手動存檔一次）")
-                        ])
+                        ]),
+                        "track_changes": .object(["type": .string("boolean"), "description": .string("是否啟用追蹤修訂（預設 false）。新建文件沒有既有內容可追蹤；傳 true 才會在 settings.xml 寫入 <w:trackChanges/>")])
                     ]),
                     "required": .array([.string("doc_id")])
                 ])
@@ -6650,11 +6651,40 @@ actor WordMCPServer {
         }
 
         let autosave = args["autosave"]?.boolValue ?? false
+        // #170: this used to enable track changes unconditionally, so every new
+        // document shipped with `<w:trackChanges/>` in settings.xml — the
+        // recipient opened it in Word with the Track Changes button lit, and
+        // their first keystroke became a red revision mark.
+        //
+        // A brand-new document has nothing to track. "Review mode" means
+        // "mark changes against existing content", and there is no existing
+        // content. The default belongs off.
+        //
+        // v3.0.0 (#13) already flipped this default for `open_document` and
+        // stopped here — the same fix, applied to one of the two ways a session
+        // begins. Defaults now match, and both take `track_changes: true` to
+        // opt in.
+        let trackChanges = args["track_changes"]?.boolValue ?? false
         var doc = WordDocument()
-        doc.enableTrackChanges(author: defaultRevisionAuthor)
+        if trackChanges {
+            doc.enableTrackChanges(author: defaultRevisionAuthor)
+        }
         initializeSession(docId: docId, document: doc, sourcePath: nil, autosave: autosave)
+        // Override trackChangesEnforced default (initializeSession sets true),
+        // exactly as open_document does. Without this the handler flag above is
+        // cosmetic: `enforceTrackChangesIfNeeded` runs on every dirty store and
+        // re-enables track changes whenever `documentTrackChangesEnforced` is
+        // true, so the first insert_paragraph would put the mode back and the
+        // saved settings.xml would still carry <w:trackChanges/>.
+        //
+        // That is what #13 missed — it added this override to open_document and
+        // not here, so the two entry points disagreed for two major versions
+        // while both reported a default.
+        documentTrackChangesEnforced[docId] = trackChanges
 
-        return "Created new document with id: \(docId). Track changes is enabled by default."
+        return trackChanges
+            ? "Created new document with id: \(docId). Track changes enabled (requested)."
+            : "Created new document with id: \(docId). Track changes disabled (default since #170; pass track_changes: true to enable)."
     }
 
     private func openDocument(args: [String: Value]) async throws -> String {

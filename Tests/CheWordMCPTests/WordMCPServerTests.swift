@@ -29,17 +29,38 @@ final class WordMCPServerTests: XCTestCase {
         }
     }
 
-    func testCreateDocumentEnablesTrackChangesByDefault() async {
+    /// #170 flipped this default. The old assertion (`== true`) pinned the
+    /// defect as intended behaviour: a brand-new document shipped with
+    /// `<w:trackChanges/>` in settings.xml, so the recipient opened it in Word
+    /// with Track Changes lit and their first keystroke became a revision mark.
+    /// Nothing needs tracking in a document that has no prior content.
+    ///
+    /// The coverage is unchanged — the session flag still has to reflect the
+    /// default — only the expected value moved.
+    func testCreateDocumentDisablesTrackChangesByDefault() async {
         let server = await WordMCPServer()
         _ = await server.invokeToolForTesting(
             name: "create_document",
             arguments: ["doc_id": .string("doc")]
         )
 
-        do {
-            let trackChanges_ = await server.isTrackChangesEnabledForTesting("doc")
-            XCTAssertEqual(trackChanges_, true)
-        }
+        let trackChanges = await server.isTrackChangesEnabledForTesting("doc")
+        XCTAssertEqual(trackChanges, false,
+                       "a new document SHALL NOT start in track-changes mode (#170)")
+    }
+
+    /// The capability is unchanged, only the default — pinned here so a future
+    /// reader does not mistake #170 for a removal.
+    func testCreateDocumentHonoursExplicitTrackChangesRequest() async {
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "create_document",
+            arguments: ["doc_id": .string("doc"), "track_changes": .bool(true)]
+        )
+
+        let trackChanges = await server.isTrackChangesEnabledForTesting("doc")
+        XCTAssertEqual(trackChanges, true,
+                       "an explicit track_changes: true SHALL still enable it")
     }
 
     func testDirtyDocumentCannotCloseWithoutSave() async {
