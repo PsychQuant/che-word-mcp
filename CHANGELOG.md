@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.5] - 2026-08-20
+
+### Fixed
+
+- **五個文件保護工具不再回報成功卻什麼都沒做**（#172）。`protect_document` /
+  `unprotect_document` / `set_document_password` / `remove_document_password` /
+  `restrict_editing_region` 過去都是驗證參數後回傳一句有把握的字串，然後把文件原封不動地
+  放著。每一個都帶著註解寫出自己沒寫的 OOXML——程式碼記錄了自己的不誠實。
+
+  其中 `set_document_password` 後果最嚴重：它把**密碼長度**回傳出來，讀起來像是密碼已經
+  被接收並套用。
+
+  五個現在都會失敗，並在錯誤訊息中**指名缺少的 OOXML**，讓錯誤成為起點而非死路。訊息也
+  區分「還沒寫」與「這個 stack 搆不到」：開啟密碼是整個容器的 OLE Compound Document
+  加密、不是 OOXML part，再多 settings.xml 的工作也到不了。
+
+  **失敗比能用差，但比說謊好。** 錯誤讓呼叫者多繞一步；假的成功讓他失去他正想保護的東西，
+  而且是從別人口中得知。
+
+### 誠實邊界
+
+需要真正保護功能的呼叫者仍然沒有路徑。這一版沒有補上那個缺口，只是讓它可見——那正是這次
+改動的全部目的。可實作的部分已分開追蹤：`restrict_editing_region` 今天就做得到（#184，
+`permStart`/`permEnd` 已能 round-trip）；`protect_document` 需要上游先支援
+`<w:documentProtection>`（PsychQuant/ooxml-swift#113）。
+
 ## [4.0.4] - 2026-08-20
 
 ### Fixed
