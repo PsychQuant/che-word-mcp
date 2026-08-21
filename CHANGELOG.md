@@ -17,14 +17,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   指引改推 `■`(U+25A0)。**不限 CJK 字型**：實測 U+2611 在 Times New Roman 與 Arial 同樣缺字形，
   把這條寫成 CJK 的注意事項等於告訴呼叫者拉丁字型的表單是安全的。
 
-- **`GlyphCoverage` / `GlyphCoverageProbe`（內部）**（#189）。回答「某字元在某個*宣告*字型裡
-  有沒有字形」，答案是**三值**而非布林：`hasGlyph` / `noGlyph` / `unknown`。
+- **`GlyphCoverage` / `GlyphCoverageProbe`（內部）**（#189）。回答「某字元在某個*宣告*字型的
+  cmap 裡有沒有字形」，答案是**三值**而非布林：`hasGlyph(resolvedFont:)` /
+  `noGlyph(resolvedFont:)` / `unknown(declaredFont:reason:)`。
 
-  `unknown` 是這個設計的重點。`CTFontCreateWithName` 遇到未安裝的字型不會失敗，它回傳
-  Helvetica——而 Helvetica 連 `■` 都沒有字形。兩值的探測因此會對「`■` 在某個未安裝的 CJK 字型
-  中」回答「無字形」，**指控的正是本文件建議使用的那個字元**，同時把真正的發現（字型不在本機，
-  什麼都量不到）丟掉。字型解析走 descriptor 比對而非 `CTFontCopyFamilyName` 字面比較，後者以
-  英文作答，會把宣告為 `標楷體` 的已安裝字型判成不存在。
+  `unknown` 是這個設計的重點，而它有**兩種**來源、都會靜默給出反向答案：
+
+  1. **字型未安裝**。`CTFontCreateWithName` 遇到未安裝字型不會失敗，它回傳 Helvetica——而
+     Helvetica 連 `■` 都沒有字形。兩值探測因此會對「`■` 在某個未安裝的 CJK 字型中」回答
+     「無字形」，**指控的正是本文件建議使用的那個字元**。
+  2. **解析到別的字型家族**。`CTFontDescriptorCreateMatchingFontDescriptor` 在
+     `mandatoryAttributes` 為 `nil` 時是「找最佳匹配」而非查表——實測請求 `System Font` 會拿到
+     `.SF NS` 家族。對它的判決不是對宣告字型的判決，所以也必須回 `unknown`，並具名它落在哪個
+     家族以便稽核。
+
+  兩個已決case 因此都攜帶**實際被量測的家族名**；沒有它，呼叫端分不出「對宣告字型的判決」與
+  「對 CoreText 認為夠接近的東西的判決」，而那個差別正是 `unknown` 存在的全部理由。
+
+  接受性以字型的**名稱集合**（family / full / PostScript / 本機化 family）比對，而非
+  `CTFontCopyFamilyName` 字面比較：後者以英文作答，會把宣告為 `標楷體` 的已安裝字型判成不存在。
+
+  **能力邊界寫在型別名稱與註解裡**：這是 nominal cmap 覆蓋查詢，**不是**對渲染結果的預測。
+  shaping、normalization、GSUB、variation selector 序列（`☑️` 是 scalar **對**）都在這一層之上；
+  `hasGlyph` 也不排除渲染器因 emoji presentation 改用別的字面。它另外只收**一個**字型名，而
+  OOXML 一個 run 宣告四個（`ascii`/`hAnsi`/`eastAsia`/`cs`），哪個生效取決於字元 script——
+  #189 的 CJK 表單走的是 `eastAsia`。**選 slot 與解析 style/theme 繼承是呼叫端的責任，此處不做。**
 
 ### 誠實邊界
 
