@@ -567,7 +567,10 @@ actor WordMCPServer {
 
     // MARK: - Tools Definition
 
-    private var allTools: [Tool] {
+    /// Internal rather than private so tests can assert on the surface that is
+    /// actually registered. The target is an executable module, so this widens
+    /// visibility no further than the test bundle.
+    var allTools: [Tool] {
         [
             // 文件管理
             Tool(
@@ -898,7 +901,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "replace_text",
-                description: "搜尋並取代文字。v2.1+ cross-run 匹配自動生效；新增 scope / regex / match_case。BREAKING: all 參數已移除（現在恆為 replace-all）。（需先 open_document）",
+                description: "搜尋並取代文字。v2.1+ cross-run 匹配自動生效；新增 scope / regex / match_case。BREAKING: all 參數已移除（現在恆為 replace-all）。（需先 open_document）\n\n【字元選擇】表單勾選請用 ■(U+25A0) 取代 □(U+25A1)，不要用 ☑(U+2611) 或 ☒(U+2612)。實測後兩者在 Times New Roman、Arial 與常見 CJK 字型中都沒有字形，渲染器會 fallback 到 emoji 字型，勾選框變成彩色 emoji、與表單其餘部分不一致。本工具不會改動 run 的字型宣告，但實際繪製的字型會變——所以逐格文字比對會全對、外觀卻是錯的。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -932,7 +935,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "replace_text_batch",
-                description: "批次文字取代（減少 per-call round-trip，單次 save）。Replacements 依陣列順序套用（sequential），後者看到前者結果。per-item scope / regex / match_case 設定。dry_run 略過 disk save（但 in-memory doc 仍被 mutate；需 open_document 還原）。（需先 open_document）",
+                description: "批次文字取代（減少 per-call round-trip，單次 save）。Replacements 依陣列順序套用（sequential），後者看到前者結果。per-item scope / regex / match_case 設定。dry_run 略過 disk save（但 in-memory doc 仍被 mutate；需 open_document 還原）。（需先 open_document）\n\n【字元選擇】同 replace_text：表單勾選用 ■(U+25A0)，勿用 ☑(U+2611) 或 ☒(U+2612)——在 Times New Roman、Arial 及常見 CJK 字型皆無字形，會走 emoji font fallback。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
