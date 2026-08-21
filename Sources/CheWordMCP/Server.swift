@@ -567,7 +567,14 @@ actor WordMCPServer {
 
     // MARK: - Tools Definition
 
-    private var allTools: [Tool] {
+    /// Internal rather than private so tests can assert on the surface that is
+    /// actually registered instead of on a copy of the same strings.
+    ///
+    /// `internal` is module-wide, not test-only — `@testable import` is merely
+    /// how the tests reach it. Every file in this target can now see it, which
+    /// is a real if small widening and the reason this note exists rather than
+    /// the change being silent.
+    var allTools: [Tool] {
         [
             // 文件管理
             Tool(
@@ -898,7 +905,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "replace_text",
-                description: "搜尋並取代文字。v2.1+ cross-run 匹配自動生效；新增 scope / regex / match_case。BREAKING: all 參數已移除（現在恆為 replace-all）。（需先 open_document）",
+                description: "搜尋並取代文字。v2.1+ cross-run 匹配自動生效；新增 scope / regex / match_case。BREAKING: all 參數已移除（現在恆為 replace-all）。（需先 open_document）\n\n【字元選擇】表單勾選請用 ■(U+25A0) 取代 □(U+25A1)，不要用 ☑(U+2611) 或 ☒(U+2612)。實測（本機當前版本）後兩者在 Times New Roman、Arial 與常見 CJK 字型中都沒有字形；缺字形時渲染器會改用別的字型——macOS 上通常是彩色 emoji 字型，其他平台可能是符號字型或 .notdef 方框——勾選框於是與表單其餘部分不一致。本工具不會改動 run 的字型宣告，但實際繪製的字型會變——所以逐格文字比對會全對、外觀卻是錯的。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -932,7 +939,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "replace_text_batch",
-                description: "批次文字取代（減少 per-call round-trip，單次 save）。Replacements 依陣列順序套用（sequential），後者看到前者結果。per-item scope / regex / match_case 設定。dry_run 略過 disk save（但 in-memory doc 仍被 mutate；需 open_document 還原）。（需先 open_document）",
+                description: "批次文字取代（減少 per-call round-trip，單次 save）。Replacements 依陣列順序套用（sequential），後者看到前者結果。per-item scope / regex / match_case 設定。dry_run 略過 disk save（但 in-memory doc 仍被 mutate；需 open_document 還原）。（需先 open_document）\n\n【字元選擇】同 replace_text：表單勾選用 ■(U+25A0)，勿用 ☑(U+2611) 或 ☒(U+2612)——實測（本機當前版本）在 Times New Roman、Arial 及常見 CJK 字型皆無字形，缺字形時會改用別的字型而與表單不一致。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
