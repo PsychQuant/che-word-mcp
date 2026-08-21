@@ -29,7 +29,17 @@ final class Issue189ReplaceTextGuidanceTests: XCTestCase {
 
     func testReplaceTextWarnsAgainstBallotBoxCharacters() async throws {
         let d = try await description(ofToolNamed: "replace_text")
-        XCTAssertTrue(d.contains("U+2611"), "must name the character that triggers emoji fallback")
+        XCTAssertTrue(d.contains("U+2611"), "must name the character that renders wrong")
+        XCTAssertTrue(d.contains("U+2612"), "the guidance claims both ballot-box forms are unsafe")
+
+        // Token presence alone would still pass if a future edit inverted the
+        // advice to "請使用 U+2611". Require the negation to sit before the
+        // code point it governs.
+        let prohibition = ["不要用", "勿用", "避免"].compactMap { d.range(of: $0)?.lowerBound }.min()
+        let mention = try XCTUnwrap(d.range(of: "U+2611")?.lowerBound)
+        let start = try XCTUnwrap(prohibition, "guidance must contain an explicit prohibition")
+        XCTAssertLessThan(start, mention,
+                          "the prohibition must govern U+2611, not merely appear somewhere")
     }
 
     func testReplaceTextGuidanceIsNotScopedToCJKFonts() async throws {
