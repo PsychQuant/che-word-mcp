@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`replace_text` / `replace_text_batch` 現在說明該用哪個勾選字元**（#189）。把表單的 `□`
+  換成 `☑` 會產生一份文字層完全正確、外觀完全錯誤的文件：逐格比對全過，但沒有任何實測字型
+  帶有 U+2611 的字形，渲染器改用彩色 emoji 字體，勾選框於是與表單其餘部分格格不入。工具沒有
+  動過 run 的字型宣告——**被換掉的是實際繪製的字型**，而那一層文字比對看不到。
+
+  指引改推 `■`(U+25A0)。**不限 CJK 字型**：實測 U+2611 在 Times New Roman 與 Arial 同樣缺字形，
+  把這條寫成 CJK 的注意事項等於告訴呼叫者拉丁字型的表單是安全的。
+
+- **`GlyphCoverage` / `GlyphCoverageProbe`（內部）**（#189）。回答「某字元在某個*宣告*字型裡
+  有沒有字形」，答案是**三值**而非布林：`hasGlyph` / `noGlyph` / `unknown`。
+
+  `unknown` 是這個設計的重點。`CTFontCreateWithName` 遇到未安裝的字型不會失敗，它回傳
+  Helvetica——而 Helvetica 連 `■` 都沒有字形。兩值的探測因此會對「`■` 在某個未安裝的 CJK 字型
+  中」回答「無字形」，**指控的正是本文件建議使用的那個字元**，同時把真正的發現（字型不在本機，
+  什麼都量不到）丟掉。字型解析走 descriptor 比對而非 `CTFontCopyFamilyName` 字面比較，後者以
+  英文作答，會把宣告為 `標楷體` 的已安裝字型判成不存在。
+
+### 誠實邊界
+
+**沒有任何呼叫端使用這個探測。** 三種接法（附加在回傳字串、獨立 advisory 工具、專用
+`toggle_checkbox`）都會新增或改變對外的 MCP tool surface，那是需要人決定的事；其中「附加在
+回傳字串」另外還卡在 #192——工具回傳目前沒有 advisory 通道，既有的 `Warning:` 只寫 stderr，
+呼叫端根本看不到。
+
+探測本身也只能量到**本機**的字型集。文件是在讀者的機器上、用讀者的字型渲染的，所以每個答案
+都是建議性質；`unknown` 會是常態而非例外——診斷這個 issue 的機器上，PMingLiU 系列的三種寫法
+全部無法解析。真正降低風險的是改用 `■`，探測只能把「可能出事」提早講出來。
+
 ### Fixed
 
 - **`set_columns`／`set_row_height`／`set_cell_width`／`insert_tab_stop`／`clear_tab_stops`／`set_outline_level` 不再回報成功卻沒有寫入；`set_page_borders` 改為誠實失敗**（#245）。這六個格式工具過去只驗證參數、拼一句描述成功的字串，實際上沒有寫進文件（`set_columns` 例外：只在新建文件時部分生效，開啟既有文件時 `columns`／`space` 都沒寫入——ooxml-swift 開啟既有文件走 overlay 模式，`word/document.xml` 只有在被標記 dirty 時才會從 typed model 重新產生，過去沒有任何地方呼叫標記）。現在都會呼叫 `doc.markPartDirty(_:)`（ooxml-swift 公開給外部呼叫端使用的 dirty 標記 API）並實際存入對應的 typed 欄位：`set_columns` 補上 `columnSpacing`；`set_row_height`／`set_cell_width` 走跟 `set_table_borders`／`set_cell_shading` 內部一致的 `body.children` 定位方式；`insert_tab_stop`／`clear_tab_stops`／`set_outline_level` 透過 ooxml-swift 既有的 `rawChildren`／`RawElement` 機制寫入 `<w:tabs>`／`<w:outlineLvl>`（這兩個元素的 typed 欄位本來就不存在，但被登記在 schema 已知子元素表中，因此會被正確保留在 `<w:pPr>` 的正確 schema 位置）。`insert_tab_stop`／`clear_tab_stops`／`set_outline_level` 的 `paragraph_index` 邊界檢查同時改為與實際寫入一致的 top-level-only（同 #139），不再對只在 readback 家族內合法的索引靜默無作用。`set_page_borders` 找不到可用的公開 API——ooxml-swift 的 `SectionProperties` 完全沒有 `<w:pgBorders>` 對應欄位——依 #201／#172 的慣例改為 `isError: true` 並具名缺少的 OOXML。`insert_tab_stop` 解析既有 `<w:tabs>` 內容改用真正的 XML 解析（`XMLDocument`），取代原本只認自我關閉形式（`<w:tab .../>`）的正規表達式；無法解析的既有內容（如缺少 `w:pos`）現在會回 `isError`，不再靜默漏掉那筆定位點後重建整個 `<w:tabs>`。
