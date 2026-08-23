@@ -40,6 +40,7 @@ xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1 \
     || { echo "error: notary profile '$NOTARY_PROFILE' unusable — run: xcrun notarytool store-credentials $NOTARY_PROFILE (interactive, user-only)" >&2; exit 3; }
 [[ -z "$(git status --porcelain)" ]] \
     || { echo "error: working tree not clean (including untracked files — they could leak into the build) — commit, stash, or clean first" >&2; exit 3; }
+SOURCE_HEAD=$(git rev-parse HEAD)
 if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null 2>&1; then
     echo "error: local tag v$VERSION already exists" >&2; exit 3
 fi
@@ -68,6 +69,9 @@ echo "→ [1/7] universal release build"
 swift build -c release --arch arm64 --arch x86_64
 BIN=".build/apple/Products/Release/$BINARY_NAME"
 [[ -f "$BIN" ]] || { echo "error: built binary not found at $BIN" >&2; exit 4; }
+
+[[ "$(git rev-parse HEAD)" == "$SOURCE_HEAD" && -z "$(git status --porcelain)" ]] \
+    || { echo "error: working tree changed during the build — refusing to sign bytes that may not correspond to commit $SOURCE_HEAD" >&2; exit 3; }
 
 echo "→ [2/7] codesign (Developer ID, hardened runtime, timestamp)"
 codesign --force --options runtime --timestamp --sign "$DEVELOPER_ID" "$BIN"
@@ -99,9 +103,9 @@ codesign --verify --strict -R "$REQUIREMENT" "$WORKDIR/$BINARY_NAME" \
 
 echo "→ [7/7] gh release create (creates tag v$VERSION at HEAD — no pre-pushed tag, so a create failure leaves no dead-end state)"
 gh release create "v$VERSION" --repo "$REPO" \
-    --target "$(git rev-parse HEAD)" \
+    --target "$SOURCE_HEAD" \
     --title "v$VERSION" \
-    --notes "Developer ID signed + Apple notarized universal binary (arm64 + x86_64). Released via scripts/release.sh (pre-upload signature gate, PsychQuant/macdoc#119)." \
+    --notes "Developer ID signed + Apple notarized universal binary (arm64 + x86_64) built from commit $SOURCE_HEAD. Released via scripts/release.sh (source-stability + pre-upload signature gates, PsychQuant/macdoc#119)." \
     "$WORKDIR/$BINARY_NAME" "$WORKDIR/$BINARY_NAME.sha256"
 
 echo "✓ released $BINARY_NAME v$VERSION (signed, notarized, gated, sha256 attached)"
