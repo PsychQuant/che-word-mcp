@@ -47,6 +47,7 @@ if [ "${1:-}" = "test" ]; then exit 0; fi
 echo swift-build >> "$EVENT_LOG"
 case "${MUTATION_MODE:-none}" in
     file) echo changed-during-build >> source.txt ;;
+    primary) echo changed-in-primary-tree >> "$PRIMARY_REPO/source.txt" ;;
     head)
         echo committed-during-build >> source.txt
         /usr/bin/git add source.txt
@@ -102,7 +103,7 @@ run_release() {
     set +e
     (
         cd "$REPO"
-        EVENT_LOG="$EVENT_LOG" BINARY_NAME="$BINARY_NAME" MUTATION_MODE="$1" PATH="$FAKE_PATH:$PATH" \
+        EVENT_LOG="$EVENT_LOG" BINARY_NAME="$BINARY_NAME" MUTATION_MODE="$1" PRIMARY_REPO="$REPO" PATH="$FAKE_PATH:$PATH" \
             bash scripts/release.sh "$TEST_VERSION"
     ) >"$TEST_ROOT/output-$1.log" 2>&1
     RELEASE_RC=$?
@@ -124,7 +125,16 @@ run_release file
     exit 1
 }
 assert_no_release_side_effects
-grep -q 'working tree changed during the build' "$TEST_ROOT/output-file.log"
+grep -q 'tree changed during the build' "$TEST_ROOT/output-file.log"
+/usr/bin/git -C "$REPO" checkout -q -- source.txt
+
+run_release primary
+[[ "$RELEASE_RC" -eq 0 ]] || {
+    echo "FAIL: isolated release should ignore concurrent primary-tree edits; got $RELEASE_RC" >&2
+    cat "$TEST_ROOT/output-primary.log" >&2
+    exit 1
+}
+grep -q "^gh-release-create:.*--target $BASELINE_HEAD" "$EVENT_LOG"
 /usr/bin/git -C "$REPO" checkout -q -- source.txt
 
 run_release none
@@ -143,6 +153,6 @@ run_release head
     exit 1
 }
 assert_no_release_side_effects
-grep -q 'working tree changed during the build' "$TEST_ROOT/output-head.log"
+grep -q 'tree changed during the build' "$TEST_ROOT/output-head.log"
 
 echo "PASS: release refuses source/HEAD drift before signing and pins target"
