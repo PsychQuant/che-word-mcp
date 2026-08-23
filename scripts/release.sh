@@ -38,10 +38,10 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 echo "→ [0/7] pre-flight: notary profile alive?"
 xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1 \
     || { echo "error: notary profile '$NOTARY_PROFILE' unusable — run: xcrun notarytool store-credentials $NOTARY_PROFILE (interactive, user-only)" >&2; exit 3; }
-SOURCE_HEAD=$(git rev-parse HEAD) || { echo "error: cannot resolve source HEAD" >&2; exit 3; }
 SOURCE_STATUS=$(git status --porcelain) || { echo "error: cannot inspect working tree status" >&2; exit 3; }
 [[ -z "$SOURCE_STATUS" ]] \
     || { echo "error: working tree not clean (including untracked files — they could leak into the build) — commit, stash, or clean first" >&2; exit 3; }
+SOURCE_HEAD=$(git rev-parse HEAD) || { echo "error: cannot resolve source HEAD" >&2; exit 3; }
 if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null 2>&1; then
     echo "error: local tag v$VERSION already exists" >&2; exit 3
 fi
@@ -63,6 +63,9 @@ cleanup() {
 trap cleanup EXIT
 git worktree add --detach "$BUILD_TREE" "$SOURCE_HEAD" >/dev/null \
     || { echo "error: cannot materialize isolated build tree for $SOURCE_HEAD" >&2; exit 3; }
+
+# Isolates concurrent primary-tree edits and stale .build state. Trust in the
+# compiler/build plugins and reproducible-toolchain attestation are separate.
 
 # Script-pipeline parity gate (PsychQuant/macdoc#167). The ungated
 # ScriptPipelineParityTests always run here; the CLI cross-check + JPA
