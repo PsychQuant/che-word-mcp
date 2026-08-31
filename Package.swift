@@ -10,7 +10,7 @@ let package = Package(
         // exact revision with the released version constraint before merge.
         .package(
             url: "https://github.com/PsychQuant/ooxml-swift.git",
-            revision: "8cc8e48e9294f22b9ed2ac1f905ac9d670479890"
+            revision: "5c44ef5ac30bd435fb9affcd8d16d2ed0a96b030"
         ),
         .package(url: "https://github.com/PsychQuant/markdown-swift.git", from: "0.2.0"),
         .package(url: "https://github.com/PsychQuant/word-to-md-swift.git", from: "1.0.0"),
