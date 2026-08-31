@@ -7465,9 +7465,33 @@ actor WordMCPServer {
             let runIndex = args["run_index"]?.intValue ?? 0
             let author = args["author"]?.stringValue
             let date = parseISODate(args["date"]?.stringValue)
+            let paragraphs = doc.getParagraphs()
+            guard paragraphIndex >= 0, paragraphIndex < paragraphs.count else {
+                throw WordError.invalidIndex(paragraphIndex)
+            }
+            let runs = paragraphs[paragraphIndex].runs
+            guard runIndex >= 0, runIndex < runs.count else {
+                throw WordError.invalidIndex(runIndex)
+            }
+            // applyRunPropertiesAsRevision replaces the complete rPr value.
+            // Start from the existing run so omitted MCP arguments remain
+            // unchanged; explicit false/nil assignments remain intentional.
+            var replacement = runs[runIndex].properties
+            if let bold = args["bold"]?.boolValue { replacement.bold = bold }
+            if let italic = args["italic"]?.boolValue { replacement.italic = italic }
+            if let underline = args["underline"]?.boolValue {
+                replacement.underline = underline ? .single : nil
+            }
+            if let fontSize = args["font_size"]?.intValue {
+                replacement.fontSize = fontSize * 2
+            }
+            if let fontName = args["font_name"]?.stringValue {
+                replacement.fontName = fontName
+            }
+            if let color = args["color"]?.stringValue { replacement.color = color }
             let revId = try doc.applyRunPropertiesAsRevision(
                 atParagraph: paragraphIndex, atRunIndex: runIndex,
-                newProperties: format, author: author, date: date
+                newProperties: replacement, author: author, date: date
             )
             try await storeDocument(doc, for: docId)
             return "Applied formatting to paragraph \(paragraphIndex) run \(runIndex) as revision \(revId)"

@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `format_text` 現在把 `bold: false`、`italic: false`、`underline: false` 當成明確移除，
+  不再回報成功後原格式仍留在文件。省略的欄位維持不變；`as_revision: true` 也會先從既有
+  run properties 套用 partial patch，避免取消 bold 時順帶清掉未指定的 italic／字型等屬性
+  （#197；upstream PsychQuant/ooxml-swift#115）。
+- 補上 ooxml-swift 3.5.x `rawSlotExecutionFailure` 的錯誤描述，使 dependency 升級維持
+  exhaustive switch 與可讀的 MCP 診斷。
+
+### Release gate
+
+- 目前 draft integration 精確指向 ooxml-swift #115 的驗證 commit；在 upstream 合併並
+  發版前不得合併本 change，release 前必須換回 version constraint。
+
 ## [4.0.5] - 2026-08-20
 
 ### Fixed
