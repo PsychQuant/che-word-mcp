@@ -56,6 +56,8 @@ func describeTranscodeError(_ error: TranscodeError) -> String {
         return "raw op 解析失敗（line \(line)）: \(reason)"
     case .slotDesignationFailure(let name, let reason):
         return "slot「\(name)」無法建立: \(reason)"
+    case .rawSlotExecutionFailure(let name, let reason):
+        return "raw slot「\(name)」執行失敗: \(reason)"
     }
 }
 

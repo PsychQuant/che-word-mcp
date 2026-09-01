@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.6] - 2026-09-01
+
+### Fixed
+
+- **append 模式插圖不再於存檔時靜默消失**（PsychQuant/macdoc#175）。ooxml-swift 依賴下限
+  升到 **3.6.0**：`appendParagraph` 的 op-emission 快路徑改由正面白名單
+  `isOpPayloadRepresentable` 把關，含 `<w:drawing>`（或任何 op payload 無法表示的內容）的
+  段落一律走 typed fallback，不再被投影成丟失 drawing 的 `RunPayload`（ooxml-swift#128）。
+  實際事故：7 張圖的交付文件少了 4 張，`insert_image_from_path` / `list_images` /
+  `save_document` 全程回報成功。
+
+### Added
+
+- **存檔前 image-consistency gate**（`E_IMAGE_CONSISTENCY`，defense-in-depth）。
+  `save_document` / `finalize_document` 在寫檔前先序列化並以 ooxml-swift 3.6.0 的
+  `PackageInspector.imageConsistencyReport` 檢查：若這次存檔會寫出**本 session 新產生的**
+  孤兒 image relationship（rels/media 存在但無任何 XML part 引用——#175 的簽名），拒絕
+  寫檔並回報孤兒 rId 與三計數（bodyDrawings / imageRelationships / mediaEntries）。
+  - 開檔時就存在的孤兒（第三方 writer 的合法殘留）以 open-baseline diff 放行，不誤傷。
+  - 刻意刪除含圖段落想保留殘留 relationship 時，新參數 `allow_orphan_images: true` 放行。
+  - 拒絕發生在任何磁碟寫入之前（含 `.bak` 搬移），且 session 存活可繼續修復。
+  - autosave 與 shutdown-flush 路徑刻意不設 gate——最後防線寧可寫出去。
+- 矩陣列 1/2/6 的 MCP 層 regression tests（`Issue175SaveImageConsistencyTests`，10 tests：
+  斷言一律讀「存檔後的 bytes」而非 session 記憶體——後者正是原事故中說謊的那一面）。
+
+### Changed
+
+- `describeTranscodeError` 補上 ooxml-swift 3.5.0 新增的 `.rawSlotExecutionFailure` case
+  （pin bump 帶入的 exhaustive-switch 要求）。
+
 ## [4.0.5] - 2026-08-20
 
 ### Fixed
