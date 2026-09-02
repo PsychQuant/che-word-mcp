@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.9] - 2026-09-03
+
+### Changed
+
+- ooxml-swift 依賴下限升到 **3.6.3**（PsychQuant/macdoc#175 verify R3）：3.6.2 的 graft 在 root 只宣告 `xmlns:w`
+  的文件上會寫出未宣告 `w14:/wp:/a:/pic:` 前綴的 `document.xml`（Word 拒開）；3.6.3 會在 root 補宣告。
+  真實 Word 文件的 root 本來就宣告齊全、不受影響；`create_document` 產出的文件 root 亦含 w14。
+  另修 `PackageInspector` 巢狀 part 的 OPC rels 路徑公式（`<dir>/_rels/<name>.rels`）。
+  本版無 server 端程式碼變更。
+
 ## [4.0.8] - 2026-09-03
 
 ### Fixed
