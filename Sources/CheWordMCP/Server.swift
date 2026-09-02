@@ -54,6 +54,12 @@ actor WordMCPServer {
     private var documentOriginalPaths: [String: String] = [:]
     private var documentDirtyState: [String: Bool] = [:]
     private var documentAutosave: [String: Bool] = [:]
+    /// macdoc#175 R2: image-relationship orphans (part-qualified) present in the
+    /// package at open / revert / reload / last gated save. The save gate diffs
+    /// against THIS snapshot — never against the mutable disk file — so
+    /// autosave / checkpoint / an external writer cannot launder a session-new
+    /// orphan into a "pre-existing" one (R1 security S2, DA N2, codex F6).
+    private var documentImageOrphanBaseline: [String: Set<String>] = [:]
     private var documentTrackChangesEnforced: [String: Bool] = [:]
     /// Disk-drift detection (3.0.0 — Refs #12 #13 #15)
     private var documentDiskHash: [String: Data] = [:]
@@ -275,6 +281,7 @@ actor WordMCPServer {
         documentOriginalPaths.removeValue(forKey: docId)
         documentDirtyState.removeValue(forKey: docId)
         documentAutosave.removeValue(forKey: docId)
+        documentImageOrphanBaseline.removeValue(forKey: docId)
         documentTrackChangesEnforced.removeValue(forKey: docId)
         documentDiskHash.removeValue(forKey: docId)
         documentDiskMtime.removeValue(forKey: docId)
@@ -421,6 +428,15 @@ actor WordMCPServer {
             return
         }
 
+        // macdoc#175 R2: autosave overwrites the SOURCE file, so it carries the
+        // same gate as save_document. A refusal preserves the state in a
+        // sidecar instead of clobbering the original (R1 security S2 / logic H1).
+        if let refusal = imageConsistencySaveRefusal(doc, docId: docId) {
+            let sidecar = path + ".unsaved.docx"
+            try DocxWriter.write(doc, to: URL(fileURLWithPath: sidecar))
+            FileHandle.standardError.write(Data("Warning: autosave for '\(docId)' refused by the image-consistency gate; state written to \(sidecar) instead of the source file.\n\(refusal)\n".utf8))
+            return
+        }
         try persistDocumentToDisk(doc, docId: docId, path: path)
     }
 
@@ -480,6 +496,15 @@ actor WordMCPServer {
             }
 
             do {
+                // macdoc#175 R2: the flush runs after a NORMAL transport end, so it
+                // must not turn a gate refusal ("No file was written") into an
+                // ungated overwrite of the source a few seconds later (R1 logic H1).
+                if let refusal = imageConsistencySaveRefusal(document, docId: docId) {
+                    let sidecar = path + ".unsaved.docx"
+                    try DocxWriter.write(document, to: URL(fileURLWithPath: sidecar))
+                    FileHandle.standardError.write(Data("Warning: shutdown flush for '\(docId)' refused by the image-consistency gate; state written to \(sidecar), source file untouched.\n\(refusal)\n".utf8))
+                    continue
+                }
                 try persistDocumentToDisk(document, docId: docId, path: path)
             } catch {
                 FileHandle.standardError.write(
@@ -639,7 +664,7 @@ actor WordMCPServer {
                         ]),
                         "allow_orphan_images": .object([
                             "type": .string("boolean"),
-                            "description": .string("v4.0.6 新增（PsychQuant/macdoc#175）：預設 false — 若這次存檔會寫出本 session 新產生的孤兒 image relationship（rels/media 存在但無任何 XML part 引用，即 #175 靜默丟圖簽名），save 拒絕寫檔並回報孤兒 rId 與三計數。刻意刪除含圖段落、想保留殘留 relationship 時傳 true 放行。開檔時就存在的孤兒不受影響。")
+                            "description": .string("v4.0.6 新增（PsychQuant/macdoc#175）：預設 false — 若這次存檔會寫出本 session 新產生的孤兒 image relationship（rels/media 存在但該 part 內無引用，即 #175 靜默丟圖簽名），save 拒絕寫檔並回報孤兒（part:rId）與三計數；檢查本身失敗亦拒絕（E_IMAGE_CONSISTENCY_INSPECTION）。刻意刪除含圖段落、想保留殘留 relationship 時傳 true 放行。baseline 是開檔時的快照（4.0.7 起），開檔時就存在的孤兒不受影響；autosave / checkpoint 無法解除。必須是 boolean。")
                         ])
                     ]),
                     "required": .array([.string("doc_id")])
@@ -6751,6 +6776,7 @@ actor WordMCPServer {
             docId: docId, document: doc, sourcePath: path,
             autosave: autosave, autosaveEveryN: autosaveEveryN
         )
+        recordImageBaseline(docId: docId, path: path)
         // Override trackChangesEnforced default (initializeSession sets true)
         documentTrackChangesEnforced[docId] = trackChanges
 
@@ -6769,9 +6795,9 @@ actor WordMCPServer {
     // MARK: - #175 image-consistency save gate (PsychQuant/macdoc#175)
 
     /// Pure decision core for the save-time image-consistency gate. Given the
-    /// orphan image-relationship ids of the bytes about to be written, the
-    /// orphan ids already present in the session's source file, and the raw
-    /// report counts, return the refusal message — or nil to allow the save.
+    /// part-qualified orphan image relationships of the bytes about to be
+    /// written, the orphans snapshotted at open (or last gated save), and the
+    /// raw report counts, return the refusal message — or nil to allow.
     ///
     /// Only NEW orphans (absent from the baseline) block: files opened with
     /// pre-existing unreferenced image relationships — a state Word tolerates
@@ -6786,32 +6812,71 @@ actor WordMCPServer {
         let newOrphans = orphanIds.filter { !baselineOrphanIds.contains($0) }
         guard !newOrphans.isEmpty else { return nil }
         return """
-        Error: E_IMAGE_CONSISTENCY — refusing to save: \(newOrphans.count) image relationship(s) would be written with no reference in any XML part (the PsychQuant/macdoc#175 silent-image-loss signature). No file was written.
-        Orphan relationship Id(s): \(newOrphans.joined(separator: ", "))
+        Error: E_IMAGE_CONSISTENCY — refusing to save: \(newOrphans.count) image relationship(s) declared in the package have no reference in their own part (the PsychQuant/macdoc#175 silent-image-loss signature). No file was written; the session is still open.
+        Orphan relationship(s): \(newOrphans.joined(separator: ", "))
         Counts: bodyDrawings=\(bodyDrawingCount), imageRelationships=\(imageRelationshipCount), mediaEntries=\(mediaEntryCount)
-        If you inserted an image this session, it has been dropped from the document body — verify with list_images vs get_paragraphs, re-insert it, and save again. If you deliberately removed an image's paragraph and expect the leftover relationship, re-run with allow_orphan_images: true.
+        Two possible causes — check before acting:
+          1. An image inserted this session was dropped from the document body. Compare list_images with get_paragraphs; only if the image is missing from the text, re-insert it and save again.
+          2. You deliberately deleted a paragraph that contained an image; the leftover relationship is harmless. Re-run with allow_orphan_images: true.
+        Do not route around this error via checkpoint, autosave, or saving to another path: those carry the same check and the baseline is fixed at open time, so the refusal repeats.
         """
     }
 
-    /// Serialize-and-check wrapper used by save_document / finalize_document.
-    ///
-    /// Inspection failures never block a save — the gate must not be able to
-    /// make saving less reliable than it was before the gate existed. The
-    /// autosave and shutdown-flush paths are deliberately ungated: they are
-    /// last-resort data preservation, where refusing to write loses more.
-    private func imageConsistencySaveRefusal(_ document: WordDocument, docId: String) -> String? {
-        guard let data = try? DocxWriter.writeData(document),
-              let report = try? PackageInspector.imageConsistencyReport(of: data),
-              !report.isConsistent else { return nil }
-        var baseline: Set<String> = []
-        if let sourcePath = documentOriginalPaths[docId],
-           let sourceData = FileManager.default.contents(atPath: sourcePath),
-           let sourceReport = try? PackageInspector.imageConsistencyReport(of: sourceData) {
-            baseline = Set(sourceReport.orphanImageRelationshipIds)
+    /// Fail-closed variant: the check itself could not run. Refusing here is
+    /// what makes "the gate passed" mean something (R1 codex F3 / logic M5).
+    static func imageConsistencyInspectionRefusal(reason: String) -> String {
+        """
+        Error: E_IMAGE_CONSISTENCY_INSPECTION — could not verify image consistency before saving: \(reason). No file was written; the session is still open.
+        Retry the save. If it repeats, pass allow_orphan_images: true to save without the check, and report the reason above.
+        """
+    }
+
+    /// Parse `allow_orphan_images`: absent / JSON null → false; a boolean →
+    /// itself; anything else is an error rather than a silent false (R1 #14).
+    static func allowOrphanImagesFlag(_ args: [String: Value]) throws -> Bool {
+        guard let v = args["allow_orphan_images"] else { return false }
+        switch v {
+        case .bool(let b): return b
+        case .null: return false
+        default:
+            throw WordError.invalidParameter(
+                "allow_orphan_images",
+                "must be a boolean (true/false); got \(v). Strings such as \"true\" are not accepted.")
         }
+    }
+
+    /// Snapshot the part-qualified image orphans of the package at `path`.
+    /// An unreadable / uninspectable package snapshots as empty, which makes
+    /// the next gated save fail closed (E_IMAGE_CONSISTENCY_INSPECTION) rather
+    /// than silently pass.
+    private func recordImageBaseline(docId: String, path: String) {
+        guard let data = FileManager.default.contents(atPath: path),
+              let report = try? PackageInspector.imageConsistencyReport(of: data) else {
+            documentImageOrphanBaseline[docId] = []
+            return
+        }
+        documentImageOrphanBaseline[docId] = Set(report.orphanImageRelationshipRefs.map(\.qualified))
+    }
+
+    /// Serialize-and-check wrapper shared by save_document / finalize_document,
+    /// the autosave:true path, the shutdown flush, and checkpoint-to-source.
+    /// Returns a refusal message, or nil to allow the write.
+    ///
+    /// Documents with no images skip the gate entirely: a session-new orphan
+    /// can only come from `insertImage`, which always appends to `images`
+    /// (R1 regression M4 — halves save cost for the common case).
+    private func imageConsistencySaveRefusal(_ document: WordDocument, docId: String) -> String? {
+        guard !document.images.isEmpty else { return nil }
+        let data: Data
+        do { data = try DocxWriter.writeData(document) }
+        catch { return Self.imageConsistencyInspectionRefusal(reason: "serialization failed: \(error.localizedDescription)") }
+        let report: ImageConsistencyReport
+        do { report = try PackageInspector.imageConsistencyReport(of: data) }
+        catch { return Self.imageConsistencyInspectionRefusal(reason: "package inspection failed: \(error.localizedDescription)") }
+        guard !report.isConsistent else { return nil }
         return Self.imageConsistencyRefusalMessage(
-            orphanIds: report.orphanImageRelationshipIds,
-            baselineOrphanIds: baseline,
+            orphanIds: report.orphanImageRelationshipRefs.map(\.qualified),
+            baselineOrphanIds: documentImageOrphanBaseline[docId] ?? [],
             bodyDrawingCount: report.bodyDrawingCount,
             imageRelationshipCount: report.imageRelationshipCount,
             mediaEntryCount: report.mediaEntryCount)
@@ -6825,15 +6890,15 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let allowOrphanImages = args["allow_orphan_images"]?.boolValue ?? false
+        let explicitPath = args["path"]?.stringValue
+        let path = try effectiveSavePath(for: docId, explicitPath: explicitPath)   // path errors first (R1 #14)
+        let allowOrphanImages = try Self.allowOrphanImagesFlag(args)
         if !allowOrphanImages, let refusal = imageConsistencySaveRefusal(doc, docId: docId) {
             return refusal
         }
-
-        let explicitPath = args["path"]?.stringValue
-        let path = try effectiveSavePath(for: docId, explicitPath: explicitPath)
         let keepBak = args["keep_bak"]?.boolValue ?? false
         try persistDocumentToDisk(doc, docId: docId, path: path, keepBak: keepBak)
+        if !doc.images.isEmpty { recordImageBaseline(docId: docId, path: path) }   // acknowledged state is the new baseline
         // Phase 4: clean up <source>.autosave.docx after successful save.
         cleanupAutosaveFile(for: docId)
 
@@ -6879,13 +6944,12 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let allowOrphanImages = args["allow_orphan_images"]?.boolValue ?? false
+        let explicitPath = args["path"]?.stringValue
+        let path = try effectiveSavePath(for: docId, explicitPath: explicitPath)
+        let allowOrphanImages = try Self.allowOrphanImagesFlag(args)
         if !allowOrphanImages, let refusal = imageConsistencySaveRefusal(doc, docId: docId) {
             return refusal    // refusal precedes persist AND removeSession — the session survives
         }
-
-        let explicitPath = args["path"]?.stringValue
-        let path = try effectiveSavePath(for: docId, explicitPath: explicitPath)
         try persistDocumentToDisk(doc, docId: docId, path: path)
         // Phase 4: clean up <source>.autosave.docx after successful finalize.
         cleanupAutosaveFile(for: docId)
@@ -6920,6 +6984,15 @@ actor WordMCPServer {
             target = sourcePath + ".autosave.docx"
         }
 
+        // macdoc#175 R2 (DA N2): a checkpoint aimed at the source file is a save
+        // in disguise — apply the same gate so a refused save cannot be routed
+        // around. Sidecar targets stay ungated (they never clobber the original
+        // and, since the baseline is an open-time snapshot, cannot launder it).
+        if let sourcePath = documentOriginalPaths[docId],
+           URL(fileURLWithPath: target).standardizedFileURL.path == URL(fileURLWithPath: sourcePath).standardizedFileURL.path,
+           let refusal = imageConsistencySaveRefusal(doc, docId: docId) {
+            return refusal
+        }
         try DocxWriter.write(doc, to: URL(fileURLWithPath: target))
         return "Checkpoint written for '\(docId)' to: \(target)"
     }
@@ -7041,6 +7114,7 @@ actor WordMCPServer {
         let fresh = try DocxReader.read(from: url)
         openDocuments[docId] = fresh
         documentDirtyState[docId] = false
+        recordImageBaseline(docId: docId, path: path)
         if let hash = try? SessionState.computeSHA256(path: path) {
             documentDiskHash[docId] = hash
         }
@@ -7075,6 +7149,7 @@ actor WordMCPServer {
         let fresh = try DocxReader.read(from: url)
         openDocuments[docId] = fresh
         documentDirtyState[docId] = false
+        recordImageBaseline(docId: docId, path: path)
         if let hash = try? SessionState.computeSHA256(path: path) {
             documentDiskHash[docId] = hash
         }
