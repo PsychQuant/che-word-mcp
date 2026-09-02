@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.7] - 2026-09-03
+
+### Fixed
+
+- **image-consistency gate 的三條側門與 baseline 設計**（PsychQuant/macdoc#175 verify R1，
+  4.0.6 出貨後由 6-AI 交叉驗證抓到）。4.0.6 的 baseline 是「每次 save 當下重讀來源檔的孤兒集合」，
+  所以任何未經 gate 的寫回（`autosave: true`、`checkpoint` 指向原檔、shutdown flush）都會把
+  session 新產生的孤兒洗成「開檔時就有」，gate 隨即永久解除——而拒絕訊息本身還會把 agent 誘導到
+  `checkpoint`。現在：
+  - baseline 是 **開檔時的快照**（revert / reload / 通過 gate 的存檔後更新），存在 session state，
+    不再從可變磁碟檔重建。一個修法同時消掉 R1 的 security S2、DA N2、codex F6、logic L5/L6。
+  - `autosave: true` 覆寫的是使用者的正本，不是 sidecar——現在過同一道 gate；拒絕時狀態寫到
+    `<source>.unsaved.docx` 並在 stderr 告警，正本不動。
+  - shutdown flush（正常 transport 結束後就會跑）同樣過 gate；拒絕時寫 `<source>.unsaved.docx`。
+    4.0.6 會在使用者收到「No file was written」幾秒後，由同一支 binary 無 gate 覆寫原檔且不留 `.bak`。
+  - `checkpoint` 指向來源檔時視同存檔、過 gate；sidecar 目標維持不設 gate。
+- **gate 改為 fail-closed**：序列化或封包檢查本身失敗時回 `E_IMAGE_CONSISTENCY_INSPECTION` 並拒絕，
+  不再以 `try?` 把「檢查失敗」當「檢查通過」（R1 codex F3 / logic M5）。
+- **`allow_orphan_images` 型別嚴檢**：非 boolean（如字串 `"true"`）回錯誤，不再安靜當 false。
+- **拒絕訊息重寫**：先列兩種可能原因（圖被丟 vs 刻意刪圖）並要求先比對 `list_images` 與
+  `get_paragraphs` 再重插，明言 checkpoint / autosave / 換路徑都繞不過。
+- 存檔路徑錯誤現在先於 gate 回報（`effectiveSavePath` 先跑）。
+
+### Changed
+
+- ooxml-swift 依賴下限升到 **3.6.1**：`PackageInspector` 改 per-part 比對（header/footer 圖的孤兒
+  現在看得到、跨 part 同號 rId 不再遮蔽）；`appendParagraph` 白名單補齊 Paragraph 層 7 個集合與
+  `rFonts.cs`。拒絕訊息中的孤兒改以 `part:rId` 表示。
+- 無圖片的文件跳過 gate（R1 實測 gate 讓存檔成本翻倍；session-new 孤兒必經 `insertImage`，
+  短路不漏 #175 簽名）。
+- `mcpb/manifest.json` 由 4.0.6 起與 release 版號對齊（4.0.6 那次是把停在 3.18.0 的欄位一次補正，
+  當時未記錄）。
+
+### Tests
+
+- `Issue175R2SaveGateTests`（8）：baseline 快照與通過 gate 後更新、checkpoint 指向原檔被擋且不解除 gate、
+  finalize 拒絕後 session 存活、autosave 拒絕寫 sidecar 不寫正本、非 boolean 旗標報錯、fail-closed 訊息。
+
 ## [4.0.6] - 2026-09-01
 
 ### Fixed
