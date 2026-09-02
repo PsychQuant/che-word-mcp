@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.8] - 2026-09-03
+
+### Fixed
+
+- **`checkpoint` 的 gate 改為「依意圖」而非「依路徑字串」**（PsychQuant/macdoc#175 verify R2）。4.0.7 用
+  `standardizedFileURL` 字串比對判斷是否指向來源檔，R2 以下載回來的公證 binary 實打：大小寫變體
+  （APFS 預設大小寫不敏感）與任意路徑都不過 gate，正本被覆寫、破損交付檔靜默產出——而拒絕訊息還宣稱
+  checkpoint 繞不過。現在**任何顯式 `path` 的 checkpoint 都過 gate**（同 `allow_orphan_images` 逃生口，
+  新增於 checkpoint schema）；只有預設 recovery sidecar（不帶 path，寫 `<source>.autosave.docx`）維持不 gate。
+- **`.unsaved.docx` sidecar 不再無條件覆寫既有檔**（R2 security S4，實測曾毀掉一個使用者檔）。名稱已被占用時
+  改寫 `<source>.unsaved-<timestamp>.docx`；本 server 寫下的 sidecar 會在下一次通過 gate 的存檔後清除，
+  使用者自己的檔案永不動。
+- **無圖短路改看整個封包**：4.0.7 的 `images.isEmpty` 短路把 3.6.1 剛加的 header/footer 孤兒偵測整片關掉
+  （header 圖不在 `document.images`）。現在 header/footer 的 image relationship 也算「可能帶圖」。
+  今天此路徑只因 `insert_image_watermark` 是 no-op（#201）而不可達；#201 修好時本項已就位。
+
+### Changed
+
+- ooxml-swift 依賴下限升到 **3.6.2**：不可投影的 append（含插圖）改為把新段落 graft 進 live tree、
+  其餘位元組原樣 blob-copy，不再整份 `document.xml` 走 typed 序列化——R2 regression 對 27 份真實文件 A/B
+  發現 typed fallback 讓 4 份正文被靜默改寫（論文掉 73 段），本版起 append-image 不再觸發那條路徑。
+  另補 Run 層 tree-backed guard、inspector 註解／`>`／巢狀 parts 三修。
+- 誠實申報 4.0.7 未寫的成本：`autosave: true` 每次 mutation 多一次完整序列化＋封包檢查（19 圖論文約
+  +0.7 s、阻塞 actor），且 autosave 被 gate 拒絕時 mutation 仍回成功（狀態在 sidecar、stderr 有警告）。
+  `open_document` 另多一次封包解析（約 0.2 s）建立 baseline。
+
+### Tests
+
+- `Issue175R3CheckpointSidecarTests`（6）：大小寫變體與任意路徑被擋、allow 放行、預設 sidecar 不擋、既有
+  `.unsaved.docx` 不被覆寫、成功存檔後清理、header 圖不短路。
+
 ## [4.0.7] - 2026-09-03
 
 ### Fixed

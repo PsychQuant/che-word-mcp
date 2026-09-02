@@ -60,6 +60,9 @@ actor WordMCPServer {
     /// autosave / checkpoint / an external writer cannot launder a session-new
     /// orphan into a "pre-existing" one (R1 security S2, DA N2, codex F6).
     private var documentImageOrphanBaseline: [String: Set<String>] = [:]
+    /// `.unsaved*.docx` sidecars this server wrote for a document after a gate
+    /// refusal; removed on the next successful gated save (R2 security S4).
+    private var documentUnsavedSidecars: [String: [String]] = [:]
     private var documentTrackChangesEnforced: [String: Bool] = [:]
     /// Disk-drift detection (3.0.0 — Refs #12 #13 #15)
     private var documentDiskHash: [String: Data] = [:]
@@ -282,6 +285,7 @@ actor WordMCPServer {
         documentDirtyState.removeValue(forKey: docId)
         documentAutosave.removeValue(forKey: docId)
         documentImageOrphanBaseline.removeValue(forKey: docId)
+        documentUnsavedSidecars.removeValue(forKey: docId)   // files stay: they are the user's safety net
         documentTrackChangesEnforced.removeValue(forKey: docId)
         documentDiskHash.removeValue(forKey: docId)
         documentDiskMtime.removeValue(forKey: docId)
@@ -432,8 +436,7 @@ actor WordMCPServer {
         // same gate as save_document. A refusal preserves the state in a
         // sidecar instead of clobbering the original (R1 security S2 / logic H1).
         if let refusal = imageConsistencySaveRefusal(doc, docId: docId) {
-            let sidecar = path + ".unsaved.docx"
-            try DocxWriter.write(doc, to: URL(fileURLWithPath: sidecar))
+            let sidecar = try writeRefusedStateSidecar(doc, docId: docId, sourcePath: path)
             FileHandle.standardError.write(Data("Warning: autosave for '\(docId)' refused by the image-consistency gate; state written to \(sidecar) instead of the source file.\n\(refusal)\n".utf8))
             return
         }
@@ -482,7 +485,25 @@ actor WordMCPServer {
         if FileManager.default.fileExists(atPath: autosavePath) {
             try? FileManager.default.removeItem(atPath: autosavePath)
         }
+        for sidecar in documentUnsavedSidecars[docId] ?? [] where FileManager.default.fileExists(atPath: sidecar) {
+            try? FileManager.default.removeItem(atPath: sidecar)
+        }
+        documentUnsavedSidecars[docId] = []
         autosaveCounter[docId] = 0
+    }
+
+    /// Preserve refused state next to the source WITHOUT clobbering anything:
+    /// `<source>.unsaved.docx`, or a timestamped variant when that name is
+    /// already taken (it may be a user's file, or an earlier refusal).
+    private func writeRefusedStateSidecar(_ document: WordDocument, docId: String, sourcePath: String) throws -> String {
+        var sidecar = sourcePath + ".unsaved.docx"
+        if FileManager.default.fileExists(atPath: sidecar) {
+            let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
+            sidecar = sourcePath + ".unsaved-\(stamp).docx"
+        }
+        try DocxWriter.write(document, to: URL(fileURLWithPath: sidecar))
+        documentUnsavedSidecars[docId, default: []].append(sidecar)
+        return sidecar
     }
 
     private func flushDirtyDocumentsOnShutdown() async {
@@ -500,8 +521,7 @@ actor WordMCPServer {
                 // must not turn a gate refusal ("No file was written") into an
                 // ungated overwrite of the source a few seconds later (R1 logic H1).
                 if let refusal = imageConsistencySaveRefusal(document, docId: docId) {
-                    let sidecar = path + ".unsaved.docx"
-                    try DocxWriter.write(document, to: URL(fileURLWithPath: sidecar))
+                    let sidecar = try writeRefusedStateSidecar(document, docId: docId, sourcePath: path)
                     FileHandle.standardError.write(Data("Warning: shutdown flush for '\(docId)' refused by the image-consistency gate; state written to \(sidecar), source file untouched.\n\(refusal)\n".utf8))
                     continue
                 }
@@ -5992,6 +6012,10 @@ actor WordMCPServer {
                         "path": .object([
                             "type": .string("string"),
                             "description": .string("可選輸出路徑；省略時寫到 <source>.autosave.docx")
+                        ]),
+                        "allow_orphan_images": .object([
+                            "type": .string("boolean"),
+                            "description": .string("v4.0.8 新增（PsychQuant/macdoc#175）：顯式 path 的 checkpoint 與 save_document 一樣過 image-consistency gate；刻意保留孤兒 relationship 時傳 true 放行。預設 recovery sidecar（不帶 path）不受影響。")
                         ])
                     ]),
                     "required": .array([.string("doc_id")])
@@ -6827,7 +6851,7 @@ actor WordMCPServer {
     static func imageConsistencyInspectionRefusal(reason: String) -> String {
         """
         Error: E_IMAGE_CONSISTENCY_INSPECTION — could not verify image consistency before saving: \(reason). No file was written; the session is still open.
-        Retry the save. If it repeats, pass allow_orphan_images: true to save without the check, and report the reason above.
+        Retry the save. If it repeats, the package could not be inspected at all — do NOT bypass with allow_orphan_images (that flag acknowledges known orphans, it does not cover an uninspectable package); report the reason above and use checkpoint (default recovery sidecar) to preserve the session state.
         """
     }
 
@@ -6865,8 +6889,20 @@ actor WordMCPServer {
     /// Documents with no images skip the gate entirely: a session-new orphan
     /// can only come from `insertImage`, which always appends to `images`
     /// (R1 regression M4 — halves save cost for the common case).
+    /// True when any part of the package can carry an image relationship
+    /// (body images, or header/footer image relationships). Header/footer
+    /// images are not in `document.images`, so the earlier `images.isEmpty`
+    /// short-circuit silently skipped the per-part inspector's new coverage
+    /// (R2 requirements R2-2 / logic M3).
+    static func documentMayCarryImages(_ document: WordDocument) -> Bool {
+        if !document.images.isEmpty { return true }
+        if document.headers.contains(where: { !$0.relationships.imageRelationships.isEmpty }) { return true }
+        if document.footers.contains(where: { !$0.relationships.imageRelationships.isEmpty }) { return true }
+        return false
+    }
+
     private func imageConsistencySaveRefusal(_ document: WordDocument, docId: String) -> String? {
-        guard !document.images.isEmpty else { return nil }
+        guard Self.documentMayCarryImages(document) else { return nil }
         let data: Data
         do { data = try DocxWriter.writeData(document) }
         catch { return Self.imageConsistencyInspectionRefusal(reason: "serialization failed: \(error.localizedDescription)") }
@@ -6898,7 +6934,7 @@ actor WordMCPServer {
         }
         let keepBak = args["keep_bak"]?.boolValue ?? false
         try persistDocumentToDisk(doc, docId: docId, path: path, keepBak: keepBak)
-        if !doc.images.isEmpty { recordImageBaseline(docId: docId, path: path) }   // acknowledged state is the new baseline
+        if Self.documentMayCarryImages(doc) { recordImageBaseline(docId: docId, path: path) }   // acknowledged state is the new baseline
         // Phase 4: clean up <source>.autosave.docx after successful save.
         cleanupAutosaveFile(for: docId)
 
@@ -6984,14 +7020,20 @@ actor WordMCPServer {
             target = sourcePath + ".autosave.docx"
         }
 
-        // macdoc#175 R2 (DA N2): a checkpoint aimed at the source file is a save
-        // in disguise — apply the same gate so a refused save cannot be routed
-        // around. Sidecar targets stay ungated (they never clobber the original
-        // and, since the baseline is an open-time snapshot, cannot launder it).
-        if let sourcePath = documentOriginalPaths[docId],
-           URL(fileURLWithPath: target).standardizedFileURL.path == URL(fileURLWithPath: sourcePath).standardizedFileURL.path,
-           let refusal = imageConsistencySaveRefusal(doc, docId: docId) {
-            return refusal
+        // macdoc#175 R2/R3: any EXPLICIT checkpoint path is a deliverable-shaped
+        // write (a case variant or symlink of the source, or a file someone
+        // will open) — it carries the same gate as save_document, with the
+        // same allow_orphan_images escape. Only the default recovery sidecar
+        // (`<source>.autosave.docx`) is ungated: it never clobbers the source
+        // and, since the baseline is an open-time snapshot, cannot launder it.
+        // Path-string comparison was bypassed by case/symlink variants
+        // (R2 security S2/S3, logic N3) — so the rule is by intent, not by path.
+        let explicitTarget = args["path"]?.stringValue.map { !$0.isEmpty } ?? false
+        if explicitTarget {
+            let allow = try Self.allowOrphanImagesFlag(args)
+            if !allow, let refusal = imageConsistencySaveRefusal(doc, docId: docId) {
+                return refusal
+            }
         }
         try DocxWriter.write(doc, to: URL(fileURLWithPath: target))
         return "Checkpoint written for '\(docId)' to: \(target)"
