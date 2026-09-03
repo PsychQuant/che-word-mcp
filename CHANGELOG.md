@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.10] - 2026-09-03
+
+### Fixed
+
+- **無圖短路改為封包級**（PsychQuant/macdoc#175 verify R3，logic N4）。4.0.8 的 `documentMayCarryImages` 列舉
+  body / header / footer 三個 typed 來源，仍會把 3.6.2 起 inspector 對 footnotes / charts / diagrams 的覆蓋整片取消。
+  現在 open / revert / reload / 通過 gate 的存檔時一併記下 `PackageInspector` 在整個封包數到的 image relationship
+  數；只要開檔時封包任何 part 宣告過圖片，或 session 內 typed 集合有圖，就不短路。封包無法檢查時視為「有圖」，永不短路。
+
+### Changed
+
+- ooxml-swift 依賴下限升到 **3.6.4**：graft 的命名空間宣告改放在移植的段落上、不再動 root——3.6.3 的作法讓 root 變 dirty，
+  70/80 份真實文件的 CRLF prolog 被改成 LF、epilog 被丟（3.6.2 沒有這個問題）；3.6.4 起 graft 之外的每個位元組都不變。
+
+### Corrected（對 4.0.8 條目的更正）
+
+- 「append-image 不再觸發 lossy 路徑」需加條件：只有當插圖是該 session 對 `document.xml` 的**第一個** typed 變更時
+  才走 graft；先 `insert_paragraph`（帶 index）再插圖、或任何 anchored 插圖（`after_text` / `before_text` / `index` /
+  `into_table_cell` / `after_image_id`），仍走整份 typed 重序列化（PsychQuant/ooxml-swift#133）。
+- 4.0.8 申報的 autosave 成本（每次 mutation 約 +0.7 s）是在 ooxml-swift 3.6.1 上量的；R3 在 3.6.3 重測約低 2.4–2.8 倍，
+  含圖文件每次 mutation 約 +0.25–0.3 s。
+
 ## [4.0.9] - 2026-09-03
 
 ### Changed

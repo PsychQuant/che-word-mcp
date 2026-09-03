@@ -97,12 +97,13 @@ final class Issue175R3CheckpointSidecarTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path + ".unsaved.docx"), "acknowledged save removes the sidecar we wrote")
     }
 
-    func testShortCircuitSeesHeaderImages() {
+    func testShortCircuitSeesHeaderImagesAndPackageWideDeclarations() {
         var doc = WordDocument()
-        XCTAssertFalse(WordMCPServer.documentMayCarryImages(doc))
+        XCTAssertFalse(WordMCPServer.documentMayCarryImages(doc, packageImageRelationshipsAtBaseline: 0))
+        XCTAssertTrue(WordMCPServer.documentMayCarryImages(doc, packageImageRelationshipsAtBaseline: 1), "a footnote/chart image declared in the opened package must not skip the gate (R3 logic N4)")
         var header = Header(id: "h1")
         header.relationships.relationships.append(Relationship(id: "rId1", type: .image, target: "media/logo.png"))
         doc.headers.append(header)
-        XCTAssertTrue(WordMCPServer.documentMayCarryImages(doc), "header-only images must not skip the gate (R2 requirements R2-2)")
+        XCTAssertTrue(WordMCPServer.documentMayCarryImages(doc, packageImageRelationshipsAtBaseline: 0), "header-only images must not skip the gate (R2 requirements R2-2)")
     }
 }

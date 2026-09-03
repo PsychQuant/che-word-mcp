@@ -63,6 +63,12 @@ actor WordMCPServer {
     /// `.unsaved*.docx` sidecars this server wrote for a document after a gate
     /// refusal; removed on the next successful gated save (R2 security S4).
     private var documentUnsavedSidecars: [String: [String]] = [:]
+    /// Image relationships declared ANYWHERE in the package at open / last
+    /// gated save (every `word/**/_rels/*.rels`, via PackageInspector). The
+    /// gate short-circuit consults this instead of enumerating typed
+    /// collections, so footnotes / charts / diagrams images are covered
+    /// (R3 logic N4: the typed enumeration kept cancelling new inspector coverage).
+    private var documentImageRelationshipCountAtBaseline: [String: Int] = [:]
     private var documentTrackChangesEnforced: [String: Bool] = [:]
     /// Disk-drift detection (3.0.0 — Refs #12 #13 #15)
     private var documentDiskHash: [String: Data] = [:]
@@ -286,6 +292,7 @@ actor WordMCPServer {
         documentAutosave.removeValue(forKey: docId)
         documentImageOrphanBaseline.removeValue(forKey: docId)
         documentUnsavedSidecars.removeValue(forKey: docId)   // files stay: they are the user's safety net
+        documentImageRelationshipCountAtBaseline.removeValue(forKey: docId)
         documentTrackChangesEnforced.removeValue(forKey: docId)
         documentDiskHash.removeValue(forKey: docId)
         documentDiskMtime.removeValue(forKey: docId)
@@ -6877,9 +6884,11 @@ actor WordMCPServer {
         guard let data = FileManager.default.contents(atPath: path),
               let report = try? PackageInspector.imageConsistencyReport(of: data) else {
             documentImageOrphanBaseline[docId] = []
+            documentImageRelationshipCountAtBaseline[docId] = Int.max   // uninspectable → never short-circuit
             return
         }
         documentImageOrphanBaseline[docId] = Set(report.orphanImageRelationshipRefs.map(\.qualified))
+        documentImageRelationshipCountAtBaseline[docId] = report.imageRelationshipCount
     }
 
     /// Serialize-and-check wrapper shared by save_document / finalize_document,
@@ -6894,15 +6903,20 @@ actor WordMCPServer {
     /// images are not in `document.images`, so the earlier `images.isEmpty`
     /// short-circuit silently skipped the per-part inspector's new coverage
     /// (R2 requirements R2-2 / logic M3).
-    static func documentMayCarryImages(_ document: WordDocument) -> Bool {
-        if !document.images.isEmpty { return true }
+    static func documentMayCarryImages(_ document: WordDocument, packageImageRelationshipsAtBaseline: Int) -> Bool {
+        if packageImageRelationshipsAtBaseline > 0 { return true }          // anything declared anywhere in the opened package
+        if !document.images.isEmpty { return true }                         // session-added body images
         if document.headers.contains(where: { !$0.relationships.imageRelationships.isEmpty }) { return true }
         if document.footers.contains(where: { !$0.relationships.imageRelationships.isEmpty }) { return true }
         return false
     }
 
+    private func documentMayCarryImages(_ document: WordDocument, docId: String) -> Bool {
+        Self.documentMayCarryImages(document, packageImageRelationshipsAtBaseline: documentImageRelationshipCountAtBaseline[docId] ?? 0)
+    }
+
     private func imageConsistencySaveRefusal(_ document: WordDocument, docId: String) -> String? {
-        guard Self.documentMayCarryImages(document) else { return nil }
+        guard documentMayCarryImages(document, docId: docId) else { return nil }
         let data: Data
         do { data = try DocxWriter.writeData(document) }
         catch { return Self.imageConsistencyInspectionRefusal(reason: "serialization failed: \(error.localizedDescription)") }
@@ -6934,7 +6948,7 @@ actor WordMCPServer {
         }
         let keepBak = args["keep_bak"]?.boolValue ?? false
         try persistDocumentToDisk(doc, docId: docId, path: path, keepBak: keepBak)
-        if Self.documentMayCarryImages(doc) { recordImageBaseline(docId: docId, path: path) }   // acknowledged state is the new baseline
+        if documentMayCarryImages(doc, docId: docId) { recordImageBaseline(docId: docId, path: path) }   // acknowledged state is the new baseline
         // Phase 4: clean up <source>.autosave.docx after successful save.
         cleanupAutosaveFile(for: docId)
 
