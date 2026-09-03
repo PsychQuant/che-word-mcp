@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.11] - 2026-09-03
+
+### Fixed
+
+- **三個浮水印寫側工具改為誠實失敗**（#201，與 #172 同款處置）。`insert_watermark` / `insert_image_watermark` /
+  `remove_watermark` 過去驗完參數就回「Watermark inserted / removed」，而每個 header part 一個位元組都沒動——
+  讀側 `list_watermarks` / `get_watermark` 是真的 VML parser，所以「插完再列」看得到矛盾，但不列就不會知道。
+  現在三者在既有的參數與 `documentNotFound` 檢查之後拋 `ToolNotImplemented`（`isError: true`），訊息具名它
+  本該寫入的 OOXML：文字浮水印是每個 `word/header*.xml` 內的 VML `<w:pict><v:shape id="PowerPlusWaterMarkObject…"
+  o:spt="136"><v:textpath string=…/></v:shape></w:pict>` run；圖片浮水印另需 `<v:imagedata r:id=…/>` 與 header
+  的 image relationship 加 media part；移除則是拿掉 header parts 內的這些 shape。三個 tool 的 description 也註明
+  「目前未實作，呼叫會回 isError」。讀側行為不變（`WatermarkToolsHonestFailureTests` 同時鎖住讀側與「stub 不
+  弄髒 session」）。真正的文字浮水印實作屬 Plan 量級，另立 issue。
+
 ## [4.0.10] - 2026-09-03
 
 ### Fixed
