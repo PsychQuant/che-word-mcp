@@ -48,6 +48,17 @@ struct ToolNotImplemented: LocalizedError {
     }
 }
 
+/// #202 — a precondition was not met and nothing was done. Thrown, not
+/// returned: `handleToolCall` turns a thrown error into `isError: true` and
+/// prefixes the text with `Error: `, so the client sees the same sentence a
+/// `return "Error: …"` used to produce — with the protocol flag set. A returned
+/// string is a success on the wire, whatever it says.
+struct ToolRefusal: LocalizedError {
+    let message: String
+    init(_ message: String) { self.message = message }
+    var errorDescription: String? { message }
+}
+
 actor WordMCPServer {
     private let server: Server
     private let transport: StdioTransport
@@ -6850,7 +6861,7 @@ actor WordMCPServer {
         let newOrphans = orphanIds.filter { !baselineOrphanIds.contains($0) }
         guard !newOrphans.isEmpty else { return nil }
         return """
-        Error: E_IMAGE_CONSISTENCY — refusing to save: \(newOrphans.count) image relationship(s) declared in the package have no reference in their own part (the PsychQuant/macdoc#175 silent-image-loss signature). No file was written; the session is still open.
+        E_IMAGE_CONSISTENCY — refusing to save: \(newOrphans.count) image relationship(s) declared in the package have no reference in their own part (the PsychQuant/macdoc#175 silent-image-loss signature). No file was written; the session is still open.
         Orphan relationship(s): \(newOrphans.joined(separator: ", "))
         Counts: bodyDrawings=\(bodyDrawingCount), imageRelationships=\(imageRelationshipCount), mediaEntries=\(mediaEntryCount)
         Two possible causes — check before acting:
@@ -6864,7 +6875,7 @@ actor WordMCPServer {
     /// what makes "the gate passed" mean something (R1 codex F3 / logic M5).
     static func imageConsistencyInspectionRefusal(reason: String) -> String {
         """
-        Error: E_IMAGE_CONSISTENCY_INSPECTION — could not verify image consistency before saving: \(reason). No file was written; the session is still open.
+        E_IMAGE_CONSISTENCY_INSPECTION — could not verify image consistency before saving: \(reason). No file was written; the session is still open.
         Retry the save. If it repeats, the package could not be inspected at all — do NOT bypass with allow_orphan_images (that flag acknowledges known orphans, it does not cover an uninspectable package); report the reason above and use checkpoint (default recovery sidecar) to preserve the session state.
         """
     }
@@ -6938,7 +6949,6 @@ actor WordMCPServer {
             imageRelationshipCount: report.imageRelationshipCount,
             mediaEntryCount: report.mediaEntryCount)
     }
-
     private func saveDocument(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -6951,7 +6961,7 @@ actor WordMCPServer {
         let path = try effectiveSavePath(for: docId, explicitPath: explicitPath)   // path errors first (R1 #14)
         let allowOrphanImages = try Self.allowOrphanImagesFlag(args)
         if !allowOrphanImages, let refusal = imageConsistencySaveRefusal(doc, docId: docId) {
-            return refusal
+            throw ToolRefusal(refusal)
         }
         let keepBak = args["keep_bak"]?.boolValue ?? false
         try persistDocumentToDisk(doc, docId: docId, path: path, keepBak: keepBak)
@@ -6979,13 +6989,13 @@ actor WordMCPServer {
         let discardChanges = args["discard_changes"]?.boolValue ?? false
 
         if isDirty(docId: docId) && !discardChanges {
-            return """
-            Error: E_DIRTY_DOC — document '\(docId)' has uncommitted changes.
+            throw ToolRefusal("""
+            E_DIRTY_DOC — document '\(docId)' has uncommitted changes.
             Choose one:
               - call save_document first to persist your edits, then close_document
               - pass discard_changes: true to release without saving
               - use finalize_document for save+close in one step
-            """
+            """)
         }
 
         removeSession(docId: docId)
@@ -7005,7 +7015,7 @@ actor WordMCPServer {
         let path = try effectiveSavePath(for: docId, explicitPath: explicitPath)
         let allowOrphanImages = try Self.allowOrphanImagesFlag(args)
         if !allowOrphanImages, let refusal = imageConsistencySaveRefusal(doc, docId: docId) {
-            return refusal    // refusal precedes persist AND removeSession — the session survives
+            throw ToolRefusal(refusal)    // refusal precedes persist AND removeSession — the session survives
         }
         try persistDocumentToDisk(doc, docId: docId, path: path)
         // Phase 4: clean up <source>.autosave.docx after successful finalize.
@@ -7053,7 +7063,7 @@ actor WordMCPServer {
         if explicitTarget {
             let allow = try Self.allowOrphanImagesFlag(args)
             if !allow, let refusal = imageConsistencySaveRefusal(doc, docId: docId) {
-                return refusal
+                throw ToolRefusal(refusal)
             }
         }
         try DocxWriter.write(doc, to: URL(fileURLWithPath: target))
@@ -7071,22 +7081,22 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
         guard let sourcePath = documentOriginalPaths[docId], !sourcePath.isEmpty else {
-            return "Error: E_NO_AUTOSAVE — document '\(docId)' has no known source path."
+            throw ToolRefusal("E_NO_AUTOSAVE — document '\(docId)' has no known source path.")
         }
         let autosavePath = sourcePath + ".autosave.docx"
         guard FileManager.default.fileExists(atPath: autosavePath) else {
-            return "Error: E_NO_AUTOSAVE — no autosave file at '\(autosavePath)'."
+            throw ToolRefusal("E_NO_AUTOSAVE — no autosave file at '\(autosavePath)'.")
         }
 
         let discardChanges = args["discard_changes"]?.boolValue ?? false
         if isDirty(docId: docId) && !discardChanges {
-            return """
-            Error: E_DIRTY_DOC — document '\(docId)' has uncommitted changes.
+            throw ToolRefusal("""
+            E_DIRTY_DOC — document '\(docId)' has uncommitted changes.
             Choose one:
               - call save_document first to persist current edits, then recover_from_autosave
               - pass discard_changes: true to overwrite in-memory state with autosave bytes
               - use finalize_document to save+close before recovering
-            """
+            """)
         }
 
         let recoveredDoc = try DocxReader.read(from: URL(fileURLWithPath: autosavePath))
@@ -7170,7 +7180,7 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
         guard let path = documentOriginalPaths[docId], !path.isEmpty else {
-            return "Error: document '\(docId)' has no known source path to revert from"
+            throw ToolRefusal("document '\(docId)' has no known source path to revert from")
         }
 
         let url = URL(fileURLWithPath: path)
@@ -7197,16 +7207,16 @@ actor WordMCPServer {
         }
         let force = args["force"]?.boolValue ?? false
         if isDirty(docId: docId) && !force {
-            return """
-            Error: document '\(docId)' has uncommitted changes. Your in-memory edits would be lost.
+            throw ToolRefusal("""
+            document '\(docId)' has uncommitted changes. Your in-memory edits would be lost.
             Options:
               - call save_document first to persist your edits, then retry reload_from_disk
               - pass force: true to discard your edits and reload from disk
-            """
+            """)
         }
         // Same semantics as revert from here.
         guard let path = documentOriginalPaths[docId], !path.isEmpty else {
-            return "Error: document '\(docId)' has no known source path to reload from"
+            throw ToolRefusal("document '\(docId)' has no known source path to reload from")
         }
         let url = URL(fileURLWithPath: path)
         let fresh = try DocxReader.read(from: url)
@@ -7355,7 +7365,7 @@ actor WordMCPServer {
         // #80: anchor list resolved from WordMCPServer.toolAnchorWhitelists (SoT).
         let presentAnchors = WordMCPServer.detectPresentAnchors(args, tool: "insert_paragraph")
         if presentAnchors.count > 1 {
-            return "Error: insert_paragraph: received conflicting anchors: \(presentAnchors.joined(separator: " + ")). Specify exactly one."
+            throw ToolRefusal("insert_paragraph: received conflicting anchors: \(presentAnchors.joined(separator: " + ")). Specify exactly one.")
         }
 
         // Anchor priority (mirrors insert_image_from_path):
@@ -7363,7 +7373,7 @@ actor WordMCPServer {
         let textInstance = args["text_instance"]?.intValue ?? 1
         // anchor-dx-consistency (#72): explicit text_instance < 1 rejected.
         if let explicit = args["text_instance"]?.intValue, explicit < 1 {
-            return "Error: insert_paragraph: text_instance must be ≥ 1, got \(explicit)."
+            throw ToolRefusal("insert_paragraph: text_instance must be ≥ 1, got \(explicit).")
         }
         let resultMessage: String
 
@@ -7372,15 +7382,15 @@ actor WordMCPServer {
             guard let tableIdx = cellDict["table_index"]?.intValue,
                   let row = cellDict["row"]?.intValue,
                   let col = cellDict["col"]?.intValue else {
-                return "Error: insert_paragraph: into_table_cell requires all three fields (table_index, row, col); got partial dict"
+                throw ToolRefusal("insert_paragraph: into_table_cell requires all three fields (table_index, row, col); got partial dict")
             }
             do {
                 try doc.insertParagraph(para, at: .intoTableCell(tableIndex: tableIdx, row: row, col: col))
                 resultMessage = "Inserted paragraph into table[\(tableIdx)] cell (row: \(row), col: \(col))"
             } catch let InsertLocationError.tableIndexOutOfRange(i) {
-                return "Error: insert_paragraph: table index \(i) out of range"
+                throw ToolRefusal("insert_paragraph: table index \(i) out of range")
             } catch let InsertLocationError.tableCellOutOfRange(t, r, c) {
-                return "Error: insert_paragraph: table[\(t)] cell (row: \(r), col: \(c)) out of range"
+                throw ToolRefusal("insert_paragraph: table[\(t)] cell (row: \(r), col: \(c)) out of range")
             }
         } else if let afterImageId = args["after_image_id"]?.stringValue {
             // F1 (v3.15.1): after_image_id anchor.
@@ -7388,21 +7398,21 @@ actor WordMCPServer {
                 try doc.insertParagraph(para, at: .afterImageId(afterImageId))
                 resultMessage = "Inserted paragraph after image '\(afterImageId)'"
             } catch let InsertLocationError.imageIdNotFound(rId) {
-                return "Error: insert_paragraph: image rId '\(rId)' not found"
+                throw ToolRefusal("insert_paragraph: image rId '\(rId)' not found")
             }
         } else if let afterText = args["after_text"]?.stringValue {
             do {
                 try doc.insertParagraph(para, at: .afterText(afterText, instance: textInstance))
                 resultMessage = "Inserted paragraph after text '\(afterText)' (instance \(textInstance))"
             } catch let InsertLocationError.textNotFound(searchText, instance) {
-                return "Error: insert_paragraph: text '\(searchText)' not found (instance \(instance))"
+                throw ToolRefusal("insert_paragraph: text '\(searchText)' not found (instance \(instance))")
             }
         } else if let beforeText = args["before_text"]?.stringValue {
             do {
                 try doc.insertParagraph(para, at: .beforeText(beforeText, instance: textInstance))
                 resultMessage = "Inserted paragraph before text '\(beforeText)' (instance \(textInstance))"
             } catch let InsertLocationError.textNotFound(searchText, instance) {
-                return "Error: insert_paragraph: text '\(searchText)' not found (instance \(instance))"
+                throw ToolRefusal("insert_paragraph: text '\(searchText)' not found (instance \(instance))")
             }
         } else if let index = args["index"]?.intValue {
             doc.insertParagraph(para, at: index)
@@ -7494,7 +7504,7 @@ actor WordMCPServer {
         case "all":
             scope = .all
         default:
-            return "Error: invalid scope '\(scopeString)'. Use 'body' or 'all'."
+            throw ToolRefusal("invalid scope '\(scopeString)'. Use 'body' or 'all'.")
         }
         let regex = args["regex"]?.boolValue ?? false
         let matchCase = args["match_case"]?.boolValue ?? true
@@ -7506,7 +7516,7 @@ actor WordMCPServer {
             let scopeLabel = scope == .all ? " (scope: all)" : ""
             return "Replaced \(count) occurrence(s) of '\(find)' with '\(replace)'\(scopeLabel)"
         } catch ReplaceError.invalidRegex(let pattern) {
-            return "Error: invalid regex pattern '\(pattern)'"
+            throw ToolRefusal("invalid regex pattern '\(pattern)'")
         }
     }
 
@@ -8628,7 +8638,7 @@ actor WordMCPServer {
         // #80: anchor list resolved from WordMCPServer.toolAnchorWhitelists (SoT).
         let presentAnchors = WordMCPServer.detectPresentAnchors(args, tool: "insert_image_from_path")
         if presentAnchors.count > 1 {
-            return "Error: insert_image_from_path: received conflicting anchors: \(presentAnchors.joined(separator: " + ")). Specify exactly one."
+            throw ToolRefusal("insert_image_from_path: received conflicting anchors: \(presentAnchors.joined(separator: " + ")). Specify exactly one.")
         }
 
         guard FileManager.default.fileExists(atPath: path) else {
@@ -8666,14 +8676,14 @@ actor WordMCPServer {
         let textInstance = args["text_instance"]?.intValue ?? 1
         // anchor-dx-consistency (#72): explicit text_instance < 1 rejected.
         if let explicit = args["text_instance"]?.intValue, explicit < 1 {
-            return "Error: insert_image_from_path: text_instance must be ≥ 1, got \(explicit)."
+            throw ToolRefusal("insert_image_from_path: text_instance must be ≥ 1, got \(explicit).")
         }
         if let cellDict = args["into_table_cell"]?.objectValue {
             // F5 (v3.15.1): malformed partial dict returns structured error instead of silent fallthrough.
             guard let tableIdx = cellDict["table_index"]?.intValue,
                   let row = cellDict["row"]?.intValue,
                   let col = cellDict["col"]?.intValue else {
-                return "Error: insert_image_from_path: into_table_cell requires all three fields (table_index, row, col); got partial dict"
+                throw ToolRefusal("insert_image_from_path: into_table_cell requires all three fields (table_index, row, col); got partial dict")
             }
             do {
                 imageId = try doc.insertImage(
@@ -8685,9 +8695,9 @@ actor WordMCPServer {
                     description: description
                 )
             } catch let InsertLocationError.tableIndexOutOfRange(i) {
-                return "Error: insert_image_from_path: table index \(i) out of range"
+                throw ToolRefusal("insert_image_from_path: table index \(i) out of range")
             } catch let InsertLocationError.tableCellOutOfRange(t, r, c) {
-                return "Error: insert_image_from_path: table[\(t)] cell (row: \(r), col: \(c)) out of range"
+                throw ToolRefusal("insert_image_from_path: table[\(t)] cell (row: \(r), col: \(c)) out of range")
             }
         } else if let afterImageId = args["after_image_id"]?.stringValue {
             // F1 (v3.15.1): after_image_id anchor.
@@ -8701,7 +8711,7 @@ actor WordMCPServer {
                     description: description
                 )
             } catch let InsertLocationError.imageIdNotFound(rId) {
-                return "Error: insert_image_from_path: image rId '\(rId)' not found"
+                throw ToolRefusal("insert_image_from_path: image rId '\(rId)' not found")
             }
         } else if let afterText = args["after_text"]?.stringValue {
             do {
@@ -8714,7 +8724,7 @@ actor WordMCPServer {
                     description: description
                 )
             } catch let InsertLocationError.textNotFound(text, instance) {
-                return "Error: insert_image_from_path: text '\(text)' not found (instance \(instance))"
+                throw ToolRefusal("insert_image_from_path: text '\(text)' not found (instance \(instance))")
             }
         } else if let beforeText = args["before_text"]?.stringValue {
             do {
@@ -8727,7 +8737,7 @@ actor WordMCPServer {
                     description: description
                 )
             } catch let InsertLocationError.textNotFound(text, instance) {
-                return "Error: insert_image_from_path: text '\(text)' not found (instance \(instance))"
+                throw ToolRefusal("insert_image_from_path: text '\(text)' not found (instance \(instance))")
             }
         } else {
             // body-level: use legacy index-based API
@@ -9634,7 +9644,7 @@ actor WordMCPServer {
         // full rationale. Path origin is preserved in error messages but the
         // insertion mechanic is unified.
         if args["components"] != nil && args["latex"] != nil {
-            return "Error: insert_equation: pass either 'components' (JSON tree) OR 'latex' (LaTeX subset), not both"
+            throw ToolRefusal("insert_equation: pass either 'components' (JSON tree) OR 'latex' (LaTeX subset), not both")
         }
 
         let components: [MathComponent]
@@ -9642,30 +9652,30 @@ actor WordMCPServer {
             do {
                 components = [try parseMathComponent(from: componentsValue)]
             } catch MathParseError.unknownType(let t) {
-                return "Error: insert_equation: unknown math component type '\(t)'. Supported: run, fraction, radical, subSuperScript, nary."
+                throw ToolRefusal("insert_equation: unknown math component type '\(t)'. Supported: run, fraction, radical, subSuperScript, nary.")
             } catch MathParseError.missingField(let f, let t) {
-                return "Error: insert_equation: math component '\(t)' missing required field '\(f)'"
+                throw ToolRefusal("insert_equation: math component '\(t)' missing required field '\(f)'")
             } catch MathParseError.invalidStructure(let msg) {
-                return "Error: insert_equation: invalid components structure: \(msg)"
+                throw ToolRefusal("insert_equation: invalid components structure: \(msg)")
             }
         } else if let latex = args["latex"]?.stringValue {
             do {
                 components = try parseLatex(latex)
             } catch LaTeXParseError.unrecognizedToken(let tok) {
-                return "Error: insert_equation: unrecognized LaTeX token '\(tok)'. Use `components:` argument for full MathComponent control."
+                throw ToolRefusal("insert_equation: unrecognized LaTeX token '\(tok)'. Use `components:` argument for full MathComponent control.")
             } catch LaTeXParseError.malformed(let msg) {
-                return "Error: insert_equation: malformed LaTeX: \(msg). Use `components:` for complex expressions."
+                throw ToolRefusal("insert_equation: malformed LaTeX: \(msg). Use `components:` for complex expressions.")
             } catch LaTeXParseError.empty {
-                return "Error: insert_equation: empty LaTeX input."
+                throw ToolRefusal("insert_equation: empty LaTeX input.")
             }
         } else {
-            return "Error: insert_equation: either 'components' (JSON tree) or 'latex' (LaTeX subset) argument required"
+            throw ToolRefusal("insert_equation: either 'components' (JSON tree) or 'latex' (LaTeX subset) argument required")
         }
 
         let displayMode: Bool
         if let displayModeValue = args["display_mode"] {
             guard let bool = displayModeValue.boolValue else {
-                return "Error: insert_equation: display_mode must be a boolean true/false, not a string or other JSON type"
+                throw ToolRefusal("insert_equation: display_mode must be a boolean true/false, not a string or other JSON type")
             }
             displayMode = bool
         } else {
@@ -9679,7 +9689,7 @@ actor WordMCPServer {
         let textInstance = args["text_instance"]?.intValue ?? 1
         // anchor-dx-consistency (#72): explicit text_instance < 1 rejected.
         if let explicit = args["text_instance"]?.intValue, explicit < 1 {
-            return "Error: insert_equation: text_instance must be ≥ 1, got \(explicit)."
+            throw ToolRefusal("insert_equation: text_instance must be ≥ 1, got \(explicit).")
         }
 
         // Anchors only meaningful in display mode (block-level new paragraph).
@@ -9687,7 +9697,7 @@ actor WordMCPServer {
         // semantics are ambiguous — reject explicitly to surface the misuse.
         if !displayMode && (afterText != nil || beforeText != nil
                             || afterImageId != nil || intoTableCellDict != nil) {
-            return "Error: insert_equation: anchor parameters (after_text / before_text / after_image_id / into_table_cell) only supported when display_mode=true (inline equations append to an existing paragraph; use paragraph_index instead)"
+            throw ToolRefusal("insert_equation: anchor parameters (after_text / before_text / after_image_id / into_table_cell) only supported when display_mode=true (inline equations append to an existing paragraph; use paragraph_index instead)")
         }
 
         // #98: inline mode requires explicit `paragraph_index`. Pre-fix handler
@@ -9696,7 +9706,7 @@ actor WordMCPServer {
         // would surface as `invalidParagraphIndex(N)`. Explicit pre-check yields
         // a more actionable error than the index-out-of-range message.
         if !displayMode && paragraphIndex == nil {
-            return "Error: insert_equation: inline mode (display_mode=false) requires paragraph_index anchor (inline equations append OMML run to existing paragraph)"
+            throw ToolRefusal("insert_equation: inline mode (display_mode=false) requires paragraph_index anchor (inline equations append OMML run to existing paragraph)")
         }
 
         // anchor-dx-consistency (#71): reject conflicting anchors in display mode.
@@ -9707,7 +9717,7 @@ actor WordMCPServer {
             // #80: anchor list resolved from WordMCPServer.toolAnchorWhitelists (SoT).
             let presentAnchors = WordMCPServer.detectPresentAnchors(args, tool: "insert_equation")
             if presentAnchors.count > 1 {
-                return "Error: insert_equation: received conflicting anchors: \(presentAnchors.joined(separator: " + ")). Specify exactly one."
+                throw ToolRefusal("insert_equation: received conflicting anchors: \(presentAnchors.joined(separator: " + ")). Specify exactly one.")
             }
         }
 
@@ -9721,7 +9731,7 @@ actor WordMCPServer {
             guard let tableIdx = cellDict["table_index"]?.intValue,
                   let row = cellDict["row"]?.intValue,
                   let col = cellDict["col"]?.intValue else {
-                return "Error: insert_equation: into_table_cell requires all three fields (table_index, row, col); got partial dict"
+                throw ToolRefusal("insert_equation: into_table_cell requires all three fields (table_index, row, col); got partial dict")
             }
             location = .intoTableCell(tableIndex: tableIdx, row: row, col: col)
             anchorInfo = "into table[\(tableIdx)] cell (row: \(row), col: \(col))"
@@ -9814,15 +9824,15 @@ actor WordMCPServer {
                 }
             }
         } catch let InsertLocationError.tableIndexOutOfRange(i) {
-            return "Error: insert_equation: table index \(i) out of range"
+            throw ToolRefusal("insert_equation: table index \(i) out of range")
         } catch let InsertLocationError.tableCellOutOfRange(t, r, c) {
-            return "Error: insert_equation: table[\(t)] cell (row: \(r), col: \(c)) out of range"
+            throw ToolRefusal("insert_equation: table[\(t)] cell (row: \(r), col: \(c)) out of range")
         } catch let InsertLocationError.imageIdNotFound(rId) {
-            return "Error: insert_equation: image rId '\(rId)' not found"
+            throw ToolRefusal("insert_equation: image rId '\(rId)' not found")
         } catch let InsertLocationError.textNotFound(searchText, instance) {
-            return "Error: insert_equation: text '\(searchText)' not found (instance \(instance))"
+            throw ToolRefusal("insert_equation: text '\(searchText)' not found (instance \(instance))")
         } catch let InsertLocationError.invalidParagraphIndex(idx) {
-            return "Error: insert_equation: paragraph_index \(idx) out of range"
+            throw ToolRefusal("insert_equation: paragraph_index \(idx) out of range")
         }
 
         try await storeDocument(doc, for: docId)
@@ -9879,17 +9889,17 @@ actor WordMCPServer {
     private func formatSpliceError(_ err: OMathSpliceError, tool: String) -> String {
         switch err {
         case .sourceHasNoOMath:
-            return "Error: \(tool): source paragraph contains no OMath blocks"
+            return "\(tool): source paragraph contains no OMath blocks"
         case .omathIndexOutOfRange(let req, let avail):
-            return "Error: \(tool): omath_index \(req) out of range (source has \(avail) OMath block\(avail == 1 ? "" : "s"))"
+            return "\(tool): omath_index \(req) out of range (source has \(avail) OMath block\(avail == 1 ? "" : "s"))"
         case .targetParagraphOutOfRange(let idx):
-            return "Error: \(tool): target_paragraph_index \(idx) out of range"
+            return "\(tool): target_paragraph_index \(idx) out of range"
         case .anchorNotFound(let anchor, let instance):
-            return "Error: \(tool): anchor '\(anchor)' not found in target paragraph (instance \(instance))"
+            return "\(tool): anchor '\(anchor)' not found in target paragraph (instance \(instance))"
         case .namespaceMismatch(let src, let tgt):
-            return "Error: \(tool): namespace mismatch — source URI '\(src)' vs target URI '\(tgt)'"
+            return "\(tool): namespace mismatch — source URI '\(src)' vs target URI '\(tgt)'"
         case .contextAnchorNotFound(let i, let snippet):
-            return "Error: \(tool): context anchor not found for omath_index=\(i), snippet='\(snippet)' (advisor edit may have changed surrounding prose)"
+            return "\(tool): context anchor not found for omath_index=\(i), snippet='\(snippet)' (advisor edit may have changed surrounding prose)"
         }
     }
 
@@ -9913,7 +9923,7 @@ actor WordMCPServer {
         let position: OMathSplicePosition
         let instance = args["instance"]?.intValue ?? 1
         if instance < 1 {
-            return "Error: splice_omath_from_source: instance must be ≥ 1, got \(instance)"
+            throw ToolRefusal("splice_omath_from_source: instance must be ≥ 1, got \(instance)")
         }
         switch positionRaw {
         case "atStart":
@@ -9922,16 +9932,16 @@ actor WordMCPServer {
             position = .atEnd
         case "afterText":
             guard let anchor = args["anchor"]?.stringValue, !anchor.isEmpty else {
-                return "Error: splice_omath_from_source: position='afterText' requires non-empty 'anchor' argument"
+                throw ToolRefusal("splice_omath_from_source: position='afterText' requires non-empty 'anchor' argument")
             }
             position = .afterText(anchor, instance: instance)
         case "beforeText":
             guard let anchor = args["anchor"]?.stringValue, !anchor.isEmpty else {
-                return "Error: splice_omath_from_source: position='beforeText' requires non-empty 'anchor' argument"
+                throw ToolRefusal("splice_omath_from_source: position='beforeText' requires non-empty 'anchor' argument")
             }
             position = .beforeText(anchor, instance: instance)
         default:
-            return "Error: splice_omath_from_source: position must be one of 'atStart' / 'atEnd' / 'afterText' / 'beforeText', got '\(positionRaw)'"
+            throw ToolRefusal("splice_omath_from_source: position must be one of 'atStart' / 'atEnd' / 'afterText' / 'beforeText', got '\(positionRaw)'")
         }
 
         let omathIndex = args["omath_index"]?.intValue ?? 0
@@ -9950,7 +9960,7 @@ actor WordMCPServer {
             try await storeDocument(target, for: docId)
             return "Spliced \(n) OMath block (omath_index=\(omathIndex), position=\(positionRaw), rpr_mode=\(args["rpr_mode"]?.stringValue ?? "full"), namespace_policy=\(args["namespace_policy"]?.stringValue ?? "lenient"))"
         } catch let err as OMathSpliceError {
-            return formatSpliceError(err, tool: "splice_omath_from_source")
+            throw ToolRefusal(formatSpliceError(err, tool: "splice_omath_from_source"))
         }
     }
 
@@ -9979,7 +9989,7 @@ actor WordMCPServer {
             try await storeDocument(target, for: docId)
             return "Spliced \(n) OMath block(s) into target_paragraph_index=\(targetParaIdx) (rpr_mode=\(args["rpr_mode"]?.stringValue ?? "full"), namespace_policy=\(args["namespace_policy"]?.stringValue ?? "lenient"))"
         } catch let err as OMathSpliceError {
-            return formatSpliceError(err, tool: "splice_paragraph_omath_from_source")
+            throw ToolRefusal(formatSpliceError(err, tool: "splice_paragraph_omath_from_source"))
         }
     }
 
@@ -12427,7 +12437,7 @@ actor WordMCPServer {
         // from triggering Int overflow trap on caller-controlled Int.max input.
         // 100_000 pages exceeds any real document by ~3 orders of magnitude.
         guard page >= 1 && page <= 100_000 else {
-            return "Error: estimate_paragraph_for_page: page must be 1..100000, got \(page)"
+            throw ToolRefusal("estimate_paragraph_for_page: page must be 1..100000, got \(page)")
         }
 
         let charsPerPage: Int
@@ -12436,7 +12446,7 @@ actor WordMCPServer {
             // Same overflow concern: page * charsPerPage with charsPerPage=Int.max.
             // 200_000 chars/page is far beyond any plausible single-page density.
             guard override > 0 && override <= 200_000 else {
-                return "Error: estimate_paragraph_for_page: chars_per_page must be 1..200000, got \(override)"
+                throw ToolRefusal("estimate_paragraph_for_page: chars_per_page must be 1..200000, got \(override)")
             }
             charsPerPage = override
             layoutBasis = "caller_chars_per_page"
@@ -12449,7 +12459,7 @@ actor WordMCPServer {
         // Upper bound prevents rawStart - contextParagraphs underflow and
         // rawEnd + contextParagraphs overflow on Int.max input.
         guard contextParagraphs >= 0 && contextParagraphs <= 1024 else {
-            return "Error: estimate_paragraph_for_page: context_paragraphs must be 0..1024, got \(contextParagraphs)"
+            throw ToolRefusal("estimate_paragraph_for_page: context_paragraphs must be 0..1024, got \(contextParagraphs)")
         }
 
         // #142: collect structural blocks (text paragraphs + tables + image
@@ -13013,7 +13023,7 @@ actor WordMCPServer {
             throw WordError.missingParameter("doc_id_b")
         }
         if docIdA == docIdB {
-            return "Error: doc_id_a and doc_id_b must be different documents."
+            throw ToolRefusal("doc_id_a and doc_id_b must be different documents.")
         }
         guard let docA = openDocuments[docIdA] else {
             throw WordError.documentNotFound(docIdA)
@@ -13351,7 +13361,7 @@ actor WordMCPServer {
         // 驗證樣式
         let validStyles = ["single", "double", "dotted", "dashed", "thick", "none"]
         guard validStyles.contains(style) else {
-            return "Error: Invalid border style. Valid options: \(validStyles.joined(separator: ", "))"
+            throw ToolRefusal("Invalid border style. Valid options: \(validStyles.joined(separator: ", "))")
         }
 
         // 頁面邊框需要在 sectPr 中設定 <w:pgBorders>
@@ -13391,7 +13401,7 @@ actor WordMCPServer {
         // 將十六進位字元碼轉換為字元
         guard let codePoint = UInt32(charCode, radix: 16),
               let scalar = Unicode.Scalar(codePoint) else {
-            return "Error: Invalid character code '\(charCode)'. Use hexadecimal format (e.g., F020)."
+            throw ToolRefusal("Invalid character code '\(charCode)'. Use hexadecimal format (e.g., F020).")
         }
         let symbolChar = String(Character(scalar))
 
@@ -13444,7 +13454,7 @@ actor WordMCPServer {
 
         let validDirections = ["lrTb", "tbRl", "btLr"]
         guard validDirections.contains(direction) else {
-            return "Error: Invalid text direction. Valid options: lrTb (left-to-right, top-to-bottom), tbRl (vertical, right-to-left), btLr (bottom-to-top, left-to-right)"
+            throw ToolRefusal("Invalid text direction. Valid options: lrTb (left-to-right, top-to-bottom), tbRl (vertical, right-to-left), btLr (bottom-to-top, left-to-right)")
         }
 
         let paragraphIndex = args["paragraph_index"]?.intValue
@@ -13478,7 +13488,7 @@ actor WordMCPServer {
 
         let validTypes = ["drop", "margin", "none"]
         guard validTypes.contains(dropCapType) else {
-            return "Error: Invalid drop cap type. Valid options: drop, margin, none"
+            throw ToolRefusal("Invalid drop cap type. Valid options: drop, margin, none")
         }
 
         // 取得段落
@@ -13537,7 +13547,7 @@ actor WordMCPServer {
 
         let validStyles = ["single", "double", "dotted", "dashed", "thick"]
         guard validStyles.contains(style) else {
-            return "Error: Invalid line style. Valid options: \(validStyles.joined(separator: ", "))"
+            throw ToolRefusal("Invalid line style. Valid options: \(validStyles.joined(separator: ", "))")
         }
 
         // 取得段落索引
@@ -13739,7 +13749,7 @@ actor WordMCPServer {
 
         let validTypes = ["readOnly", "comments", "trackedChanges", "forms"]
         guard validTypes.contains(protectionType) else {
-            return "Error: Invalid protection type. Valid options: \(validTypes.joined(separator: ", "))"
+            throw ToolRefusal("Invalid protection type. Valid options: \(validTypes.joined(separator: ", "))")
         }
 
         throw ToolNotImplemented(
@@ -13864,7 +13874,7 @@ actor WordMCPServer {
 
         let validLabels = ["Figure", "Table", "Equation", "圖", "表", "公式"]
         guard validLabels.contains(label) else {
-            return "Error: insert_caption: Invalid label '\(label)'. Valid options: \(validLabels.joined(separator: ", "))"
+            throw ToolRefusal("insert_caption: Invalid label '\(label)'. Valid options: \(validLabels.joined(separator: ", "))")
         }
 
         let captionText = args["caption_text"]?.stringValue ?? ""
@@ -13878,10 +13888,10 @@ actor WordMCPServer {
         // #80: anchor list resolved from WordMCPServer.toolAnchorWhitelists (SoT).
         let presentAnchors = WordMCPServer.detectPresentAnchors(args, tool: "insert_caption")
         if presentAnchors.count > 1 {
-            return "Error: insert_caption: received conflicting anchors: \(presentAnchors.joined(separator: " + ")). Specify exactly one."
+            throw ToolRefusal("insert_caption: received conflicting anchors: \(presentAnchors.joined(separator: " + ")). Specify exactly one.")
         }
         if presentAnchors.isEmpty {
-            return "Error: insert_caption: at least one anchor required (paragraph_index / after_image_id / after_table_index / after_text / before_text). Specify exactly one."
+            throw ToolRefusal("insert_caption: at least one anchor required (paragraph_index / after_image_id / after_table_index / after_text / before_text). Specify exactly one.")
         }
 
         let paragraphIndexArg = args["paragraph_index"]?.intValue
@@ -13892,7 +13902,7 @@ actor WordMCPServer {
         let textInstance = args["text_instance"]?.intValue ?? 1
         // anchor-dx-consistency (#72): explicit text_instance < 1 rejected.
         if let explicit = args["text_instance"]?.intValue, explicit < 1 {
-            return "Error: insert_caption: text_instance must be ≥ 1, got \(explicit)."
+            throw ToolRefusal("insert_caption: text_instance must be ≥ 1, got \(explicit).")
         }
 
         // Build caption paragraph: label text + optional chapter STYLEREF + SEQ field + optional caption text
@@ -13941,13 +13951,13 @@ actor WordMCPServer {
             try await storeDocument(doc, for: docId)
             return "Caption inserted: '\(label)' with real SEQ field"
         } catch let InsertLocationError.invalidParagraphIndex(i) {
-            return "Error: insert_caption: invalid paragraph index \(i)"
+            throw ToolRefusal("insert_caption: invalid paragraph index \(i)")
         } catch let InsertLocationError.imageIdNotFound(rId) {
-            return "Error: insert_caption: image with id '\(rId)' not found"
+            throw ToolRefusal("insert_caption: image with id '\(rId)' not found")
         } catch let InsertLocationError.tableIndexOutOfRange(i) {
-            return "Error: insert_caption: table index \(i) out of range"
+            throw ToolRefusal("insert_caption: table index \(i) out of range")
         } catch let InsertLocationError.textNotFound(text, instance) {
-            return "Error: insert_caption: text '\(text)' not found (instance \(instance))"
+            throw ToolRefusal("insert_caption: text '\(text)' not found (instance \(instance))")
         }
     }
 
@@ -13979,14 +13989,14 @@ actor WordMCPServer {
         do {
             regex = try NSRegularExpression(pattern: patternStr, options: [])
         } catch {
-            return "Error: wrap_caption_seq: pattern failed to compile: \(error.localizedDescription)"
+            throw ToolRefusal("wrap_caption_seq: pattern failed to compile: \(error.localizedDescription)")
         }
 
         // 2. Capture-group count check (lib also validates, but we surface a
         // tool-prefixed error matching the spec scenario string verbatim).
         let groupCount = regex.numberOfCaptureGroups
         guard groupCount == 1 else {
-            return "Error: wrap_caption_seq: pattern must contain exactly one capture group, got \(groupCount)"
+            throw ToolRefusal("wrap_caption_seq: pattern must contain exactly one capture group, got \(groupCount)")
         }
 
         // 3. Format enum (default ARABIC).
@@ -13997,7 +14007,7 @@ actor WordMCPServer {
         case "ROMAN":      format = .roman
         case "ALPHABETIC": format = .alphabetic
         default:
-            return "Error: wrap_caption_seq: format '\(formatStr)' not recognized. Valid: ARABIC / ROMAN / ALPHABETIC."
+            throw ToolRefusal("wrap_caption_seq: format '\(formatStr)' not recognized. Valid: ARABIC / ROMAN / ALPHABETIC.")
         }
 
         // 4. Scope enum (default body).
@@ -14007,7 +14017,7 @@ actor WordMCPServer {
         case "body": scope = .body
         case "all":  scope = .all
         default:
-            return "Error: wrap_caption_seq: scope '\(scopeStr)' not recognized. Valid: body / all."
+            throw ToolRefusal("wrap_caption_seq: scope '\(scopeStr)' not recognized. Valid: body / all.")
         }
 
         // 5. Bookmark invariant — checked here AND in lib for defense in depth.
@@ -14015,10 +14025,10 @@ actor WordMCPServer {
         let bookmarkTemplate = args["bookmark_template"]?.stringValue
         if insertBookmark {
             guard let template = bookmarkTemplate, !template.isEmpty else {
-                return "Error: wrap_caption_seq: bookmark_template required when insert_bookmark is true"
+                throw ToolRefusal("wrap_caption_seq: bookmark_template required when insert_bookmark is true")
             }
             guard template.contains("${number}") else {
-                return "Error: wrap_caption_seq: bookmark_template must contain literal '${number}' placeholder, got '\(template)'"
+                throw ToolRefusal("wrap_caption_seq: bookmark_template must contain literal '${number}' placeholder, got '\(template)'")
             }
         }
 
@@ -14035,13 +14045,13 @@ actor WordMCPServer {
             )
         } catch WrapCaptionError.patternMissingCaptureGroup(let actual) {
             // Should be unreachable (we pre-checked) but propagate explicitly.
-            return "Error: wrap_caption_seq: pattern must contain exactly one capture group, got \(actual)"
+            throw ToolRefusal("wrap_caption_seq: pattern must contain exactly one capture group, got \(actual)")
         } catch WrapCaptionError.bookmarkTemplateMissing {
-            return "Error: wrap_caption_seq: bookmark_template required when insert_bookmark is true"
+            throw ToolRefusal("wrap_caption_seq: bookmark_template required when insert_bookmark is true")
         } catch WrapCaptionError.scopeNotImplemented(let s) {
-            return "Error: wrap_caption_seq: scope_not_implemented: \(s == .all ? "all" : "body") (Phase 1 ships .body only; .all lands in v3.17.x)"
+            throw ToolRefusal("wrap_caption_seq: scope_not_implemented: \(s == .all ? "all" : "body") (Phase 1 ships .body only; .all lands in v3.17.x)")
         } catch {
-            return "Error: wrap_caption_seq: \(error.localizedDescription)"
+            throw ToolRefusal("wrap_caption_seq: \(error.localizedDescription)")
         }
 
         // 7. Persist.
@@ -14088,7 +14098,7 @@ actor WordMCPServer {
 
         let validTypes = ["bookmark", "heading", "figure", "table", "equation"]
         guard validTypes.contains(referenceType) else {
-            return "Error: Invalid reference type. Valid options: \(validTypes.joined(separator: ", "))"
+            throw ToolRefusal("Invalid reference type. Valid options: \(validTypes.joined(separator: ", "))")
         }
 
         // 交互參照使用 REF field
@@ -14122,7 +14132,7 @@ actor WordMCPServer {
 
         let validLabels = ["Figure", "Table", "Equation"]
         guard validLabels.contains(captionLabel) else {
-            return "Error: Invalid caption label. Valid options: \(validLabels.joined(separator: ", "))"
+            throw ToolRefusal("Invalid caption label. Valid options: \(validLabels.joined(separator: ", "))")
         }
 
         // 建立圖表目錄段落
@@ -14329,7 +14339,7 @@ actor WordMCPServer {
 
         let validAlignments = ["left", "center", "right", "decimal"]
         guard validAlignments.contains(alignment) else {
-            return "Error: Invalid alignment. Valid options: \(validAlignments.joined(separator: ", "))"
+            throw ToolRefusal("Invalid alignment. Valid options: \(validAlignments.joined(separator: ", "))")
         }
 
         // 定位點需要在段落屬性中設定 <w:tabs>
@@ -14406,7 +14416,7 @@ actor WordMCPServer {
         }
 
         guard level >= 0 && level <= 9 else {
-            return "Error: Outline level must be between 0 (body text) and 9"
+            throw ToolRefusal("Outline level must be between 0 (body text) and 9")
         }
 
         let paragraphs = doc.getParagraphs()
@@ -14761,7 +14771,7 @@ actor WordMCPServer {
 
         let validAlignments = ["left", "center", "right"]
         guard validAlignments.contains(alignment) else {
-            return "Error: Invalid alignment. Valid options: \(validAlignments.joined(separator: ", "))"
+            throw ToolRefusal("Invalid alignment. Valid options: \(validAlignments.joined(separator: ", "))")
         }
 
         let tables = doc.getTables()
@@ -14796,7 +14806,7 @@ actor WordMCPServer {
 
         let validAlignments = ["top", "center", "bottom"]
         guard validAlignments.contains(alignment) else {
-            return "Error: Invalid vertical alignment. Valid options: \(validAlignments.joined(separator: ", "))"
+            throw ToolRefusal("Invalid vertical alignment. Valid options: \(validAlignments.joined(separator: ", "))")
         }
 
         let tables = doc.getTables()
@@ -14837,7 +14847,7 @@ actor WordMCPServer {
 
         let table = tables[tableIndex]
         guard rowCount > 0 && rowCount <= table.rows.count else {
-            return "Error: Row count must be between 1 and \(table.rows.count)"
+            throw ToolRefusal("Row count must be between 1 and \(table.rows.count)")
         }
 
         // 標題列需要在 <w:trPr> 中設定 <w:tblHeader/>
@@ -14926,7 +14936,7 @@ actor WordMCPServer {
             throw WordError.missingParameter("doc_id")
         }
         guard let themeXML = try readThemeXML(docId: docId) else {
-            return "Error: no theme part"
+            throw ToolRefusal("no theme part")
         }
         // Parse major/minor font slots
         let majorLatin = extractFontSlot(themeXML, major: true, slot: "latin") ?? ""
@@ -14988,7 +14998,7 @@ actor WordMCPServer {
             throw WordError.missingParameter("doc_id")
         }
         guard var themeXML = try readThemeXML(docId: docId) else {
-            return "Error: no theme part"
+            throw ToolRefusal("no theme part")
         }
         // Apply major slot updates
         if case .object(let majorObj) = args["major"] ?? .null {
@@ -15023,15 +15033,15 @@ actor WordMCPServer {
         let allowed: Set<String> = ["accent1", "accent2", "accent3", "accent4", "accent5", "accent6",
                                      "hyperlink", "followedHyperlink", "dk1", "lt1", "dk2", "lt2"]
         guard allowed.contains(slot) else {
-            return "Error: unknown slot '\(slot)'. Allowed: accent1, accent2, accent3, accent4, accent5, accent6, hyperlink, followedHyperlink, dk1, lt1, dk2, lt2"
+            throw ToolRefusal("unknown slot '\(slot)'. Allowed: accent1, accent2, accent3, accent4, accent5, accent6, hyperlink, followedHyperlink, dk1, lt1, dk2, lt2")
         }
         // Validate hex
         let hexPattern = "^[0-9A-Fa-f]{6}$"
         guard hex.range(of: hexPattern, options: .regularExpression) != nil else {
-            return "Error: hex must be 6 hexadecimal characters (got '\(hex)')"
+            throw ToolRefusal("hex must be 6 hexadecimal characters (got '\(hex)')")
         }
         guard var themeXML = try readThemeXML(docId: docId) else {
-            return "Error: no theme part"
+            throw ToolRefusal("no theme part")
         }
         // Translate API slot name → OOXML element name
         let elementName: String = {
@@ -15043,7 +15053,7 @@ actor WordMCPServer {
         }()
         let pattern = #"(<a:\#(elementName)>[\s\S]*?<a:srgbClr\s+val=")([^"]+)""#
         guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            return "Error: regex compile failed"
+            throw ToolRefusal("regex compile failed")
         }
         let nsString = themeXML as NSString
         themeXML = regex.stringByReplacingMatches(
@@ -15064,11 +15074,11 @@ actor WordMCPServer {
         }
         // Validate XML well-formedness
         guard let _ = try? XMLDocument(xmlString: fullXML) else {
-            return "Error: full_xml is not well-formed XML"
+            throw ToolRefusal("full_xml is not well-formed XML")
         }
         // Validate root element is <a:theme>
         guard fullXML.contains("<a:theme") else {
-            return "Error: full_xml must contain <a:theme> root element"
+            throw ToolRefusal("full_xml must contain <a:theme> root element")
         }
         try writeThemeXML(fullXML, docId: docId)
         return "Theme replaced for \(docId)"
@@ -15212,7 +15222,7 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
         guard let header = doc.headers.first(where: { $0.id == headerId }) else {
-            return "Error: header not found: \(headerId)"
+            throw ToolRefusal("header not found: \(headerId)")
         }
         let xml = readHeaderFooterXML(docId: docId, fileName: header.fileName) ?? ""
         let text = extractTextRuns(xml)
@@ -15238,7 +15248,7 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
         guard let idx = doc.headers.firstIndex(where: { $0.id == headerId }) else {
-            return "Error: header not found: \(headerId)"
+            throw ToolRefusal("header not found: \(headerId)")
         }
         let removed = doc.headers.remove(at: idx)
         // Remove sectionProperties' headerReference (best-effort — full section
@@ -15289,7 +15299,7 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
         guard let header = doc.headers.first(where: { $0.id == headerId }) else {
-            return "Error: header not found: \(headerId)"
+            throw ToolRefusal("header not found: \(headerId)")
         }
         let xml = readHeaderFooterXML(docId: docId, fileName: header.fileName) ?? ""
         guard headerHasWatermark(xml) else { return "null" }
@@ -15330,7 +15340,7 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
         guard let footer = doc.footers.first(where: { $0.id == footerId }) else {
-            return "Error: footer not found: \(footerId)"
+            throw ToolRefusal("footer not found: \(footerId)")
         }
         let xml = readHeaderFooterXML(docId: docId, fileName: footer.fileName) ?? ""
         let text = extractTextRuns(xml)
@@ -15350,7 +15360,7 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
         guard let idx = doc.footers.firstIndex(where: { $0.id == footerId }) else {
-            return "Error: footer not found: \(footerId)"
+            throw ToolRefusal("footer not found: \(footerId)")
         }
         let removed = doc.footers.remove(at: idx)
         if let archiveTempDir = doc.archiveTempDir {
@@ -15457,7 +15467,7 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
         guard let comment = doc.comments.comments.first(where: { $0.id == rootIdValue }) else {
-            return "Error: root_comment_id not found: \(rootIdValue)"
+            throw ToolRefusal("root_comment_id not found: \(rootIdValue)")
         }
         // Build replies by walking children
         let allComments = doc.comments.comments
@@ -15636,7 +15646,7 @@ actor WordMCPServer {
         }
         var xml = readArchivePart(docId: docId, partPath: "word/people.xml") ?? ""
         guard let actualAuthor = resolveAuthor(in: extractPeople(xml), for: personId) else {
-            return "Error: person_id not found: \(personId)"
+            throw ToolRefusal("person_id not found: \(personId)")
         }
         // For MVP: only display_name update is supported via author attribute swap.
         if let newName = args["display_name"]?.stringValue {
@@ -15664,7 +15674,7 @@ actor WordMCPServer {
         }
         var xml = readArchivePart(docId: docId, partPath: "word/people.xml") ?? ""
         guard let actualAuthor = resolveAuthor(in: extractPeople(xml), for: personId) else {
-            return "Error: person_id not found: \(personId)"
+            throw ToolRefusal("person_id not found: \(personId)")
         }
         // Count comments that reference this author
         var orphaned = 0
@@ -15705,13 +15715,13 @@ actor WordMCPServer {
         }
         if kind == "endnote" {
             guard let note = doc.endnotes.endnotes.first(where: { $0.id == noteId }) else {
-                return "Error: \(kind) not found: \(noteId)"
+                throw ToolRefusal("\(kind) not found: \(noteId)")
             }
             let text = note.paragraphs.flatMap { $0.runs.map { $0.text } }.joined()
             return "{\"id\":\(note.id),\"text\":\"\(jsonEscape(text))\",\"runs\":[{\"text\":\"\(jsonEscape(text))\"}]}"
         } else {
             guard let note = doc.footnotes.footnotes.first(where: { $0.id == noteId }) else {
-                return "Error: \(kind) not found: \(noteId)"
+                throw ToolRefusal("\(kind) not found: \(noteId)")
             }
             let text = note.paragraphs.flatMap { $0.runs.map { $0.text } }.joined()
             return "{\"id\":\(note.id),\"text\":\"\(jsonEscape(text))\",\"runs\":[{\"text\":\"\(jsonEscape(text))\"}]}"
@@ -15735,7 +15745,7 @@ actor WordMCPServer {
             }
         }
         if !found {
-            return "Error: \(kind) not found: \(noteId)"
+            throw ToolRefusal("\(kind) not found: \(noteId)")
         }
         // v3.5.0: typed-model in-place mutation here bypasses the instrumented
         // public methods, so we must mark the corresponding part dirty manually.
@@ -15804,7 +15814,7 @@ actor WordMCPServer {
             throw WordError.missingParameter("doc_id")
         }
         guard let xml = readArchivePart(docId: docId, partPath: "word/webSettings.xml") else {
-            return "Error: no webSettings part"
+            throw ToolRefusal("no webSettings part")
         }
         let optimizeForBrowser = extractWebSettingFlag(xml, name: "optimizeForBrowser")
         let relyOnVML = extractWebSettingFlag(xml, name: "relyOnVML")
