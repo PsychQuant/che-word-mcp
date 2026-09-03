@@ -85,6 +85,7 @@ final class Issue175R2SaveGateTests: XCTestCase {
         try await orphanSession(server, url: url, id: "r2a")
         let refused = await server.invokeToolForTesting(name: "save_document", arguments: ["doc_id": .string("r2a")])
         XCTAssertTrue(textOf(refused).contains("E_IMAGE_CONSISTENCY"), textOf(refused))
+        XCTAssertEqual(refused.isError, true, "the image-consistency refusal must be isError on the wire (#202)")
         let allowed = await server.invokeToolForTesting(name: "save_document", arguments: ["doc_id": .string("r2a"), "allow_orphan_images": .bool(true)])
         XCTAssertFalse(textOf(allowed).hasPrefix("Error"), textOf(allowed))
         _ = await server.invokeToolForTesting(name: "insert_paragraph", arguments: ["doc_id": .string("r2a"), "text": .string("later edit")])
