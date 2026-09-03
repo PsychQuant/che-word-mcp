@@ -129,14 +129,14 @@ extension WordMCPServer {
         let newCaptionText = args["new_caption_text"]?.stringValue
         let newLabel = args["new_label"]?.stringValue
         if newCaptionText == nil && newLabel == nil {
-            return "Error: must provide new_caption_text or new_label (or both)"
+            throw ToolRefusal("must provide new_caption_text or new_label (or both)")
         }
 
         let captions = enumerateCaptions(doc)
         guard index >= 0, index < captions.count else { throw WordError.invalidIndex(index) }
         let bodyIdx = captions[index].bodyIdx
         guard case .paragraph(var para) = doc.body.children[bodyIdx] else {
-            return "Error: expected paragraph at body index \(bodyIdx)"
+            throw ToolRefusal("expected paragraph at body index \(bodyIdx)")
         }
 
         if let newText = newCaptionText {
@@ -290,7 +290,7 @@ extension WordMCPServer {
         // For simplicity: replace rawXML with a placeholder indicating the
         // component tree (full round-trip wiring deferred to a follow-up).
         guard case .paragraph(var para) = doc.body.children[eq.paragraphIndex] else {
-            return "Error: expected paragraph at \(eq.paragraphIndex)"
+            throw ToolRefusal("expected paragraph at \(eq.paragraphIndex)")
         }
         // Parse components (minimal — full JSON→MathComponent deferred)
         let explicitDisplayMode = args["display_mode"]?.boolValue
@@ -312,7 +312,7 @@ extension WordMCPServer {
         let eq = equations[index]
 
         guard case .paragraph(var para) = doc.body.children[eq.paragraphIndex] else {
-            return "Error: expected paragraph at \(eq.paragraphIndex)"
+            throw ToolRefusal("expected paragraph at \(eq.paragraphIndex)")
         }
         para.runs.remove(at: eq.runIndex)
         // If paragraph now empty, remove it entirely

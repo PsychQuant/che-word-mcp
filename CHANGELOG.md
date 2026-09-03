@@ -30,10 +30,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 4.0.8 寫「#201 修好時本項已就位」（header 圖片孤兒偵測路徑）——#201 的修法是誠實失敗，`insert_image_watermark` 仍不寫任何東西，
   那條路徑要到 #208 才可達。
 
+### Changed
+
+- **每一個以 `Error: ` 字串回傳的拒絕在協定層都是 `isError: true`**（#202）。`handleToolCall` 只在 handler throw 時設 `isError`；過去有
+  115 個拒絕以 `return "Error: …"` 字串回傳（Server.swift 106 + ReadbackTools.swift 4 個單行，加上 `E_DIRTY_DOC` /
+  `E_IMAGE_CONSISTENCY` / `E_IMAGE_CONSISTENCY_INSPECTION` / reload-dirty 5 個多行 `"""` gate），client 拿到的是
+  success result——依 `isError` 分流的 client 會把「拒絕存檔」讀成「存檔成功」。現在全部改為 `throw ToolRefusal(message)`，
+  catch 補回 `Error: ` 前綴，**client 看到的文字逐字元不變**，只有 `isError` 從缺變 `true`。
+  `RefusalIsErrorSweepTests` 兩層：source-level sweep（Sources/ 內不得再出現 `return "Error:`、以 `Error:` 開頭的
+  字面、拋出時仍帶 `Error:` 前綴的字面（雙前綴）、或 `return refusal` / `return formatSpliceError(` 這種 helper 建字串再回傳
+  的形態）與 protocol-level 案例（直接打 `handleToolCall`）。**守備範圍要講清楚**：sweep 擋的是**新寫的**字串拒絕；已轉換
+  的站點若被改回 `return`，只有帶協定層 `isError` 釘的站點會被抓（目前約 11 站），其餘靠 #216 逐站補釘。5 個 `No matches found…` 類資訊性回覆不是拒絕，
+  維持 success。**範圍邊界**：另有 37 處拒絕以 JSON 字面回傳（32 處寫側、在 `storeDocument` 之前 return）仍是 success，
+  處置是 API-shape 決定，另立 #214；拒絕訊息的機器可讀碼另見 #212。
+
 ### 升級注意
 
 - 三個浮水印寫側工具由「必回成功字串」變成「必回 `isError`」。依賴舊成功字串、從不檢查內容的自動化流程會在 4.0.10 → 4.0.11 硬失敗；
   沒有真能用的行為被拿掉，故仍走 patch 版號。
+- 依 `isError` 分流的 client 從 4.0.11 起會看到**所有以 `Error: ` 字串回傳的拒絕**變成 error（4.0.10 只有 throw 路徑會）（#202）；
+  JSON 字面形態的 37 處尚未納入（#214），對那些工具仍不能只信 `isError`。這是修正不是回歸：
+  拒絕的文字沒變，只是協定旗標終於對了；只讀文字的 client 不受影響。
+
 
 ## [4.0.10] - 2026-09-03
 

@@ -85,6 +85,7 @@ final class Issue175R2SaveGateTests: XCTestCase {
         try await orphanSession(server, url: url, id: "r2a")
         let refused = await server.invokeToolForTesting(name: "save_document", arguments: ["doc_id": .string("r2a")])
         XCTAssertTrue(textOf(refused).contains("E_IMAGE_CONSISTENCY"), textOf(refused))
+        XCTAssertEqual(refused.isError, true, "the image-consistency refusal must be isError on the wire (#202)")
         let allowed = await server.invokeToolForTesting(name: "save_document", arguments: ["doc_id": .string("r2a"), "allow_orphan_images": .bool(true)])
         XCTAssertFalse(textOf(allowed).hasPrefix("Error"), textOf(allowed))
         _ = await server.invokeToolForTesting(name: "insert_paragraph", arguments: ["doc_id": .string("r2a"), "text": .string("later edit")])
@@ -98,6 +99,7 @@ final class Issue175R2SaveGateTests: XCTestCase {
         try await orphanSession(server, url: url, id: "r2c")
         let cp = await server.invokeToolForTesting(name: "checkpoint", arguments: ["doc_id": .string("r2c"), "path": .string(url.path)])
         XCTAssertTrue(textOf(cp).contains("E_IMAGE_CONSISTENCY"), "checkpoint aimed at the source must be gated: \(textOf(cp))")
+        XCTAssertEqual(cp.isError, true, "the image-consistency refusal must be isError on the wire (#202; DA mutation M1/M2)")
         XCTAssertEqual(try report(url).imageRelationshipCount, 0, "source file must be untouched")
         let sidecar = url.path + ".autosave.docx"
         let cp2 = await server.invokeToolForTesting(name: "checkpoint", arguments: ["doc_id": .string("r2c")])
@@ -105,6 +107,7 @@ final class Issue175R2SaveGateTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: sidecar)); try? FileManager.default.removeItem(atPath: sidecar)
         let save = await server.invokeToolForTesting(name: "save_document", arguments: ["doc_id": .string("r2c")])
         XCTAssertTrue(textOf(save).contains("E_IMAGE_CONSISTENCY"), "baseline must not be laundered by checkpoint: \(textOf(save))")
+        XCTAssertEqual(save.isError, true, "the image-consistency refusal must be isError on the wire (#202; DA mutation M1/M2)")
     }
 
     func testFinalizeRefusalKeepsSessionAlive() async throws {
@@ -113,6 +116,7 @@ final class Issue175R2SaveGateTests: XCTestCase {
         try await orphanSession(server, url: url, id: "r2f")
         let fin = await server.invokeToolForTesting(name: "finalize_document", arguments: ["doc_id": .string("r2f")])
         XCTAssertTrue(textOf(fin).contains("E_IMAGE_CONSISTENCY"), textOf(fin))
+        XCTAssertEqual(fin.isError, true, "the image-consistency refusal must be isError on the wire (#202; DA mutation M1/M2)")
         let info = await server.invokeToolForTesting(name: "get_document_info", arguments: ["doc_id": .string("r2f")])
         XCTAssertFalse(textOf(info).contains("not found") || textOf(info).lowercased().contains("documentnotfound"), "session must survive: \(textOf(info))")
     }
