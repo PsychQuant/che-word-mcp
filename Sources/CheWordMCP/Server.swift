@@ -4681,7 +4681,7 @@ actor WordMCPServer {
             // 11.1 insert_watermark - 文字浮水印
             Tool(
                 name: "insert_watermark",
-                description: "插入文字浮水印（斜向置中於頁面背景）",
+                description: "插入文字浮水印（斜向置中於頁面背景）。目前未實作，呼叫會回 isError 並具名缺少的 OOXML（#201）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -4721,7 +4721,7 @@ actor WordMCPServer {
             // 11.2 insert_image_watermark - 圖片浮水印
             Tool(
                 name: "insert_image_watermark",
-                description: "插入圖片浮水印（置中於頁面背景）",
+                description: "插入圖片浮水印（置中於頁面背景）。目前未實作，呼叫會回 isError 並具名缺少的 OOXML（#201）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -4749,7 +4749,7 @@ actor WordMCPServer {
             // 11.3 remove_watermark - 移除浮水印
             Tool(
                 name: "remove_watermark",
-                description: "移除文件的浮水印",
+                description: "移除文件的浮水印。目前未實作，呼叫會回 isError 並具名缺少的 OOXML（#201）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -13661,30 +13661,20 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let text = args["text"]?.stringValue else {
+        guard args["text"]?.stringValue != nil else {
             throw WordError.missingParameter("text")
         }
         guard openDocuments[docId] != nil else {
             throw WordError.documentNotFound(docId)
         }
 
-        let font = args["font"]?.stringValue ?? "Calibri Light"
-        let color = args["color"]?.stringValue ?? "C0C0C0"
-        let size = args["size"]?.intValue ?? 72
-        let semitransparent = args["semitransparent"]?.boolValue ?? true
-        let rotation = args["rotation"]?.intValue ?? -45
-
-        // 浮水印需要在 header 中加入 VML 或 DrawingML
-        // 目前 OOXMLSwift 沒有直接支援浮水印
-        // 這裡先回傳設定訊息
-
-        var result = "Watermark inserted: \"\(text)\""
-        result += " (font: \(font), color: #\(color), size: \(size)pt"
-        if semitransparent {
-            result += ", semitransparent"
-        }
-        result += ", rotation: \(rotation)°)"
-        return result
+        // #201: this used to echo the requested font / colour / size back as if
+        // applied. A text watermark is a VML shape inside every header part, and
+        // nothing here writes one. Fail and say so (same treatment as #172).
+        throw ToolNotImplemented(
+            tool: "insert_watermark",
+            missing: "a <w:pict><v:shape id=\"PowerPlusWaterMarkObject…\" o:spt=\"136\" …>"
+                + "<v:textpath string=\"…\"/></v:shape></w:pict> run into every header part (word/header*.xml)")
     }
 
     /// 插入圖片浮水印
@@ -13699,21 +13689,18 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let scale = args["scale"]?.intValue ?? 100
-        let washout = args["washout"]?.boolValue ?? true
-
         // 檢查檔案是否存在
         guard FileManager.default.fileExists(atPath: imagePath) else {
             return "Error: Image file not found at '\(imagePath)'"
         }
 
-        var result = "Image watermark inserted from: \(imagePath)"
-        result += " (scale: \(scale)%"
-        if washout {
-            result += ", washout enabled"
-        }
-        result += ")"
-        return result
+        // #201: this used to report the image as inserted without touching any
+        // header part. Fail and name what a real implementation must write.
+        throw ToolNotImplemented(
+            tool: "insert_image_watermark",
+            missing: "a <w:pict><v:shape id=\"PowerPlusWaterMarkObject…\" o:spt=\"75\" …>"
+                + "<v:imagedata r:id=\"rIdN\"/></v:shape></w:pict> run into every header part, "
+                + "plus the image relationship in each header's rels and the media part it points at")
     }
 
     /// 移除浮水印
@@ -13725,8 +13712,11 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        // 浮水印移除需要清除 header 中的相關元素
-        return "Watermark removed from document"
+        // #201: this used to claim removal without reading a single header part.
+        throw ToolNotImplemented(
+            tool: "remove_watermark",
+            missing: "the removal of every PowerPlusWaterMarkObject <v:shape> (and its enclosing <w:pict> run) "
+                + "from the header parts (word/header*.xml)")
     }
 
     /// 設定文件保護
