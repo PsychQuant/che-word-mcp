@@ -34,13 +34,17 @@ import LaTeXMathSwift
 /// from lying would be the wrong trade.
 struct ToolNotImplemented: LocalizedError {
     let tool: String
+    /// The issue that turned this tool from a silent no-op into an honest
+    /// failure — so the message points a caller at the right history
+    /// (#172 for the protection tools, #201 for the watermark tools).
+    let issue: String
     /// The OOXML this tool would have to write to be real. Naming it turns the
     /// error into a starting point rather than a dead end.
     let missing: String
 
     var errorDescription: String? {
         "\(tool) is not implemented: it would have to write \(missing), and does not. "
-        + "It previously reported success without doing so (#172); it now fails instead of misleading you."
+        + "It previously reported success without doing so (\(issue)); it now fails instead of misleading you."
     }
 }
 
@@ -6127,7 +6131,10 @@ actor WordMCPServer {
 
     // MARK: - Tool Handler
 
-    private func handleToolCall(_ params: CallTool.Parameters) async throws -> CallTool.Result {
+    /// Internal (not private) so a test can pin the transport contract directly:
+    /// a thrown handler error becomes `isError: true` here and never escapes to
+    /// the SDK's JSON-RPC error channel (#201 verify, DA D4).
+    func handleToolCall(_ params: CallTool.Parameters) async throws -> CallTool.Result {
         let name = params.name
         let args = params.arguments ?? [:]
 
@@ -13672,7 +13679,7 @@ actor WordMCPServer {
         // applied. A text watermark is a VML shape inside every header part, and
         // nothing here writes one. Fail and say so (same treatment as #172).
         throw ToolNotImplemented(
-            tool: "insert_watermark",
+            tool: "insert_watermark", issue: "#201",
             missing: "a <w:pict><v:shape id=\"PowerPlusWaterMarkObject…\" o:spt=\"136\" …>"
                 + "<v:textpath string=\"…\"/></v:shape></w:pict> run into every header part (word/header*.xml)")
     }
@@ -13682,24 +13689,23 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let imagePath = args["image_path"]?.stringValue else {
+        guard args["image_path"]?.stringValue != nil else {
             throw WordError.missingParameter("image_path")
         }
         guard openDocuments[docId] != nil else {
             throw WordError.documentNotFound(docId)
         }
 
-        // 檢查檔案是否存在
-        guard FileManager.default.fileExists(atPath: imagePath) else {
-            return "Error: Image file not found at '\(imagePath)'"
-        }
-
         // #201: this used to report the image as inserted without touching any
-        // header part. Fail and name what a real implementation must write.
+        // header part. The file-existence check that sat here is gone as well:
+        // it never read a byte, and answering "not found" with a plain string
+        // (isError unset) while answering "found" with a thrown error turned the
+        // tool into an existence oracle with reversed polarity. Every input now
+        // fails the same way, naming what a real implementation must write.
         throw ToolNotImplemented(
-            tool: "insert_image_watermark",
-            missing: "a <w:pict><v:shape id=\"PowerPlusWaterMarkObject…\" o:spt=\"75\" …>"
-                + "<v:imagedata r:id=\"rIdN\"/></v:shape></w:pict> run into every header part, "
+            tool: "insert_image_watermark", issue: "#201",
+            missing: "a <w:pict><v:shape id=\"WordPictureWatermark…\" type=\"#_x0000_t75\" …>"
+                + "<v:imagedata r:id=\"rIdN\"/></v:shape></w:pict> run into every header part (word/header*.xml), "
                 + "plus the image relationship in each header's rels and the media part it points at")
     }
 
@@ -13714,7 +13720,7 @@ actor WordMCPServer {
 
         // #201: this used to claim removal without reading a single header part.
         throw ToolNotImplemented(
-            tool: "remove_watermark",
+            tool: "remove_watermark", issue: "#201",
             missing: "the removal of every PowerPlusWaterMarkObject <v:shape> (and its enclosing <w:pict> run) "
                 + "from the header parts (word/header*.xml)")
     }
@@ -13737,7 +13743,7 @@ actor WordMCPServer {
         }
 
         throw ToolNotImplemented(
-            tool: "protect_document",
+            tool: "protect_document", issue: "#172",
             missing: "<w:documentProtection w:edit=\"\(protectionType)\" w:enforcement=\"1\"/> into word/settings.xml")
     }
 
@@ -13751,7 +13757,7 @@ actor WordMCPServer {
         }
 
         throw ToolNotImplemented(
-            tool: "unprotect_document",
+            tool: "unprotect_document", issue: "#172",
             missing: "the removal of <w:documentProtection> from word/settings.xml")
     }
 
@@ -13772,7 +13778,7 @@ actor WordMCPServer {
         // is OLE Compound Document encryption of the whole container, not an
         // OOXML part, so no amount of settings.xml work reaches it.
         throw ToolNotImplemented(
-            tool: "set_document_password",
+            tool: "set_document_password", issue: "#172",
             missing: "OLE Compound Document encryption of the whole .docx container (not an OOXML part)")
     }
 
@@ -13789,7 +13795,7 @@ actor WordMCPServer {
         }
 
         throw ToolNotImplemented(
-            tool: "remove_document_password",
+            tool: "remove_document_password", issue: "#172",
             missing: "decryption of the OLE Compound Document container (not an OOXML part)")
     }
 
@@ -13821,7 +13827,7 @@ actor WordMCPServer {
 
         _ = editor
         throw ToolNotImplemented(
-            tool: "restrict_editing_region",
+            tool: "restrict_editing_region", issue: "#172",
             missing: "<w:permStart>/<w:permEnd> around paragraphs \(startParagraph)..\(endParagraph)")
     }
 

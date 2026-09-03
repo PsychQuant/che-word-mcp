@@ -17,7 +17,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   o:spt="136"><v:textpath string=…/></v:shape></w:pict>` run；圖片浮水印另需 `<v:imagedata r:id=…/>` 與 header
   的 image relationship 加 media part；移除則是拿掉 header parts 內的這些 shape。三個 tool 的 description 也註明
   「目前未實作，呼叫會回 isError」。讀側行為不變（`WatermarkToolsHonestFailureTests` 同時鎖住讀側與「stub 不
-  弄髒 session」）。真正的文字浮水印實作屬 Plan 量級，另立 issue。
+  弄髒 session」）。真正的文字浮水印實作屬 Plan 量級，另立 #208；讀側對 Word 自己產生的**圖片**浮水印
+  （`WordPictureWatermark` / `type="#_x0000_t75"`）目前是假陰性，另見 #209。
+- **`insert_image_watermark` 的檔案存在性檢查一併移除**（#201 verify）。它從不讀位元組，而「不存在」回一般字串（`isError` 未設）、
+  「存在」拋錯的組合，讓這個工具變成極性反轉的存在性 oracle；現在任何輸入都以同一種方式失敗。
+- **`ToolNotImplemented` 的訊息帶各自的 issue 號**（#172 五個保護工具、#201 三個浮水印工具），不再一律指向 #172。
+- **通道契約有測試釘住**：`handleToolCall` 改為 internal，`WatermarkToolsHonestFailureTests` 直接呼叫它，斷言 throw 在協定層變成
+  `isError: true`、不逸出成 JSON-RPC error（`invokeToolForTesting` 自帶的 catch 會遮住這種回歸）。
+
+### Corrected（對 4.0.8 條目的更正）
+
+- 4.0.8 寫「#201 修好時本項已就位」（header 圖片孤兒偵測路徑）——#201 的修法是誠實失敗，`insert_image_watermark` 仍不寫任何東西，
+  那條路徑要到 #208 才可達。
+
+### 升級注意
+
+- 三個浮水印寫側工具由「必回成功字串」變成「必回 `isError`」。依賴舊成功字串、從不檢查內容的自動化流程會在 4.0.10 → 4.0.11 硬失敗；
+  沒有真能用的行為被拿掉，故仍走 patch 版號。
 
 ## [4.0.10] - 2026-09-03
 
