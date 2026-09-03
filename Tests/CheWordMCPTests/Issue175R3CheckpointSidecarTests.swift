@@ -49,6 +49,7 @@ final class Issue175R3CheckpointSidecarTests: XCTestCase {
         let variant = url.deletingLastPathComponent().appendingPathComponent("doc.docx").path   // APFS case-insensitive alias
         let cp = await server.invokeToolForTesting(name: "checkpoint", arguments: ["doc_id": .string("r3case"), "path": .string(variant)])
         XCTAssertTrue(textOf(cp).contains("E_IMAGE_CONSISTENCY"), "case variant must be gated: \(textOf(cp))")
+        XCTAssertEqual(cp.isError, true, "the image-consistency refusal must be isError on the wire (#202; DA mutation M1/M2)")
         XCTAssertEqual(try report(url).imageRelationshipCount, 0, "source must be untouched")
     }
 
@@ -59,6 +60,7 @@ final class Issue175R3CheckpointSidecarTests: XCTestCase {
         let out = url.deletingLastPathComponent().appendingPathComponent("final_deliverable.docx").path
         let refused = await server.invokeToolForTesting(name: "checkpoint", arguments: ["doc_id": .string("r3any"), "path": .string(out)])
         XCTAssertTrue(textOf(refused).contains("E_IMAGE_CONSISTENCY"), textOf(refused))
+        XCTAssertEqual(refused.isError, true, "the image-consistency refusal must be isError on the wire (#202; DA mutation M1/M2)")
         XCTAssertFalse(FileManager.default.fileExists(atPath: out))
         let allowed = await server.invokeToolForTesting(name: "checkpoint", arguments: ["doc_id": .string("r3any"), "path": .string(out), "allow_orphan_images": .bool(true)])
         XCTAssertFalse(textOf(allowed).hasPrefix("Error"), textOf(allowed))
