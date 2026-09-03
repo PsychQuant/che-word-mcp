@@ -37,8 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `E_IMAGE_CONSISTENCY` / `E_IMAGE_CONSISTENCY_INSPECTION` / reload-dirty 5 個多行 `"""` gate），client 拿到的是
   success result——依 `isError` 分流的 client 會把「拒絕存檔」讀成「存檔成功」。現在全部改為 `throw ToolRefusal(message)`，
   catch 補回 `Error: ` 前綴，**client 看到的文字逐字元不變**，只有 `isError` 從缺變 `true`。
-  `RefusalIsErrorSweepTests` 兩層鎖住：source-level sweep（Sources/ 內不得再出現 `return "Error:` 或以 `Error:`
-  開頭的回傳字面）與 protocol-level 案例（直接打 `handleToolCall`）。5 個 `No matches found…` 類資訊性回覆不是拒絕，
+  `RefusalIsErrorSweepTests` 兩層：source-level sweep（Sources/ 內不得再出現 `return "Error:`、以 `Error:` 開頭的
+  字面、拋出時仍帶 `Error:` 前綴的字面（雙前綴）、或 `return refusal` / `return formatSpliceError(` 這種 helper 建字串再回傳
+  的形態）與 protocol-level 案例（直接打 `handleToolCall`）。**守備範圍要講清楚**：sweep 擋的是**新寫的**字串拒絕；已轉換
+  的站點若被改回 `return`，只有帶協定層 `isError` 釘的站點會被抓（目前約 11 站），其餘靠 #216 逐站補釘。5 個 `No matches found…` 類資訊性回覆不是拒絕，
   維持 success。**範圍邊界**：另有 37 處拒絕以 JSON 字面回傳（32 處寫側、在 `storeDocument` 之前 return）仍是 success，
   處置是 API-shape 決定，另立 #214；拒絕訊息的機器可讀碼另見 #212。
 

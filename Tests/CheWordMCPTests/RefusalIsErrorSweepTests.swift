@@ -89,7 +89,9 @@ final class RefusalIsErrorSweepTests: XCTestCase {
     func testNoRefusalIsStillReturnedAsAString() throws {
         let offenders = try Self.stringRefusalSites()
         XCTAssertEqual(offenders.count, 0,
-                       "\(offenders.count) refusal(s) are still `return \"Error: …\"` strings (isError never set):\n"
+                       "\(offenders.count) refusal site(s) fail the sweep — rules 1/2: a returned `Error:` literal (isError never set); "
+                       + "rule 3: a thrown literal already starting with `Error:` (client would see `Error: Error:`); "
+                       + "rule 4: helper-built refusal text returned instead of thrown:\n"
                        + offenders.prefix(30).map(\.description).joined(separator: "\n")
                        + (offenders.count > 30 ? "\n… (+\(offenders.count - 30) more)" : ""))
     }
@@ -178,13 +180,32 @@ final class RefusalIsErrorSweepTests: XCTestCase {
         _ = try await call(server, "close_document", ["doc_id": .string("d"), "discard_changes": .bool(true)])
     }
 
-    /// Positive control: a success reply must keep `isError == nil` — the fix
-    /// is not "mark everything", it is "mark refusals".
+    /// R2 verify (regression M4e): `splice_paragraph_omath_from_source` was the one
+    /// helper-built refusal site without a protocol pin. Same helper, other tool.
+    /// (A source paragraph without OMath is a "Spliced 0 block(s)" success for this
+    /// tool, not a refusal — the refusal path here is an out-of-range target.)
+    func testSpliceParagraphHelperBuiltRefusalIsAnError() async throws {
+        let server = await WordMCPServer()
+        try await freshDoc(server)
+        // A source paragraph WITH OMath — without one the tool splices nothing and
+        // reports success without ever validating the target (noted on #215).
+        let eq = try await call(server, "insert_equation", ["doc_id": .string("d"), "latex": .string("x^2")])
+        XCTAssertNotEqual(eq.isError, true, "fixture: insert_equation must succeed. Got: \(text(eq).prefix(120))")
+        let r = try await call(server, "splice_paragraph_omath_from_source",
+                               ["doc_id": .string("d"), "source_doc_id": .string("d"),
+                                "source_paragraph_index": .int(1), "target_paragraph_index": .int(99)])
+        assertRefused(r, "splice_paragraph_omath_from_source (target paragraph out of range)", expecting: "out of range")
+        _ = try await call(server, "close_document", ["doc_id": .string("d"), "discard_changes": .bool(true)])
+    }
+
+    /// Positive control: a success reply must not be flagged — the fix is not
+    /// "mark everything", it is "mark refusals". `nil` and `false` are both
+    /// non-error on the wire, so the assertion is `!= true`, not `== nil`.
     func testSuccessReplyKeepsIsErrorUnset() async throws {
         let server = await WordMCPServer()
         try await freshDoc(server)
         let r = try await call(server, "get_document_session_state", ["doc_id": .string("d")])
-        XCTAssertNil(r.isError, "success reply must not carry isError. Got: \(text(r).prefix(80))")
+        XCTAssertNotEqual(r.isError, true, "success reply must not be flagged as an error (nil and false are both non-error on the wire). Got: \(text(r).prefix(80))")
         XCTAssertFalse(text(r).hasPrefix("Error: "))
         _ = try await call(server, "close_document", ["doc_id": .string("d"), "discard_changes": .bool(true)])
     }
