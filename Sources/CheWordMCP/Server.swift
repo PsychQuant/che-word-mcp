@@ -459,7 +459,7 @@ actor WordMCPServer {
         // sidecar instead of clobbering the original (R1 security S2 / logic H1).
         if let refusal = imageConsistencySaveRefusal(doc, docId: docId) {
             let sidecar = try writeRefusedStateSidecar(doc, docId: docId, sourcePath: path)
-            FileHandle.standardError.write(Data("Warning: autosave for '\(docId)' refused by the image-consistency gate; state written to \(sidecar) instead of the source file.\n\(refusal)\n".utf8))
+            FileHandle.standardError.write(Data("Warning: autosave for '\(docId)' refused by the image-consistency gate; state written to \(sidecar) instead of the source file.\nError: \(refusal)\n".utf8))
             return
         }
         try persistDocumentToDisk(doc, docId: docId, path: path)
@@ -544,7 +544,7 @@ actor WordMCPServer {
                 // ungated overwrite of the source a few seconds later (R1 logic H1).
                 if let refusal = imageConsistencySaveRefusal(document, docId: docId) {
                     let sidecar = try writeRefusedStateSidecar(document, docId: docId, sourcePath: path)
-                    FileHandle.standardError.write(Data("Warning: shutdown flush for '\(docId)' refused by the image-consistency gate; state written to \(sidecar), source file untouched.\n\(refusal)\n".utf8))
+                    FileHandle.standardError.write(Data("Warning: shutdown flush for '\(docId)' refused by the image-consistency gate; state written to \(sidecar), source file untouched.\nError: \(refusal)\n".utf8))
                     continue
                 }
                 try persistDocumentToDisk(document, docId: docId, path: path)
@@ -13966,8 +13966,9 @@ actor WordMCPServer {
     // Pre-mutation validation (regex compile + capture-group count + format /
     // scope enums + bookmark_template invariant) runs BEFORE we touch the
     // document — same discipline as insert_caption + lib-side validation in
-    // wrapCaptionSequenceFields. All error returns use "Error: wrap_caption_seq:
-    // ..." per #70 tool-prefix convention. Returns a JSON string with
+    // wrapCaptionSequenceFields. All refusals throw ToolRefusal("wrap_caption_seq: ...")
+    // per the #70 tool-prefix convention; the "Error: " prefix is added by handleToolCall's
+    // catch (#202). Returns a JSON string with
     // snake_case keys (matched_paragraphs / fields_inserted / paragraphs_modified
     // / skipped) so LLM callers can verify "did all N captions get fields?".
     private func wrapCaptionSeq(args: [String: Value]) async throws -> String {

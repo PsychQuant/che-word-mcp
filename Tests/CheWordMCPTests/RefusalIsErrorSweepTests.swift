@@ -38,16 +38,35 @@ final class RefusalIsErrorSweepTests: XCTestCase {
     /// Lists every refusal still expressed as a returned string.
     private static func stringRefusalSites() throws -> [Offender] {
         let fm = FileManager.default
-        let files = try fm.contentsOfDirectory(at: sourcesDir, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "swift" }
+        // Recursive: a future `Sources/CheWordMCP/Handlers/` split must not fall out of the lock
+        // (verify R1, logic LOW-1 / requirements F3).
+        var files: [URL] = []
+        if let walker = fm.enumerator(at: sourcesDir, includingPropertiesForKeys: nil) {
+            for case let url as URL in walker where url.pathExtension == "swift" { files.append(url) }
+        }
         XCTAssertFalse(files.isEmpty, "sweep found no Swift sources under \(sourcesDir.path)")
         var offenders: [Offender] = []
         for url in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
             let lines = try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n")
             for (i, raw) in lines.enumerated() {
                 let line = raw.trimmingCharacters(in: .whitespaces)
-                // single-line: return "Error: …"
+                // rule 1 — single-line: return "Error: …"
                 if line.hasPrefix("return \"Error:") {
+                    offenders.append(Offender(file: url.lastPathComponent, line: i + 1, text: line))
+                    continue
+                }
+                // rule 3 — double prefix: a thrown literal must not carry the `Error: ` the catch adds
+                // (verify R1, logic LOW-2).
+                if line.hasPrefix("throw ToolRefusal(\"Error:") {
+                    offenders.append(Offender(file: url.lastPathComponent, line: i + 1, text: line))
+                    continue
+                }
+                // rule 4 — the indirect shape this PR had to fix by hand: a helper builds the refusal
+                // text and the caller RETURNS it. Verify R1's DA reverted three such throws to returns
+                // and the whole suite stayed green (mutations M1–M3); this rule is the lock for that
+                // shape. The list names the known refusal builders; extend it when adding one.
+                if line == "return refusal" || line.hasPrefix("return refusal ")
+                    || line.hasPrefix("return formatSpliceError(") {
                     offenders.append(Offender(file: url.lastPathComponent, line: i + 1, text: line))
                     continue
                 }
@@ -57,12 +76,9 @@ final class RefusalIsErrorSweepTests: XCTestCase {
                     var j = i + 1
                     while j < lines.count, lines[j].trimmingCharacters(in: .whitespaces).isEmpty { j += 1 }
                     if j < lines.count, lines[j].trimmingCharacters(in: .whitespaces).hasPrefix("Error:") {
-                        // a literal that is thrown is fine; one that is returned or built as a String is not
-                        let opener = line
-                        let isThrown = opener.contains("throw ")
-                        if !isThrown {
-                            offenders.append(Offender(file: url.lastPathComponent, line: j + 1, text: lines[j]))
-                        }
+                        // Returned or built as a String → isError never set. Thrown → the catch adds a
+                        // second `Error: ` (rule 3). Either way an offender (verify R1, logic LOW-2).
+                        offenders.append(Offender(file: url.lastPathComponent, line: j + 1, text: lines[j]))
                     }
                 }
             }
@@ -145,6 +161,20 @@ final class RefusalIsErrorSweepTests: XCTestCase {
         try await freshDoc(server)
         let r = try await call(server, "update_caption", ["doc_id": .string("d"), "index": .int(0)])
         assertRefused(r, "update_caption (neither new_caption_text nor new_label)", expecting: "must provide new_caption_text or new_label")
+        _ = try await call(server, "close_document", ["doc_id": .string("d"), "discard_changes": .bool(true)])
+    }
+
+    /// Verify R1 DA mutation M3: `throw ToolRefusal(formatSpliceError(…))` reverted to
+    /// `return formatSpliceError(…)` kept the whole suite green. A refusal built by a
+    /// helper and thrown by the caller must be pinned at the protocol level too.
+    func testSpliceHelperBuiltRefusalIsAnError() async throws {
+        let server = await WordMCPServer()
+        try await freshDoc(server)
+        let r = try await call(server, "splice_omath_from_source",
+                               ["doc_id": .string("d"), "source_doc_id": .string("d"),
+                                "source_paragraph_index": .int(0), "target_paragraph_index": .int(0),
+                                "position": .string("atStart")])
+        assertRefused(r, "splice_omath_from_source (source paragraph without OMath)", expecting: "no OMath")
         _ = try await call(server, "close_document", ["doc_id": .string("d"), "discard_changes": .bool(true)])
     }
 
