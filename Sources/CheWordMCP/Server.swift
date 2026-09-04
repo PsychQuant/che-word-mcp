@@ -1926,7 +1926,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "list_images",
-                description: "列出文件中所有圖片（支援 Direct Mode）",
+                description: "列出文件中所有圖片（支援 Direct Mode）。每列附 `referenced: yes | NO (orphan) | unknown`：relationship 有、但 word/document.xml 沒有 <w:drawing> 引用的孤兒圖片會標 NO 並另出 ⚠ 警告（具名 rId；這是 macdoc#175 靜默遺失的訊號，save_document 會以 E_IMAGE_CONSISTENCY 拒絕，除非 allow_orphan_images: true）。判定與 save gate 讀同一份位元組（Session 序列化、Direct 讀磁碟）；檢查跑不動時每列標 unknown 並明說，不會退回「列出即存在」（#199）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -6880,6 +6880,72 @@ actor WordMCPServer {
         """
     }
 
+    /// What `list_images` needs from a package inspection (#199). Built from
+    /// `ImageConsistencyReport`; kept as its own type so the formatter can be
+    /// exercised without a serialized package.
+    struct ImageListingInspection: Equatable {
+        let bodyDrawingCount: Int
+        let imageRelationshipCount: Int
+        let mediaEntryCount: Int
+        /// `word/document.xml.rels` image ids with no reference in the body.
+        let orphanDocumentIds: [String]
+        /// `part:rId` orphans in parts `list_images` does not list (headers/footers).
+        let otherPartOrphans: [String]
+
+        init(bodyDrawingCount: Int, imageRelationshipCount: Int, mediaEntryCount: Int,
+             orphanDocumentIds: [String], otherPartOrphans: [String]) {
+            self.bodyDrawingCount = bodyDrawingCount
+            self.imageRelationshipCount = imageRelationshipCount
+            self.mediaEntryCount = mediaEntryCount
+            self.orphanDocumentIds = orphanDocumentIds
+            self.otherPartOrphans = otherPartOrphans
+        }
+
+        init(_ report: ImageConsistencyReport) {
+            self.init(
+                bodyDrawingCount: report.bodyDrawingCount,
+                imageRelationshipCount: report.imageRelationshipCount,
+                mediaEntryCount: report.mediaEntryCount,
+                orphanDocumentIds: report.orphanImageRelationshipIds,
+                otherPartOrphans: report.orphanImageRelationshipRefs
+                    .filter { $0.part != "word/document.xml" }
+                    .map(\.qualified))
+        }
+    }
+
+    /// Render the `list_images` reply (#199). Every row says whether the body
+    /// references it; orphans get a named warning; an inspection that could
+    /// not run marks every row `unknown` instead of silently reverting to the
+    /// pre-#199 "listed ⇒ present" reading. Never a refusal: a listing that
+    /// contains orphans succeeded as a listing (#202 — only refusals are errors).
+    static func imageListing(rows: [(id: String, fileName: String, widthPx: Int, heightPx: Int)],
+                             inspection: ImageListingInspection?,
+                             inspectionFailure: String?) -> String {
+        func row(_ r: (id: String, fileName: String, widthPx: Int, heightPx: Int), _ flag: String) -> String {
+            "- id: \(r.id), file: \(r.fileName), size: \(r.widthPx)x\(r.heightPx)px, referenced: \(flag)\n"
+        }
+        guard let insp = inspection else {
+            var s = "Found \(rows.count) image(s) — body-reference check unavailable (see warning below):\n"
+            for r in rows { s += row(r, "unknown") }
+            s += "\n⚠ body-reference check unavailable: \(inspectionFailure ?? "unknown reason")\n"
+            s += "  The rows above are relationship declarations only; any of them may be an orphan (no <w:drawing> reference in the body). Do not read this listing as proof the images are in the document. Retry; save_document refuses an uninspectable package with E_IMAGE_CONSISTENCY_INSPECTION."
+            return s
+        }
+        let orphanSet = Set(insp.orphanDocumentIds)
+        let referenced = rows.filter { !orphanSet.contains($0.id) }.count
+        var s = "Found \(rows.count) image(s) — \(referenced) referenced in body, \(insp.orphanDocumentIds.count) orphan (relationship declared, no <w:drawing> reference in word/document.xml):\n"
+        for r in rows { s += row(r, orphanSet.contains(r.id) ? "NO (orphan)" : "yes") }
+        if !insp.orphanDocumentIds.isEmpty {
+            s += "\n⚠ \(insp.orphanDocumentIds.count) orphan image relationship(s) in word/document.xml: \(insp.orphanDocumentIds.joined(separator: ", "))\n"
+            s += "  These images are declared in the package but nothing in the document body references them — the PsychQuant/macdoc#175 silent-image-loss signature. If they were inserted this session, the insert was lost: re-insert them. If you deliberately deleted the paragraph that carried them, the leftover relationship is harmless, but save_document will refuse with E_IMAGE_CONSISTENCY unless you pass allow_orphan_images: true.\n"
+        }
+        if !insp.otherPartOrphans.isEmpty {
+            s += "\n⚠ \(insp.otherPartOrphans.count) orphan image relationship(s) in other parts (not listed above): \(insp.otherPartOrphans.joined(separator: ", "))\n"
+        }
+        s += "Package: bodyDrawings=\(insp.bodyDrawingCount), imageRelationships=\(insp.imageRelationshipCount), mediaEntries=\(insp.mediaEntryCount)"
+        return s
+    }
+
     /// Parse `allow_orphan_images`: absent / JSON null → false; a boolean →
     /// itself; anything else is an error rather than a silent false (R1 #14).
     static func allowOrphanImagesFlag(_ args: [String: Value]) throws -> Bool {
@@ -8830,7 +8896,7 @@ actor WordMCPServer {
     }
 
     private func listImages(args: [String: Value]) async throws -> String {
-        let (doc, _) = try await resolveDocument(args: args)
+        let (doc, isDirect) = try await resolveDocument(args: args)
 
         let images = doc.getImages()
 
@@ -8838,12 +8904,27 @@ actor WordMCPServer {
             return "No images in document"
         }
 
-        var result = "Found \(images.count) image(s):\n"
-        for img in images {
-            result += "- id: \(img.id), file: \(img.fileName), size: \(img.widthPx)x\(img.heightPx)px\n"
+        // #199: `getImages()` is relationship-driven and says nothing about the
+        // body. Run the same PackageInspector the save gate uses, on the same
+        // bytes: Direct Mode inspects the file on disk, Session Mode the bytes a
+        // save would write. `writeData` is pure — the session is not touched.
+        var inspection: ImageListingInspection?
+        var failure: String?
+        do {
+            let data: Data
+            if isDirect, let sourcePath = args["source_path"]?.stringValue {
+                guard let bytes = FileManager.default.contents(atPath: sourcePath) else {
+                    throw WordError.fileNotFound(sourcePath)
+                }
+                data = bytes
+            } else {
+                data = try DocxWriter.writeData(doc)
+            }
+            inspection = ImageListingInspection(try PackageInspector.imageConsistencyReport(of: data))
+        } catch {
+            failure = error.localizedDescription
         }
-
-        return result
+        return Self.imageListing(rows: images, inspection: inspection, inspectionFailure: failure)
     }
 
     // MARK: - 9.17 export_image - 匯出單一圖片
