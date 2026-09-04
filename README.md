@@ -435,7 +435,7 @@ Even/odd + section linkage (4, **v3.11.0**):
 | `insert_floating_image` | Insert floating image with text wrap |
 | `update_image` | Update image properties |
 | `delete_image` | Delete image |
-| `list_images` | List all images |
+| `list_images` | List all images; each row carries `referenced: yes / NO (orphan) / unknown`, and orphans (relationship with no body `<w:drawing>` reference — the macdoc#175 signature) get a ⚠ warning naming the rId (#199) |
 | `set_image_style` | Set image border and effects |
 
 ### Captions (5 tools)
