@@ -32,9 +32,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `DocxWriter.writeData`，與 save gate 檢查的是同一種序列化——**與 gate 一致，但不等於 overlay 模式實際存出的檔案**（chart／
     header rels 這類只有 overlay 保留的 parts 不在兩者視野內，見 #220）。
   - 檢查失敗的原因用 `LocalizedError` 描述、否則 `Type: case`，並遮蔽絕對路徑；不設 `isError`（列出成功、孤兒是內容）。
-  - 代價：Session Mode 每次 `list_images` 多一次序列化，17.5 MB／9 圖文件實測 465 ms（`get_document_info` 11 ms、`save_document`
-    820 ms）。`Issue199ListImagesBodyReferenceTests` 十五案例鎖住以上形狀（含 chart-part 孤兒證明 Direct 讀磁碟、缺 media rel 對帳、
+  - 代價：Session Mode 每次 `list_images` 多一次序列化＋一次線性 guard 掃描，17.5 MB／9 圖文件實測約 0.5–0.6 s（verify R1 465 ms、
+    fix round 後載入正規化約 576 ms；同文件 `get_document_info` 11 ms、`save_document` 820 ms）。`Issue199ListImagesBodyReferenceTests` 十五案例鎖住以上形狀（含 chart-part 孤兒證明 Direct 讀磁碟、缺 media rel 對帳、
     entity 解碼、注入偽造、20000 個未閉合 `<!--` 五秒內收場、baseline 標示與 gate 判定一致、混合形狀端到端、session 快照不變）。
+  - **verify R2 之後（fix round 2）**：canonicalization 只做在 **save gate 一處**——`recordImageBaseline` 與
+    `imageConsistencySaveRefusal` 對 inspector 的 id 做 NSXML 等價的正規化（屬性空白 TAB/CR/LF → 空格、任意長度的字元參照、
+    僅 XML Char 有效），以 (part, id) tuple 建 qualified；listing 消費 gate 的同一套判定，`(new since baseline)` /
+    `(in baseline)` 與「WILL / will NOT refuse」不再與實際 save 反向（R2 B1′/B3′；根因 ooxml-swift#137）。comment guard 改成
+    **線性前向配對**（每個 `<!--` 必須找到其後的 `-->`，`(-->)×N (<!--)×N` 的平衡錯排也擋），並套到 open／revert／reload
+    的 baseline 與 save gate（R2 B4′；根因 ooxml-swift#138）。跳脫改依 Unicode general category（control／format／行段分隔符，含
+    C1）並套到檢查失敗的 reason（guard 具名的 zip entry 名也是 package 來的，R2 B2′）。從 `word/_rels/document.xml.rels`
+    位元組讀出 document part 宣告的全部 image rel 做完整對帳：列不出來的 rel 具名並註明「referenced in body」或「orphan」，
+    `rows + unlistable = declared`；「無圖」判定只看 image rel 與 media 數（`bodyDrawingCount` 數的是所有 `<w:drawing>`，圖表／
+    文字方塊不該讓它變成「宣告了 0 條 image relationship；見下方警告」），header/footer 圖片具名數量（R2 B5′）。**序列化前預檢重複
+    的 relationship id**（含 `rId5` 與 `rId&#53;`、與 writer 固定槽 `rId1`–`rId4` 相撞）：命中即「檢查不可用」具名 id，不進會
+    `fatalError` 的 writer（R2 DA-1；根因 ooxml-swift#139）。`⚠` 統一 `"part:rId"`；`Package (as this session serializes it)` /
+    `Package (on disk)` 明說計數來源；Direct Mode 用完 `close()` 釋放解壓目錄（共用路徑另見 #221）；`ZIPFoundation` 明宣告為依賴。
+    `Issue199ListImagesBodyReferenceTests` 擴到 22 案例。
   同根的另一個出口 `get_document_info` 的 `imagesCount` 另見 #217；header/footer 圖片完整列舉另見 #219；ooxml-swift `getImages()`
   尺寸查找漏表格內段落另見 ooxml-swift#136。
 ### Fixed
