@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [4.0.11] - 2026-09-03
 
+### Added
+
+- **`list_images` 回報 body 引用狀態，孤兒圖片不再被列成「存在」**（#199，macdoc#175 的驗證管道旁支；verify R1 六路 FAIL 後的 fix round 一併收進本條）。過去這個 tool 只迭代
+  relationship 驅動的 `getImages()`，body 只用來查尺寸——rels 有、`word/document.xml` 沒有引用的孤兒以 `size: 0x0px`
+  混在「Found N image(s)」裡，#175 的實測文件就這樣把缺 4 張讀成「7 張全在」。現在：
+  - 每列固定單行 `- id: "rIdN", file: "name", size: WxHpx, referenced: yes | NO (orphan) | unknown`；`id:` 是唯一鍵、
+    `referenced:` 恆為尾欄。**來自 package 的值（rId、檔名、part 路徑）一律加引號並跳脫**控制字元、行／段分隔符、bidi
+    控制字元、引號、反斜線，以及 `referenced:` / `⚠` / `Package:` / `- id:` 這些結構 token——惡意 .docx 用 `Id="rId8&#10;- id: …,
+    referenced: yes"` 或檔名 `evil, referenced: yes.png` 偽造不出列、狀態或警告（verify R1 B2）。
+  - 標題列 `Found N image(s) — K referenced in body, M orphan (…)`，`K + M = N` 恆成立（只數列得出來的）；**宣告了但列不出來的
+    relationship**（media 缺檔、外連 target，`getImages()` 會跳過）另一行具名（B5）。只有 dangling rel 或只有 header/footer 圖的
+    package 不再逐位元組回 `No images in document`，改回「No listable images in word/document.xml — but the package declares N
+    image relationship(s)」；真正無圖的文件仍逐位元組回 `No images in document`（Session Mode 以 save gate 同款短路避免付序列化）。
+  - 孤兒 `⚠` 具名 `"rId"`；**Session Mode 依開檔時的 baseline 標「new this session」／「pre-existing at open」，只對前者預告
+    `save_document` 的 `E_IMAGE_CONSISTENCY`**（gate 只擋開檔後新增的孤兒；R1 抓到舊版對開檔前就存在的孤兒說「會拒」而 save
+    照存，B1）；全無新孤兒時明說「will NOT refuse」；Direct Mode 明說沒有 gate。header/footer/chart 等其他 parts 的孤兒另一行
+    具名 `"part:rId"`，同樣帶標籤（它們也進 gate）。
+  - inspector 的 rId 先做 XML entity 解碼再與 `getImages()`（NSXML 已解碼）的 id 比對——`Id="rId&#54;"` 過去一邊是 `rId6`、一邊是
+    `rId&#54;`，孤兒因此被標 `yes`（B3；根因 ooxml-swift#137）。
+  - 餵 `PackageInspector` 前先對每個 `word/**` 的 `.rels` / `.xml` entry 做**線性預掃**：`<!--` 多於 `-->` 就拒絕檢查、全列
+    `unknown` 並具名 part——inspector 的註解剝除對未閉合 `<!--` 呈二次退化（5 KB 檔跑一分鐘，B4；根因 ooxml-swift#138）。
+  - **Direct Mode 只讀檔案一次**：列與判定都從同一份位元組建出（舊版讀兩次，列與判定可能來自不同版本，I1）；Session Mode 走
+    `DocxWriter.writeData`，與 save gate 檢查的是同一種序列化——**與 gate 一致，但不等於 overlay 模式實際存出的檔案**（chart／
+    header rels 這類只有 overlay 保留的 parts 不在兩者視野內，見 #220）。
+  - 檢查失敗的原因用 `LocalizedError` 描述、否則 `Type: case`，並遮蔽絕對路徑；不設 `isError`（列出成功、孤兒是內容）。
+  - 代價：Session Mode 每次 `list_images` 多一次序列化＋一次線性 guard 掃描，17.5 MB／9 圖文件實測約 0.5–0.6 s（verify R1 465 ms、
+    fix round 後載入正規化約 576 ms；同文件 `get_document_info` 11 ms、`save_document` 820 ms）。`Issue199ListImagesBodyReferenceTests` 十五案例鎖住以上形狀（含 chart-part 孤兒證明 Direct 讀磁碟、缺 media rel 對帳、
+    entity 解碼、注入偽造、20000 個未閉合 `<!--` 五秒內收場、baseline 標示與 gate 判定一致、混合形狀端到端、session 快照不變）。
+  - **verify R2 之後（fix round 2）**：canonicalization 只做在 **save gate 一處**——`recordImageBaseline` 與
+    `imageConsistencySaveRefusal` 對 inspector 的 id 做 NSXML 等價的正規化（屬性空白 TAB/CR/LF → 空格、任意長度的字元參照、
+    僅 XML Char 有效），以 (part, id) tuple 建 qualified；listing 消費 gate 的同一套判定，`(new since baseline)` /
+    `(in baseline)` 與「WILL / will NOT refuse」不再與實際 save 反向（R2 B1′/B3′；根因 ooxml-swift#137）。comment guard 改成
+    **線性前向配對**（每個 `<!--` 必須找到其後的 `-->`，`(-->)×N (<!--)×N` 的平衡錯排也擋），並套到 open／revert／reload
+    的 baseline 與 save gate（R2 B4′；根因 ooxml-swift#138）。跳脫改依 Unicode general category（control／format／行段分隔符，含
+    C1）並套到檢查失敗的 reason（guard 具名的 zip entry 名也是 package 來的，R2 B2′）。從 `word/_rels/document.xml.rels`
+    位元組讀出 document part 宣告的全部 image rel 做完整對帳：列不出來的 rel 具名並註明「referenced in body」或「orphan」，
+    `rows + unlistable = declared`；「無圖」判定只看 image rel 與 media 數（`bodyDrawingCount` 數的是所有 `<w:drawing>`，圖表／
+    文字方塊不該讓它變成「宣告了 0 條 image relationship；見下方警告」），header/footer 圖片具名數量（R2 B5′）。**序列化前預檢重複
+    的 relationship id**（含 `rId5` 與 `rId&#53;`、與 writer 固定槽 `rId1`–`rId4` 相撞）：命中即「檢查不可用」具名 id，不進會
+    `fatalError` 的 writer（R2 DA-1；根因 ooxml-swift#139）。`⚠` 統一 `"part:rId"`；`Package (as this session serializes it)` /
+    `Package (on disk)` 明說計數來源；Direct Mode 用完 `close()` 釋放解壓目錄（共用路徑另見 #221）；`ZIPFoundation` 明宣告為依賴。
+    `Issue199ListImagesBodyReferenceTests` 擴到 22 案例。
+  同根的另一個出口 `get_document_info` 的 `imagesCount` 另見 #217；header/footer 圖片完整列舉另見 #219；ooxml-swift `getImages()`
+  尺寸查找漏表格內段落另見 ooxml-swift#136。
 ### Fixed
 
 - **三個浮水印寫側工具改為誠實失敗**（#201，與 #172 同款處置）。`insert_watermark` / `insert_image_watermark` /
@@ -45,6 +89,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   處置是 API-shape 決定，另立 #214；拒絕訊息的機器可讀碼另見 #212。
 
 ### 升級注意
+
+- `list_images` 的列改為 `- id: "rIdN", file: "name", size: WxHpx, referenced: …`（值加引號、尾欄 `referenced:`），標題列多了計數。以整行文字比對輸出的腳本改以 `^- id: "rIdN"` 開頭比對、以行尾的 `referenced:` 取狀態；`Found N image(s)` 前綴與 `id / file / size` 欄位順序不變。只有 dangling rel 或 header 圖的 package 不再回 `No images in document`（#199）。
 
 - 三個浮水印寫側工具由「必回成功字串」變成「必回 `isError`」。依賴舊成功字串、從不檢查內容的自動化流程會在 4.0.10 → 4.0.11 硬失敗；
   沒有真能用的行為被拿掉，故仍走 patch 版號。

@@ -337,7 +337,7 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `insert_floating_image` | 插入浮動圖片（文繞圖）|
 | `update_image` | 更新圖片屬性 |
 | `delete_image` | 刪除圖片 |
-| `list_images` | 列出所有圖片 |
+| `list_images` | 列出 document part 的圖片；每列帶 `referenced: yes / NO (orphan) / unknown`，孤兒（relationship 有、body 無引用，macdoc#175 訊號）另出 ⚠ 具名 rId 並標「new this session／pre-existing at open」（#199） |
 | `set_image_style` | 設定圖片邊框和效果 |
 
 ### 圖表標題 (5 個)
