@@ -1934,7 +1934,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "list_images",
-                description: "列出 word/document.xml 可列出的圖片（支援 Direct Mode）。每列固定單行、`id:` 是唯一鍵、`referenced: yes | NO (orphan) | unknown` 恆為尾欄；來自 package 的值（rId、檔名、part 路徑）一律加引號並跳脫控制字元與結構 token，惡意檔案偽造不出列或警告。孤兒（relationship 有、body 無引用）標 NO 並另出 ⚠ 具名 `part:rId`；Session Mode 會標「new this session」／「pre-existing at open」，且只對前者預告 save_document 的 E_IMAGE_CONSISTENCY（gate 只擋開檔後新增的孤兒）；Direct Mode 沒有 gate。宣告了但列不出來的 relationship（media 缺檔、外連）與 header/footer/chart 等其他 parts 的孤兒各自一行具名。判定與 save gate 讀同一份位元組（Session：同一種序列化；Direct：磁碟檔案只讀一次、列與判定同源）；檢查跑不動時每列標 unknown 並明說原因，不退回「列出即存在」（#199）。",
+                description: "列出 word/document.xml 可列出的圖片（支援 Direct Mode）。每列固定單行、`id:` 是唯一鍵、`referenced: yes | NO (orphan) | unknown` 恆為尾欄；引號內的一切都是資料（rId、檔名、part 路徑一律加引號並跳脫控制／格式字元與結構 token），惡意檔案偽造不出列或警告。孤兒（relationship 有、body 無引用）標 NO 並另出 ⚠ 具名 `\"part:rId\"`；宣告了但列不出來的 relationship（media 缺檔、外連）另一行具名並註明「referenced in body」或「orphan」，列數＋列不出來的＝document part 宣告數；header/footer/chart 等其他 parts 的孤兒各自一行。Session Mode 依 save gate 的 baseline（開檔時記錄、每次帶 allow_orphan_images: true 的存檔刷新）標「new since baseline」／「in baseline」，且只對前者預告 save_document 的 E_IMAGE_CONSISTENCY——這是 gate 自己的判定，同一套 canonical id；Direct Mode 沒有 gate。判定用的位元組：Session 與 save gate 同一種序列化（不等於 overlay 存出的檔案，#220）、Direct 磁碟檔案只讀一次。檢查跑不動（inspector 無法線性掃描、序列化會 trap 的重複 rel id 等）時每列標 unknown 並明說原因，不退回「列出即存在」（#199）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -6888,12 +6888,150 @@ actor WordMCPServer {
         """
     }
 
-    /// What `list_images` needs from a package inspection (#199). Built from
-    /// `ImageConsistencyReport`; kept as its own type so the formatter can be
-    /// exercised without a serialized package. All ids are XML-entity-decoded
-    /// so they compare with the NSXML-decoded ids `getImages()` returns
-    /// (verify R1 B3: `Id="rId&#54;"` is `rId6` on one side and `rId&#54;` on
-    /// the other; ooxml-swift#137 tracks decoding inside the inspector).
+    // MARK: - #199 shared canonicalization (gate + listing)
+
+    /// A relationship id as NSXML delivers it: attribute-value whitespace
+    /// normalization (literal TAB/CR/LF → space, XML 1.0 §3.3.3) followed by
+    /// character-reference and predefined-entity decoding (any length, XML
+    /// Char-valid only). `PackageInspector` scrapes attribute text verbatim
+    /// (ooxml-swift#137), so every id it reports goes through this before it
+    /// is compared with anything the reader produced — in the save gate AND in
+    /// the listing, so both see one canonical form (verify R2 B1′/B3′).
+    static func canonicalAttributeValue(_ raw: String) -> String {
+        var normalized = ""
+        normalized.unicodeScalars.reserveCapacity(raw.unicodeScalars.count)
+        for u in raw.unicodeScalars { normalized.unicodeScalars.append((u == "\t" || u == "\n" || u == "\r") ? " " : u) }
+        guard normalized.contains("&") else { return normalized }
+        var out = ""; var rest = Substring(normalized)
+        while let amp = rest.firstIndex(of: "&") {
+            out += rest[..<amp]
+            let tail = rest[amp...]
+            guard let semi = tail.firstIndex(of: ";"),
+                  let decoded = decodedXMLEntity(tail[tail.index(after: tail.startIndex)..<semi]) else {
+                out += "&"; rest = tail.dropFirst(); continue
+            }
+            out += decoded; rest = tail[tail.index(after: semi)...]
+        }
+        return out + rest
+    }
+
+    private static func decodedXMLEntity(_ name: Substring) -> String? {
+        switch name {
+        case "amp": return "&"
+        case "lt": return "<"
+        case "gt": return ">"
+        case "quot": return "\""
+        case "apos": return "'"
+        default: break
+        }
+        guard name.first == "#" else { return nil }
+        var body = name.dropFirst(); var radix = 10
+        if body.first == "x" || body.first == "X" { body = body.dropFirst(); radix = 16 }
+        guard !body.isEmpty, body.allSatisfy({ $0.isASCII && (radix == 16 ? $0.isHexDigit : $0.isNumber) }) else { return nil }
+        let significant = body.drop(while: { $0 == "0" })
+        guard significant.count <= 7 else { return nil }                       // > 0x10FFFF: never a valid XML Char
+        guard let v = UInt32(significant.isEmpty ? "0" : String(significant), radix: radix),
+              isXMLChar(v), let scalar = Unicode.Scalar(v) else { return nil }
+        return String(Character(scalar))
+    }
+
+    private static func isXMLChar(_ v: UInt32) -> Bool {
+        v == 0x9 || v == 0xA || v == 0xD || (0x20...0xD7FF).contains(v) || (0xE000...0xFFFD).contains(v) || (0x10000...0x10FFFF).contains(v)
+    }
+
+    /// The inspector's ref with its id canonicalized. Qualified form is built
+    /// from the tuple, never by splitting a string (an id may itself contain `:`).
+    static func canonicalRef(_ ref: ImageRelationshipRef) -> ImageRelationshipRef {
+        ImageRelationshipRef(part: ref.part, id: canonicalAttributeValue(ref.id))
+    }
+
+    /// Orphans the save gate will refuse: canonical qualified refs not in the
+    /// (canonical) baseline. The gate and the listing both call this.
+    static func newOrphanQualifiedIds(_ orphans: [ImageRelationshipRef], baseline: Set<String>) -> [String] {
+        var seen = Set<String>(); var out: [String] = []
+        for q in orphans.map(\.qualified) where !baseline.contains(q) && seen.insert(q).inserted { out.append(q) }
+        return out
+    }
+
+    /// Thrown by the linear pre-scan that protects `PackageInspector` from its
+    /// quadratic comment stripper (verify R1 B4 / R2 B4′; ooxml-swift#138).
+    struct UninspectablePart: LocalizedError {
+        let part: String
+        var errorDescription: String? { "part \(part) contains a `<!--` with no `-->` after it (or literal `<!--` text the inspector cannot tell from a comment); the package cannot be scanned in linear time, so it was not inspected" }
+    }
+
+    /// Linear ordered pairing over every `word/**` `.rels`/`.xml` entry: each
+    /// `<!--` must be followed by a `-->`, exactly the way the inspector's lazy
+    /// regex consumes them — counting alone lets `(-->)×N (<!--)×N` through.
+    /// Applied at every inspector call site (open baseline, save gate, listing).
+    static func guardInspectableComments(in packageData: Data) throws {
+        let archive = try Archive(data: packageData, accessMode: .read)
+        for entry in archive {
+            let path = entry.path
+            guard path.hasPrefix("word/"), path.hasSuffix(".rels") || path.hasSuffix(".xml") else { continue }
+            var data = Data(); _ = try archive.extract(entry) { data.append($0) }
+            if hasUnpairedCommentOpener(String(decoding: data, as: UTF8.self)) { throw UninspectablePart(part: path) }
+        }
+    }
+
+    static func hasUnpairedCommentOpener(_ text: String) -> Bool {
+        var cursor = text.startIndex
+        while let open = text.range(of: "<!--", range: cursor..<text.endIndex) {
+            guard let close = text.range(of: "-->", range: open.upperBound..<text.endIndex) else { return true }
+            cursor = close.upperBound
+        }
+        return false
+    }
+
+    /// Ids the writer will index with `Dictionary(uniqueKeysWithValues:)` —
+    /// a duplicate traps the whole process (ooxml-swift#139), so the listing
+    /// must refuse to serialize such a document (verify R2 DA-1). Mirrors
+    /// `DocxWriter.buildTypedRelationships` (ooxml-swift 3.6.x): fixed
+    /// `rId1`–`rId3` (+ `rId4` with numbering), then header / footer / image /
+    /// hyperlink ids as the typed model carries them — two `Id="rId5"`, or
+    /// `rId5` and `rId&#53;` (NSXML decodes both to `rId5`), or an image whose
+    /// id collides with a fixed slot, all land in the same dictionary.
+    static func duplicateTypedRelationshipIds(_ document: WordDocument) -> [String] {
+        var ids = ["rId1", "rId2", "rId3"]
+        if !document.numbering.abstractNums.isEmpty { ids.append("rId4") }
+        ids += document.headers.map(\.id) + document.footers.map(\.id)
+        ids += document.images.map(\.id) + document.hyperlinkReferences.map(\.relationshipId)
+        var seen = Set<String>(); var dups: [String] = []
+        for id in ids where !seen.insert(id).inserted && !dups.contains(id) { dups.append(id) }
+        return dups
+    }
+
+    /// Every image relationship `word/_rels/document.xml.rels` declares, in
+    /// declaration order, ids canonicalized — the population the listing
+    /// reconciles against (`getImages()` silently skips relationships whose
+    /// media is missing or external, verify R2 B5′). Attribute-level scan,
+    /// same shape as the inspector's; not a parser.
+    static func declaredDocumentImageIds(in packageData: Data) throws -> [String] {
+        let archive = try Archive(data: packageData, accessMode: .read)
+        guard let entry = archive["word/_rels/document.xml.rels"] else { return [] }
+        var data = Data(); _ = try archive.extract(entry) { data.append($0) }
+        var xml = String(decoding: data, as: UTF8.self)
+        xml = xml.replacingOccurrences(of: #"<!--.*?-->"#, with: "", options: .regularExpression)
+        let element = try! NSRegularExpression(pattern: #"<Relationship\b(?:[^>"']|"[^"]*"|'[^']*')*>"#)
+        let idAttr = try! NSRegularExpression(pattern: #"\bId\s*=\s*(["'])([^"']*)\1"#)
+        let typeAttr = try! NSRegularExpression(pattern: #"\bType\s*=\s*(["'])([^"']*)\1"#)
+        let ns = xml as NSString; var out: [String] = []; var seen = Set<String>()
+        for m in element.matches(in: xml, range: NSRange(location: 0, length: ns.length)) {
+            let el = ns.substring(with: m.range); let elNS = el as NSString; let whole = NSRange(location: 0, length: elNS.length)
+            guard let t = typeAttr.firstMatch(in: el, range: whole), elNS.substring(with: t.range(at: 2)).hasSuffix("/image"),
+                  let i = idAttr.firstMatch(in: el, range: whole) else { continue }
+            let id = canonicalAttributeValue(elNS.substring(with: i.range(at: 2)))
+            if seen.insert(id).inserted { out.append(id) }
+        }
+        return out
+    }
+
+    // MARK: - #199 listing
+
+    /// What `list_images` needs from a package inspection (#199). Every id is
+    /// canonical (see `canonicalAttributeValue`), so it compares with the ids
+    /// `getImages()` returns; the session-new orphan set is the gate's own
+    /// computation (`newOrphanQualifiedIds`), never re-derived here.
     struct ImageListingInspection: Equatable {
         let bodyDrawingCount: Int
         let imageRelationshipCount: Int
@@ -6902,197 +7040,159 @@ actor WordMCPServer {
         let orphanDocumentIds: [String]
         /// `part:rId` orphans in parts `list_images` does not list (headers/footers/charts).
         let otherPartOrphans: [String]
-        /// Qualified (`part:rId`) orphans that were NOT in the open-time baseline —
-        /// the population the save gate refuses. `nil` = no session (Direct Mode).
+        /// All image ids `word/document.xml.rels` declares (canonical, deduped, in order).
+        let declaredDocumentIds: [String]
+        /// Qualified orphans the save gate would refuse (not in baseline). `nil` = Direct Mode (no gate).
         let sessionNewOrphans: Set<String>?
 
         init(bodyDrawingCount: Int, imageRelationshipCount: Int, mediaEntryCount: Int,
-             orphanDocumentIds: [String], otherPartOrphans: [String], sessionNewOrphans: Set<String>?) {
+             orphanDocumentIds: [String], otherPartOrphans: [String], declaredDocumentIds: [String], sessionNewOrphans: Set<String>?) {
             self.bodyDrawingCount = bodyDrawingCount
             self.imageRelationshipCount = imageRelationshipCount
             self.mediaEntryCount = mediaEntryCount
             self.orphanDocumentIds = orphanDocumentIds
             self.otherPartOrphans = otherPartOrphans
+            self.declaredDocumentIds = declaredDocumentIds
             self.sessionNewOrphans = sessionNewOrphans
         }
 
-        /// - Parameter baseline: the qualified orphan set recorded at open time
-        ///   (`documentImageOrphanBaseline[docId]`); pass `nil` in Direct Mode.
-        init(_ report: ImageConsistencyReport, baseline: Set<String>?) {
-            let decode = WordMCPServer.xmlEntityDecoded
-            let refs = report.orphanImageRelationshipRefs.map { ImageRelationshipRef(part: $0.part, id: decode($0.id)) }
+        /// - Parameter baseline: the canonical qualified orphan set the gate
+        ///   recorded (`documentImageOrphanBaseline[docId]`); `nil` in Direct Mode.
+        init(_ report: ImageConsistencyReport, declaredDocumentIds: [String], baseline: Set<String>?) {
+            let refs = report.orphanImageRelationshipRefs.map(WordMCPServer.canonicalRef)
+            var seenDoc = Set<String>(); var seenOther = Set<String>()
             self.init(
                 bodyDrawingCount: report.bodyDrawingCount,
                 imageRelationshipCount: report.imageRelationshipCount,
                 mediaEntryCount: report.mediaEntryCount,
-                orphanDocumentIds: refs.filter { $0.part == "word/document.xml" }.map(\.id),
-                otherPartOrphans: refs.filter { $0.part != "word/document.xml" }.map(\.qualified),
-                sessionNewOrphans: baseline.map { base in
-                    Set(refs.map(\.qualified)).subtracting(Set(base.map { q -> String in
-                        // baseline was recorded from the same inspector: decode it the same way
-                        guard let colon = q.lastIndex(of: ":") else { return q }
-                        return String(q[..<colon]) + ":" + decode(String(q[q.index(after: colon)...]))
-                    }))
-                })
+                orphanDocumentIds: refs.filter { $0.part == "word/document.xml" }.map(\.id).filter { seenDoc.insert($0).inserted },
+                otherPartOrphans: refs.filter { $0.part != "word/document.xml" }.map(\.qualified).filter { seenOther.insert($0).inserted },
+                declaredDocumentIds: declaredDocumentIds,
+                sessionNewOrphans: baseline.map { Set(WordMCPServer.newOrphanQualifiedIds(refs, baseline: $0)) })
         }
     }
 
-    /// Minimal XML character/entity decoding for attribute values scraped by
-    /// `PackageInspector` (which does not decode): `&#NN;`, `&#xHH;` and the
-    /// five predefined entities. Anything else is left as written.
-    static func xmlEntityDecoded(_ s: String) -> String {
-        guard s.contains("&") else { return s }
-        var out = ""; var rest = Substring(s)
-        while let amp = rest.firstIndex(of: "&") {
-            out += rest[..<amp]
-            let tail = rest[amp...]
-            guard let semi = tail.firstIndex(of: ";"), tail.distance(from: tail.startIndex, to: semi) <= 10 else {
-                out += "&"; rest = tail.dropFirst(); continue
-            }
-            let name = tail[tail.index(after: tail.startIndex)..<semi]
-            var decoded: String?
-            switch name {
-            case "amp": decoded = "&"
-            case "lt": decoded = "<"
-            case "gt": decoded = ">"
-            case "quot": decoded = "\""
-            case "apos": decoded = "'"
-            default:
-                if name.hasPrefix("#x") || name.hasPrefix("#X"), let v = UInt32(name.dropFirst(2), radix: 16), let u = Unicode.Scalar(v) { decoded = String(Character(u)) }
-                else if name.hasPrefix("#"), let v = UInt32(name.dropFirst(1)), let u = Unicode.Scalar(v) { decoded = String(Character(u)) }
-            }
-            if let d = decoded { out += d; rest = tail[tail.index(after: semi)...] }
-            else { out += "&"; rest = tail.dropFirst() }
-        }
-        return out + rest
-    }
-
-    /// Package-derived text (relationship ids, media file names, part paths)
-    /// rendered as a quoted atom: control characters, line/paragraph
-    /// separators, bidi controls, quotes and backslashes are `\u{…}`-escaped,
-    /// and the tokens that structure this reply (`referenced:`, `⚠`,
-    /// `Package:`, a leading `- id:`) are neutralised so a crafted .docx cannot
-    /// forge a row or a warning (verify R1 B2). A row is therefore always one
-    /// line and `referenced:` is always its last field.
-    static func listingAtom(_ raw: String) -> String {
+    /// Escape package-derived text for the listing: every scalar in the
+    /// Unicode control / format / line- and paragraph-separator categories,
+    /// quotes and backslashes become `\u{…}` / `\"` / `\\`, and the tokens that
+    /// structure this reply are neutralised, so a crafted .docx cannot forge a
+    /// row, a status, a label or a warning (verify R1 B2 / R2 B2′). Reasons
+    /// go through this unquoted; atoms are additionally quoted.
+    static func listingEscape(_ raw: String) -> String {
         var s = ""
         for u in raw.unicodeScalars {
             switch u {
             case "\\": s += "\\\\"
             case "\"": s += "\\\""
-            case "\u{00}"..."\u{1F}", "\u{7F}", "\u{85}", "\u{2028}", "\u{2029}",
-                 "\u{200E}", "\u{200F}", "\u{202A}"..."\u{202E}", "\u{2066}"..."\u{2069}", "\u{FEFF}", "\u{26A0}":
-                s += String(format: "\\u{%X}", u.value)
-            default: s.unicodeScalars.append(u)
+            case "\u{26A0}": s += "\\u{26A0}"
+            default:
+                switch u.properties.generalCategory {
+                case .control, .format, .lineSeparator, .paragraphSeparator, .surrogate, .privateUse, .unassigned:
+                    s += String(format: "\\u{%X}", u.value)
+                default: s.unicodeScalars.append(u)
+                }
             }
         }
-        for token in ["referenced:", "Package:", "- id:"] {
-            s = s.replacingOccurrences(of: token, with: token.dropLast() + "\\u{3A}")
+        for token in ["referenced:", "Package:", "Package (", "- id:", "(new since baseline)", "(in baseline)", "WILL refuse", "will NOT refuse", "No images in document", "No listable images"] {
+            guard let head = token.first else { continue }
+            s = s.replacingOccurrences(of: token, with: String(format: "\\u{%X}", head.unicodeScalars.first!.value) + token.dropFirst())
         }
-        return "\"" + s + "\""
+        return s
     }
 
-    /// Human-readable reason for a failed inspection, without Swift-internal
-    /// enum dumps (ZIPFoundation errors only conform to `Error`) and without
-    /// leaking scratch paths (verify R1 I6).
+    static func listingAtom(_ raw: String) -> String { "\"" + listingEscape(raw) + "\"" }
+
+    /// Human-readable reason for a failed inspection, escaped like any other
+    /// package-derived text, without Swift-internal enum dumps and without
+    /// absolute paths (verify R1 I6 / R2 B2′).
     static func describeInspectionFailure(_ error: Error) -> String {
         let text: String
         if let le = error as? LocalizedError, let d = le.errorDescription { text = d }
         else { text = "\(type(of: error)): \(String(describing: error))" }
-        return text.replacingOccurrences(of: #"/(?:private/)?(?:var|tmp|Users)/[^\s"')]+"#, with: "<path>", options: .regularExpression)
+        let redacted = text.replacingOccurrences(of: #"(?<![\w./~-])(?:~|/[A-Za-z0-9_.~-]+)(?:/[^\s"')]+)+"#, with: "<path>", options: .regularExpression)
+        return listingEscape(redacted)
     }
 
-    /// Thrown by the linear pre-scan that protects `PackageInspector` from the
-    /// quadratic comment stripper (verify R1 B4; ooxml-swift#138): a part with
-    /// more `<!--` than `-->` is refused before the inspector sees it.
-    struct MalformedCommentsInPart: LocalizedError {
-        let part: String
-        var errorDescription: String? { "part \(part) has unterminated XML comments; refusing to inspect a package the inspector cannot scan in linear time" }
-    }
-
-    /// Linear guard over every `word/**` `.rels`/`.xml` entry. Cheap (one
-    /// pass per part); the inspector itself is not touched.
-    static func guardCommentBalance(in packageData: Data) throws {
-        let archive = try Archive(data: packageData, accessMode: .read)
-        for entry in archive {
-            let path = entry.path
-            guard path.hasPrefix("word/"), path.hasSuffix(".rels") || path.hasSuffix(".xml") else { continue }
-            var data = Data(); _ = try archive.extract(entry) { data.append($0) }
-            let text = String(decoding: data, as: UTF8.self)
-            let opens = text.components(separatedBy: "<!--").count - 1
-            let closes = text.components(separatedBy: "-->").count - 1
-            if opens > closes { throw MalformedCommentsInPart(part: path) }
-        }
-    }
-
-    /// Render the `list_images` reply (#199). Every listed row says whether the
-    /// body references it; orphans are named per part and labelled against the
-    /// session baseline (the save gate refuses only orphans that appeared after
-    /// open — verify R1 B1); relationships the listing cannot show (media
-    /// missing, external target) are named separately so the header counts
-    /// add up over the rows (B5); an inspection that could not run marks every
-    /// row `unknown` instead of reverting to "listed ⇒ present". Never a
-    /// refusal: a listing that contains orphans succeeded as a listing (#202).
+    /// Render the `list_images` reply (#199). Rows and the package are
+    /// reconciled over the document part (rows + unlistable = declared); every
+    /// orphan is named `part:rId` and labelled against the gate's baseline; the
+    /// save prediction is the gate's own new-orphan computation; an inspection
+    /// that could not run marks every row `unknown` instead of reverting to
+    /// "listed ⇒ present". Never a refusal: a listing that contains orphans
+    /// succeeded as a listing (#202).
     static func imageListing(rows: [(id: String, fileName: String, widthPx: Int, heightPx: Int)],
                              inspection: ImageListingInspection?,
-                             inspectionFailure: String?) -> String {
+                             inspectionFailure: String?,
+                             isSession: Bool) -> String {
         let atom = listingAtom
         func row(_ r: (id: String, fileName: String, widthPx: Int, heightPx: Int), _ flag: String) -> String {
             "- id: \(atom(r.id)), file: \(atom(r.fileName)), size: \(r.widthPx)x\(r.heightPx)px, referenced: \(flag)\n"
         }
+        let packageLabel = isSession ? "Package (as this session serializes it)" : "Package (on disk)"
         guard let insp = inspection else {
             var s = rows.isEmpty
                 ? "No listable images in word/document.xml — body-reference check unavailable (see warning below):\n"
                 : "Found \(rows.count) image(s) — body-reference check unavailable (see warning below):\n"
             for r in rows { s += row(r, "unknown") }
             s += "\n⚠ body-reference check unavailable: \(inspectionFailure ?? "unknown reason")\n"
-            s += "  The rows above are relationship declarations only; any of them may be an orphan (no reference from the body), and the package may declare image relationships this listing cannot show. Do not read this listing as proof of anything about the images; retry, and note that save_document refuses an uninspectable package with E_IMAGE_CONSISTENCY_INSPECTION."
+            s += "  The rows above are relationship declarations only; any of them may be an orphan (no reference from the body), and the package may declare image relationships this listing cannot show. Do not read this listing as proof of anything about the images.\n"
+            s += isSession
+                ? "  save_document refuses an uninspectable package with E_IMAGE_CONSISTENCY_INSPECTION unless allow_orphan_images: true is passed."
+                : "  Direct Mode: no session, so nothing here gates a save; open the file to get the gate."
             return s
         }
         let orphanSet = Set(insp.orphanDocumentIds)
         let rowIds = Set(rows.map(\.id))
-        let listedOrphans = rows.map(\.id).filter { orphanSet.contains($0) }
-        let unlisted = insp.orphanDocumentIds.filter { !rowIds.contains($0) }
-        let referenced = rows.count - listedOrphans.count
+        var seenListed = Set<String>()
+        let listedOrphans = rows.map(\.id).filter { orphanSet.contains($0) && seenListed.insert($0).inserted }
+        let referenced = rows.count - rows.filter { orphanSet.contains($0.id) }.count
+        var unlistable = insp.declaredDocumentIds.filter { !rowIds.contains($0) }
+        for id in insp.orphanDocumentIds where !rowIds.contains(id) && !unlistable.contains(id) { unlistable.append(id) }
+        let otherPartDeclared = max(0, insp.imageRelationshipCount - insp.declaredDocumentIds.count)
         func label(_ qualified: String) -> String {
             guard let new = insp.sessionNewOrphans else { return "" }
-            return new.contains(qualified) ? " (new this session)" : " (pre-existing at open)"
+            return new.contains(qualified) ? " (new since baseline)" : " (in baseline)"
         }
         var s: String
+        var warnings: [String] = []
+        if !unlistable.isEmpty {
+            let items = unlistable.map { id -> String in
+                let q = "word/document.xml:" + id
+                return atom(q) + (orphanSet.contains(id) ? " (orphan" + (label(q).isEmpty ? "" : "," + label(q).dropFirst()) + ")" : " (referenced in body)")
+            }
+            warnings.append("⚠ \(unlistable.count) image relationship(s) declared in word/document.xml.rels cannot be listed (media file missing or external target): " + items.joined(separator: ", "))
+        }
+        if !listedOrphans.isEmpty {
+            warnings.append("⚠ \(listedOrphans.count) orphan image relationship(s) in word/document.xml: " + listedOrphans.map { atom("word/document.xml:" + $0) + label("word/document.xml:" + $0) }.joined(separator: ", ") + "\n  Declared in the package, but nothing in the document body references them — the PsychQuant/macdoc#175 silent-image-loss signature. If they were inserted this session, the insert was lost: re-insert them.")
+        }
+        if !insp.otherPartOrphans.isEmpty {
+            warnings.append("⚠ \(insp.otherPartOrphans.count) orphan image relationship(s) in other parts (not listed above): " + insp.otherPartOrphans.map { atom($0) + label($0) }.joined(separator: ", "))
+        }
         if rows.isEmpty {
-            if insp.imageRelationshipCount == 0 && insp.mediaEntryCount == 0 && insp.bodyDrawingCount == 0 {
+            if insp.declaredDocumentIds.isEmpty && insp.imageRelationshipCount == 0 && insp.mediaEntryCount == 0 && insp.orphanDocumentIds.isEmpty {
                 return "No images in document"
             }
-            s = "No listable images in word/document.xml — but the package declares \(insp.imageRelationshipCount) image relationship(s) (media entries: \(insp.mediaEntryCount)); see the warnings below.\n"
+            s = "No listable images in word/document.xml"
+            if !unlistable.isEmpty { s += " — \(unlistable.count) declared image relationship(s) there cannot be listed" }
+            if otherPartDeclared > 0 { s += (unlistable.isEmpty ? " — " : "; ") + "\(otherPartDeclared) image relationship(s) live in other parts (headers/footers/charts) and are not listed here (#219)" }
+            s += warnings.isEmpty ? ".\n" : "; see the warnings below.\n"
         } else {
             s = "Found \(rows.count) image(s) — \(referenced) referenced in body, \(listedOrphans.count) orphan (relationship declared in word/document.xml.rels, no reference from word/document.xml):\n"
             for r in rows { s += row(r, orphanSet.contains(r.id) ? "NO (orphan)" : "yes") }
         }
-        var newCount = 0
-        if !listedOrphans.isEmpty {
-            s += "\n⚠ \(listedOrphans.count) orphan image relationship(s) in word/document.xml: " + listedOrphans.map { atom($0) + label("word/document.xml:" + $0) }.joined(separator: ", ") + "\n"
-            s += "  Declared in the package, but nothing in the document body references them — the PsychQuant/macdoc#175 silent-image-loss signature. If they were inserted this session, the insert was lost: re-insert them.\n"
-        }
-        if !unlisted.isEmpty {
-            s += "\n⚠ \(unlisted.count) image relationship(s) declared in word/document.xml.rels have no listable media (file missing or external target) and no reference from the body (not listed above): " + unlisted.map { atom($0) + label("word/document.xml:" + $0) }.joined(separator: ", ") + "\n"
-        }
-        if !insp.otherPartOrphans.isEmpty {
-            s += "\n⚠ \(insp.otherPartOrphans.count) orphan image relationship(s) in other parts (not listed above): " + insp.otherPartOrphans.map { atom($0) + label($0) }.joined(separator: ", ") + "\n"
-        }
-        let anyOrphan = !listedOrphans.isEmpty || !unlisted.isEmpty || !insp.otherPartOrphans.isEmpty
+        for w in warnings { s += "\n" + w + "\n" }
+        let anyOrphan = !listedOrphans.isEmpty || !insp.otherPartOrphans.isEmpty || unlistable.contains(where: { orphanSet.contains($0) })
         if anyOrphan {
             if let new = insp.sessionNewOrphans {
-                newCount = new.count
-                if newCount > 0 {
-                    s += "  save_document WILL refuse (E_IMAGE_CONSISTENCY): \(newCount) orphan(s) marked \"new this session\" appeared after the document was opened; pass allow_orphan_images: true to acknowledge them. Orphans marked \"pre-existing at open\" never block a save.\n"
-                } else {
-                    s += "  save_document will NOT refuse: every orphan above already existed when the document was opened (the gate only blocks orphans that appear during a session).\n"
-                }
+                s += new.isEmpty
+                    ? "  save_document will NOT refuse: every orphan above is in the baseline (the gate only blocks orphans that are not).\n"
+                    : "  save_document WILL refuse (E_IMAGE_CONSISTENCY): \(new.count) orphan(s) marked \"new since baseline\"; pass allow_orphan_images: true to acknowledge them (that save also moves them into the baseline). Orphans marked \"in baseline\" never block a save.\n"
+                s += "  baseline = the orphans recorded when the document was opened, refreshed by every save that passed allow_orphan_images: true.\n"
             } else {
                 s += "  Direct Mode: no session, so no save gate applies here; a session opened from this file would record these orphans as its baseline and save without refusing.\n"
             }
         }
-        s += "Package: bodyDrawings=\(insp.bodyDrawingCount), imageRelationships=\(insp.imageRelationshipCount), mediaEntries=\(insp.mediaEntryCount)"
+        s += "\(packageLabel): bodyDrawings=\(insp.bodyDrawingCount), imageRelationships=\(insp.imageRelationshipCount), mediaEntries=\(insp.mediaEntryCount)"
         return s
     }
 
@@ -7116,12 +7216,14 @@ actor WordMCPServer {
     /// than silently pass.
     private func recordImageBaseline(docId: String, path: String) {
         guard let data = FileManager.default.contents(atPath: path),
+              (try? Self.guardInspectableComments(in: data)) != nil,
               let report = try? PackageInspector.imageConsistencyReport(of: data) else {
             documentImageOrphanBaseline[docId] = []
             documentImageRelationshipCountAtBaseline[docId] = Int.max   // uninspectable → never short-circuit
             return
         }
-        documentImageOrphanBaseline[docId] = Set(report.orphanImageRelationshipRefs.map(\.qualified))
+        // Canonical ids (#199 R2 B1′): the same form the listing and the gate compare.
+        documentImageOrphanBaseline[docId] = Set(report.orphanImageRelationshipRefs.map { Self.canonicalRef($0).qualified })
         documentImageRelationshipCountAtBaseline[docId] = report.imageRelationshipCount
     }
 
@@ -7155,11 +7257,11 @@ actor WordMCPServer {
         do { data = try DocxWriter.writeData(document) }
         catch { return Self.imageConsistencyInspectionRefusal(reason: "serialization failed: \(error.localizedDescription)") }
         let report: ImageConsistencyReport
-        do { report = try PackageInspector.imageConsistencyReport(of: data) }
-        catch { return Self.imageConsistencyInspectionRefusal(reason: "package inspection failed: \(error.localizedDescription)") }
+        do { try Self.guardInspectableComments(in: data); report = try PackageInspector.imageConsistencyReport(of: data) }
+        catch { return Self.imageConsistencyInspectionRefusal(reason: "package inspection failed: \(Self.describeInspectionFailure(error))") }
         guard !report.isConsistent else { return nil }
         return Self.imageConsistencyRefusalMessage(
-            orphanIds: report.orphanImageRelationshipRefs.map(\.qualified),
+            orphanIds: report.orphanImageRelationshipRefs.map { Self.canonicalRef($0).qualified },
             baselineOrphanIds: documentImageOrphanBaseline[docId] ?? [],
             bodyDrawingCount: report.bodyDrawingCount,
             imageRelationshipCount: report.imageRelationshipCount,
@@ -9048,16 +9150,22 @@ actor WordMCPServer {
     private func listImages(args: [String: Value]) async throws -> String {
         // #199: `getImages()` is relationship-driven and says nothing about the
         // body. The listing runs the same PackageInspector the save gate uses,
-        // on the same bytes the gate inspects. Direct Mode reads the file ONCE
-        // and builds both the rows and the inspection from that one buffer
-        // (verify R1 I1); Session Mode serializes the in-memory model exactly
-        // as `imageConsistencySaveRefusal` does (scratch serialization — parts
-        // that only an overlay save preserves are outside both, see #220).
+        // guarded and canonicalized the same way. Direct Mode reads the file
+        // ONCE and builds both the rows and the inspection from that buffer;
+        // Session Mode serializes the in-memory model exactly as the gate does
+        // (scratch serialization — parts only an overlay save preserves are
+        // outside both, see #220).
         let doc: WordDocument
         var packageData: Data?
         var inspectionFailure: String?
         var baseline: Set<String>? = nil
         var skipInspection = false
+        var scratch: URL?
+        var directDoc: WordDocument?
+        defer {
+            directDoc?.close()                                  // release the reader's tempDir (#221 for the shared path)
+            if let scratch { try? FileManager.default.removeItem(at: scratch) }
+        }
         if let sourcePath = args["source_path"]?.stringValue {
             guard FileManager.default.fileExists(atPath: sourcePath) else { throw WordError.fileNotFound(sourcePath) }
             let sourceURL = URL(fileURLWithPath: sourcePath)
@@ -9066,21 +9174,20 @@ actor WordMCPServer {
                 throw WordError.invalidFormat("File is open in Microsoft Word. Please save and close it first: \(sourceURL.lastPathComponent)")
             }
             guard let bytes = FileManager.default.contents(atPath: sourcePath) else { throw WordError.fileNotFound(sourcePath) }
-            let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("che-word-mcp")
+            let copy = FileManager.default.temporaryDirectory.appendingPathComponent("che-word-mcp")
                 .appendingPathComponent("list-images-\(UUID().uuidString).docx")
-            try FileManager.default.createDirectory(at: scratch.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try bytes.write(to: scratch)
-            defer { try? FileManager.default.removeItem(at: scratch) }
-            doc = try DocxReader.read(from: scratch)
+            try FileManager.default.createDirectory(at: copy.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try bytes.write(to: copy)
+            scratch = copy
+            let read = try DocxReader.read(from: copy)
+            directDoc = read
+            doc = read
             packageData = bytes
         } else if let docId = args["doc_id"]?.stringValue {
             guard let open = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
             doc = open
             baseline = documentImageOrphanBaseline[docId] ?? []
-            // An imageless session document keeps the byte-identical fast path
-            // (no serialization) — `documentMayCarryImages` is the same short
-            // circuit the save gate uses.
-            skipInspection = !documentMayCarryImages(open, docId: docId)
+            skipInspection = !documentMayCarryImages(open, docId: docId)   // imageless session doc: byte-identical fast path, no serialization
         } else {
             throw WordError.missingParameter("source_path or doc_id")
         }
@@ -9091,15 +9198,23 @@ actor WordMCPServer {
         }
 
         var inspection: ImageListingInspection?
-        do {
-            let data: Data
-            if let bytes = packageData { data = bytes } else { data = try DocxWriter.writeData(doc) }
-            try Self.guardCommentBalance(in: data)
-            inspection = ImageListingInspection(try PackageInspector.imageConsistencyReport(of: data), baseline: baseline)
-        } catch {
-            inspectionFailure = Self.describeInspectionFailure(error)
+        let dups = packageData == nil ? Self.duplicateTypedRelationshipIds(doc) : []
+        if !dups.isEmpty {
+            // The writer traps on duplicate ids (ooxml-swift#139): do not serialize.
+            inspectionFailure = Self.listingEscape("duplicate relationship id(s) in word/document.xml.rels: \(dups.joined(separator: ", ")) — the document cannot be serialized for inspection (ooxml-swift#139); save_document would trap on it too")
+        } else {
+            do {
+                let data: Data
+                if let bytes = packageData { data = bytes } else { data = try DocxWriter.writeData(doc) }
+                try Self.guardInspectableComments(in: data)
+                let report = try PackageInspector.imageConsistencyReport(of: data)
+                let declared = try Self.declaredDocumentImageIds(in: data)
+                inspection = ImageListingInspection(report, declaredDocumentIds: declared, baseline: baseline)
+            } catch {
+                inspectionFailure = Self.describeInspectionFailure(error)
+            }
         }
-        return Self.imageListing(rows: images, inspection: inspection, inspectionFailure: inspectionFailure)
+        return Self.imageListing(rows: images, inspection: inspection, inspectionFailure: inspectionFailure, isSession: packageData == nil)
     }
 
     // MARK: - 9.17 export_image - 匯出單一圖片
