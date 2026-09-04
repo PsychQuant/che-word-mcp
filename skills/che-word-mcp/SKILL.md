@@ -110,7 +110,7 @@ export_markdown(documentId: "...")
 - `insert_floating_image` - With text wrap
 - `update_image` - Modify properties
 - `delete_image` - Remove image
-- `list_images` - List all images
+- `list_images` - list images with body-reference status (`referenced: yes / NO (orphan) / unknown`; orphans named with ⚠, #199)
 - `set_image_style` - Border, effects
 
 ### Headers & Footers
