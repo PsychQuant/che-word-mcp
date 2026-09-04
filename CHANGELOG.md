@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [4.0.11] - 2026-09-03
 
+### Added
+
+- **`list_images` 回報 body 引用狀態，孤兒圖片不再被列成「存在」**（#199，macdoc#175 的驗證管道旁支）。過去這個 tool 只迭代
+  relationship 驅動的 `getImages()`，body 只用來查尺寸——rels 有、`word/document.xml` 沒有 `<w:drawing>` 引用的孤兒以
+  `size: 0x0px` 混在「Found N image(s)」裡，#175 的實測文件就這樣把缺 4 張讀成「7 張全在」。現在每列尾端多一個
+  `referenced: yes | NO (orphan) | unknown`，標題列改為 `Found N image(s) — K referenced in body, M orphan (…)`，有孤兒時
+  另出 `⚠` 區塊具名 rId、指出這是 #175 訊號、並預告 `save_document` 會以 `E_IMAGE_CONSISTENCY` 拒絕（除非
+  `allow_orphan_images: true`）；header/footer 等其他 parts 的孤兒另一行具名 `part:rId`；末行 `Package: bodyDrawings= /
+  imageRelationships= / mediaEntries=`。判定與 save gate 讀**同一份位元組**（`PackageInspector.imageConsistencyReport`：
+  Session Mode 序列化、Direct Mode 讀磁碟），所以「list 之後 save」不再一個說全在、一個拒絕。檢查本身跑不動時每列標
+  `unknown` 並明說原因，不退回「列出即存在」的舊讀法；孤兒是內容不是失敗，`isError` 不設。無圖文件仍回
+  `No images in document`，逐位元組不變。`Issue199ListImagesBodyReferenceTests` 鎖住七種形狀。同根的另一個出口
+  `get_document_info` 的 `imagesCount` 另見 #217；ooxml-swift `getImages()` 尺寸查找漏表格內段落另見 ooxml-swift#136。
+
 ### Fixed
 
 - **三個浮水印寫側工具改為誠實失敗**（#201，與 #172 同款處置）。`insert_watermark` / `insert_image_watermark` /
@@ -45,6 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   處置是 API-shape 決定，另立 #214；拒絕訊息的機器可讀碼另見 #212。
 
 ### 升級注意
+
+- `list_images` 的每列尾端多了 `referenced:` 欄位、標題列多了計數；以整行文字比對輸出的腳本要改用 `id: rIdN` 前綴比對。`Found N image(s)` 前綴與 `id / file / size` 欄位順序不變（#199）。
 
 - 三個浮水印寫側工具由「必回成功字串」變成「必回 `isError`」。依賴舊成功字串、從不檢查內容的自動化流程會在 4.0.10 → 4.0.11 硬失敗；
   沒有真能用的行為被拿掉，故仍走 patch 版號。
