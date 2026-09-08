@@ -139,6 +139,83 @@ final class DocumentProfileToolsTests: XCTestCase {
         XCTAssertTrue(autoStyles.contains("DFKai-SB"))
     }
 
+    func testOpenOfficialAutosaveWordLockFailureRollsBackSessionAndAllowsRetry() async throws {
+        try await assertOpenAutosaveFailureRollsBack(useWordLock: true)
+    }
+
+    func testOpenOfficialAutosaveWriteFailureRollsBackSessionAndAllowsRetry() async throws {
+        try await assertOpenAutosaveFailureRollsBack(useWordLock: false)
+    }
+
+    private func assertOpenAutosaveFailureRollsBack(useWordLock: Bool) async throws {
+        let dir = try directory(), config = dir.appendingPathComponent("config.json")
+        let documents = dir.appendingPathComponent("documents")
+        try FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
+        let original = try source(in: documents), before = try Data(contentsOf: original)
+        try DocumentProfileStore(configURL: config).importOfficial(from: template(in: dir))
+        let server = await WordMCPServer(documentConfigURL: config)
+        addTeardownBlock {
+            for id in ["kept", "retry"] {
+                _ = await server.invokeToolForTesting(name: "close_document", arguments: ["doc_id": .string(id), "discard_changes": .bool(true)])
+            }
+        }
+        // Keep an unrelated session open so rollback cannot clear all sessions.
+        let kept = await server.invokeToolForTesting(name: "open_document", arguments: [
+            "doc_id": .string("kept"), "path": .string(original.path)])
+        XCTAssertFalse(kept.isError == true, text(kept))
+        let modified = await server.invokeToolForTesting(name: "insert_paragraph", arguments: [
+            "doc_id": .string("kept"), "text": .string("保留這個 session 的未存修改")])
+        XCTAssertFalse(modified.isError == true, text(modified))
+        let keptDocument = await server.openDocuments["kept"]
+        let keptArchive = try XCTUnwrap(keptDocument?.archiveTempDir)
+        let archiveNamespace = keptArchive.deletingLastPathComponent()
+        let archiveNamesBefore = Set(try FileManager.default.contentsOfDirectory(atPath: archiveNamespace.path))
+        let lock = WordLock.lockFileURL(for: original)
+        if useWordLock {
+            try Data("Word lock".utf8).write(to: lock)
+        } else {
+            // A real filesystem write failure, after successful read/application.
+            // Only this test-owned directory is made read-only.
+            try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: documents.path)
+        }
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: documents.path) }
+
+        let args: [String: Value] = ["doc_id": .string("retry"), "path": .string(original.path),
+                                    "profile": .string("official"), "autosave": .bool(true)]
+        let failed = await server.invokeToolForTesting(name: "open_document", arguments: args)
+        XCTAssertTrue(failed.isError == true, text(failed))
+        let failedDocument = await server.openDocuments["retry"]
+        XCTAssertTrue(failedDocument == nil, "a failed open must not register a session")
+        let failedDirty = await server.isDocumentDirtyForTesting("retry")
+        XCTAssertFalse(failedDirty)
+        XCTAssertEqual(try Data(contentsOf: original), before)
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: archiveNamespace.path)).subtracting(archiveNamesBefore), [],
+                       "a failed open must release its extracted archive")
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: documents.path).contains { $0.contains(".tmp.") || $0.contains(".autosave.") })
+
+        // A duplicate-id refusal must not dispose of the pre-existing session.
+        var duplicateArgs = args
+        duplicateArgs["doc_id"] = .string("kept")
+        let duplicate = await server.invokeToolForTesting(name: "open_document", arguments: duplicateArgs)
+        XCTAssertTrue(duplicate.isError == true, text(duplicate))
+        let keptAfter = await server.openDocuments["kept"]
+        XCTAssertEqual(keptAfter, keptDocument)
+        let keptDirty = await server.isDocumentDirtyForTesting("kept")
+        XCTAssertTrue(keptDirty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: keptArchive.path))
+
+        if useWordLock { try FileManager.default.removeItem(at: lock) }
+        else { try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: documents.path) }
+        let retried = await server.invokeToolForTesting(name: "open_document", arguments: args)
+        XCTAssertFalse(retried.isError == true, text(retried))
+        if retried.isError != true {
+            let styles = String(decoding: try XCTUnwrap(RawPartChannel.readAllParts(from: original)["word/styles.xml"]), as: UTF8.self)
+            XCTAssertTrue(styles.contains("DFKai-SB"), "retry must perform the requested official autosave")
+        }
+        let retryDirty = await server.isDocumentDirtyForTesting("retry")
+        XCTAssertFalse(retryDirty, "successful autosave should clear dirty state")
+    }
+
     func testExecuteIgnoresDefaultAndAppliesBeforeVerificationAndPublication() async throws {
         let dir = try directory(), config = dir.appendingPathComponent("config.json"), original = try source(in: dir)
         let store = DocumentProfileStore(configURL: config)
