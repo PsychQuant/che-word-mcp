@@ -6844,6 +6844,11 @@ actor WordMCPServer {
             docId: docId, document: doc, sourcePath: path,
             autosave: autosave, autosaveEveryN: autosaveEveryN
         )
+        // This call owns a new session only: the duplicate-id guard ran before
+        // reading the document. Roll back all session state and its extracted
+        // archive if profile-triggered autosave fails after initialization.
+        var openedSuccessfully = false
+        defer { if !openedSuccessfully { removeSession(docId: docId) } }
         recordImageBaseline(docId: docId, path: path)
         // Override trackChangesEnforced default (initializeSession sets true)
         documentTrackChangesEnforced[docId] = trackChanges
@@ -6861,6 +6866,7 @@ actor WordMCPServer {
         }
 
         let tcLabel = trackChanges ? "Track changes enabled." : "Track changes disabled (default since v3.0.0; pass track_changes: true to enable)."
+        openedSuccessfully = true
         return "Opened document '\(path)' with id: \(docId). \(tcLabel)"
     }
 
