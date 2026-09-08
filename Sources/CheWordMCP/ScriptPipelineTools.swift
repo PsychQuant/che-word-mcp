@@ -211,6 +211,7 @@ extension WordMCPServer {
     }
 
     func executeScriptTool(args: [String: Value]) async throws -> String {
+        let profile = try resolveDocumentProfile(args: args, context: .existingDocument)
         guard let scriptPath = args["script_path"]?.stringValue else {
             throw WordError.missingParameter("script_path")
         }
@@ -243,7 +244,8 @@ extension WordMCPServer {
         do {
             result = try scriptPipelineExecute(
                 scriptPath: scriptPath, outputPath: outputPath,
-                verifyAgainst: verifyAgainst, overwrite: overwrite)
+                verifyAgainst: verifyAgainst, overwrite: overwrite,
+                formattingProfile: profile)
         } catch let error as TranscodeError {
             // B2: parse failures surface the transcoder's location-bearing
             // reason (task 3.4 contract).
