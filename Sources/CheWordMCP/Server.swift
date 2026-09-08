@@ -247,7 +247,10 @@ actor WordMCPServer {
     - `autosave: true` on open → auto-writes after every edit
     """
 
-    init(forceDebugLogging: Bool = false) async {
+    let documentProfileStore: DocumentProfileStore
+
+    init(forceDebugLogging: Bool = false, documentConfigURL: URL? = nil) async {
+        self.documentProfileStore = DocumentProfileStore(configURL: documentConfigURL ?? DocumentProfileStore.defaultConfigURL)
         self.server = Server(
             name: "che-word-mcp",
             version: "1.17.0",
@@ -643,6 +646,7 @@ actor WordMCPServer {
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
+                        "profile": Self.documentProfileSchema,
                         "doc_id": .object([
                             "type": .string("string"),
                             "description": .string("文件識別碼，用於後續操作")
@@ -662,6 +666,7 @@ actor WordMCPServer {
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
+                        "profile": Self.documentProfileSchema,
                         "path": .object([
                             "type": .string("string"),
                             "description": .string("文件路徑")
@@ -6117,6 +6122,7 @@ actor WordMCPServer {
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
+                        "profile": Self.documentProfileSchema,
                         "script_path": .object([
                             "type": .string("string"),
                             "description": .string(".mdocx.swift 腳本路徑")
@@ -6776,7 +6782,9 @@ actor WordMCPServer {
         // begins. Defaults now match, and both take `track_changes: true` to
         // opt in.
         let trackChanges = args["track_changes"]?.boolValue ?? false
+        let profile = try resolveDocumentProfile(args: args, context: .newDocument)
         var doc = WordDocument()
+        if let profile { try doc.applyFormattingProfile(profile, context: .newDocument) }
         if trackChanges {
             doc.enableTrackChanges(author: defaultRevisionAuthor)
         }
@@ -6792,6 +6800,10 @@ actor WordMCPServer {
         // not here, so the two entry points disagreed for two major versions
         // while both reported a default.
         documentTrackChangesEnforced[docId] = trackChanges
+
+        if profile?.kind == .official {
+            try await storeDocument(doc, for: docId)
+        }
 
         return trackChanges
             ? "Created new document with id: \(docId). Track changes enabled (requested)."
@@ -6815,9 +6827,16 @@ actor WordMCPServer {
         // Phase C (Design B, #40): default flipped from 0 to 1.
         // Callers wanting zero autosave overhead must explicitly pass autosave_every: 0.
         let autosaveEveryN = args["autosave_every"]?.intValue ?? 1
+        let profile = try resolveDocumentProfile(args: args, context: .existingDocument)
 
         let url = URL(fileURLWithPath: path)
         var doc = try DocxReader.read(from: url)
+        do {
+            if let profile { try doc.applyFormattingProfile(profile, context: .existingDocument) }
+        } catch {
+            doc.close()
+            throw error
+        }
         if trackChanges && !doc.isTrackChangesEnabled() {
             doc.enableTrackChanges(author: defaultRevisionAuthor)
         }
@@ -6835,6 +6854,10 @@ actor WordMCPServer {
         }
         if let mtime = try? SessionState.readMtime(path: path) {
             documentDiskMtime[docId] = mtime
+        }
+
+        if profile?.kind == .official {
+            try await storeDocument(doc, for: docId)
         }
 
         let tcLabel = trackChanges ? "Track changes enabled." : "Track changes disabled (default since v3.0.0; pass track_changes: true to enable)."
