@@ -11,13 +11,14 @@ final class DocumentProfileToolsTests: XCTestCase {
         return url
     }
 
-    private func template(in dir: URL) throws -> URL {
+    private func template(in dir: URL, theme: String? = nil) throws -> URL {
         let source = dir.appendingPathComponent("template-parts")
         let w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-        let parts = [
+        var parts = [
             "word/styles.xml": "<w:styles xmlns:w=\"\(w)\"><w:docDefaults><w:rPrDefault><w:rPr><w:sz w:val=\"24\"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr/></w:pPrDefault></w:docDefaults><w:style w:type=\"paragraph\" w:default=\"1\" w:styleId=\"Normal\"><w:name w:val=\"Normal\"/></w:style></w:styles>",
             "word/document.xml": "<w:document xmlns:w=\"\(w)\"><w:body><w:sectPr><w:pgSz w:w=\"11906\" w:h=\"16838\"/><w:pgMar w:top=\"1440\" w:right=\"1800\" w:bottom=\"1440\" w:left=\"1800\" w:header=\"720\" w:footer=\"720\" w:gutter=\"0\"/></w:sectPr></w:body></w:document>"
         ]
+        parts["word/theme/theme1.xml"] = theme
         for (path, xml) in parts {
             let file = source.appendingPathComponent(path)
             try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -38,6 +39,99 @@ final class DocumentProfileToolsTests: XCTestCase {
 
     private func text(_ result: CallTool.Result) -> String {
         result.content.compactMap { if case .text(let value) = $0 { return value.text }; return nil }.joined()
+    }
+
+    private var profileTheme: String {
+        """
+        <a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Imported">
+        <a:themeElements><a:clrScheme name="Imported"><a:accent1><a:srgbClr val="112233"/></a:accent1></a:clrScheme>
+        <a:fontScheme name="Imported"><a:majorFont><a:latin typeface="Imported Major"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont>
+        <a:minorFont><a:latin typeface="Imported Minor"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme></a:themeElements></a:theme>
+        """
+    }
+
+    func testOfficialThemeIsVisibleImmediatelyWithAndWithoutSourceTheme() async throws {
+        for sourceHasTheme in [false, true] {
+            let dir = try directory(), config = dir.appendingPathComponent("config.json"), original = try source(in: dir)
+            if sourceHasTheme {
+                let expanded = try ZipHelper.unzip(original)
+                defer { ZipHelper.cleanup(expanded) }
+                let theme = expanded.appendingPathComponent("word/theme/theme1.xml")
+                try FileManager.default.createDirectory(at: theme.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try profileTheme.replacingOccurrences(of: "Imported", with: "Old Source").write(to: theme, atomically: true, encoding: .utf8)
+                try ZipHelper.zipToData(expanded).write(to: original)
+            }
+            try DocumentProfileStore(configURL: config).importOfficial(from: template(in: dir, theme: profileTheme))
+            let server = await WordMCPServer(documentConfigURL: config)
+            addTeardownBlock { _ = await server.invokeToolForTesting(name: "close_document", arguments: ["doc_id": .string("doc"), "discard_changes": .bool(true)]) }
+            let opened = await server.invokeToolForTesting(name: "open_document", arguments: ["doc_id": .string("doc"), "path": .string(original.path), "profile": .string("official")])
+            XCTAssertFalse(opened.isError == true, text(opened))
+            let shown = await server.invokeToolForTesting(name: "get_theme", arguments: ["doc_id": .string("doc")])
+            XCTAssertTrue(text(shown).contains("Imported Minor"), text(shown))
+            XCTAssertTrue(text(shown).contains("DFKai-SB"), text(shown))
+            XCTAssertFalse(text(shown).contains("Old Source"), text(shown))
+            let saved = await server.invokeToolForTesting(name: "save_document", arguments: ["doc_id": .string("doc")])
+            XCTAssertFalse(saved.isError == true, text(saved))
+            let theme = String(decoding: try XCTUnwrap(RawPartChannel.readAllParts(from: original)["word/theme/theme1.xml"]), as: UTF8.self)
+            XCTAssertTrue(theme.contains("Imported Minor"))
+            XCTAssertTrue(theme.contains("DFKai-SB"))
+        }
+    }
+
+    func testOfficialThemeToolsPersistLatestFontsColorsAndRawExtensions() async throws {
+        let dir = try directory(), config = dir.appendingPathComponent("config.json"), original = try source(in: dir)
+        try DocumentProfileStore(configURL: config).importOfficial(from: template(in: dir, theme: profileTheme))
+        let server = await WordMCPServer(documentConfigURL: config)
+        addTeardownBlock { _ = await server.invokeToolForTesting(name: "close_document", arguments: ["doc_id": .string("doc"), "discard_changes": .bool(true)]) }
+        let opened = await server.invokeToolForTesting(name: "open_document", arguments: ["doc_id": .string("doc"), "path": .string(original.path), "profile": .string("official")])
+        XCTAssertFalse(opened.isError == true, text(opened))
+
+        // Each setter starts from the latest effective theme, including a
+        // profile that has never yet been written into the source archive.
+        for (tool, changes) in [
+            ("update_theme_fonts", ["minor": Value.object(["latin": .string("Caller Minor")])]),
+            ("update_theme_color", ["slot": Value.string("accent1"), "hex": .string("abcdef")])
+        ] {
+            let result = await server.invokeToolForTesting(name: tool, arguments: changes.merging(["doc_id": .string("doc")]) { a, _ in a })
+            XCTAssertFalse(result.isError == true, text(result))
+        }
+        let shown = await server.invokeToolForTesting(name: "get_theme", arguments: ["doc_id": .string("doc")])
+        XCTAssertTrue(text(shown).contains("Caller Minor"), text(shown))
+        XCTAssertTrue(text(shown).contains("ABCDEF"), text(shown))
+        XCTAssertTrue(text(shown).contains("Imported Major"), text(shown))
+        let saved = await server.invokeToolForTesting(name: "save_document", arguments: ["doc_id": .string("doc")])
+        XCTAssertFalse(saved.isError == true, text(saved))
+        let first = String(decoding: try XCTUnwrap(RawPartChannel.readAllParts(from: original)["word/theme/theme1.xml"]), as: UTF8.self)
+        XCTAssertTrue(first.contains("Caller Minor"))
+        XCTAssertTrue(first.contains("ABCDEF"))
+
+        // An explicit full theme may contain unsupported-by-snapshot extension
+        // markup. Later partial edits must preserve it without sanitization.
+        let raw = profileTheme.replacingOccurrences(of: "Imported Minor", with: "Raw Minor")
+            .replacingOccurrences(of: "</a:theme>", with: "<x:custom xmlns:x=\"urn:caller-theme\" value=\"retain-me\"/></a:theme>")
+        let replaced = await server.invokeToolForTesting(name: "set_theme", arguments: ["doc_id": .string("doc"), "full_xml": .string(raw)])
+        XCTAssertFalse(replaced.isError == true, text(replaced))
+        let replacementShown = await server.invokeToolForTesting(name: "get_theme", arguments: ["doc_id": .string("doc")])
+        XCTAssertTrue(text(replacementShown).contains("Raw Minor"), text(replacementShown))
+        let updated = await server.invokeToolForTesting(name: "update_theme_fonts", arguments: ["doc_id": .string("doc"), "major": .object(["latin": .string("Final Major")])])
+        XCTAssertFalse(updated.isError == true, text(updated))
+        let secondSave = await server.invokeToolForTesting(name: "save_document", arguments: ["doc_id": .string("doc")])
+        XCTAssertFalse(secondSave.isError == true, text(secondSave))
+        let ordinary = try XCTUnwrap(RawPartChannel.readAllParts(from: original)["word/theme/theme1.xml"])
+        let ordinaryXML = String(decoding: ordinary, as: UTF8.self)
+        XCTAssertTrue(ordinaryXML.contains("retain-me"))
+        XCTAssertTrue(ordinaryXML.contains("Final Major"))
+        XCTAssertTrue(ordinaryXML.contains("Raw Minor"))
+        let authoring = dir.appendingPathComponent("authoring.docx")
+        let currentDocument = await server.openDocuments["doc"]
+        try XCTUnwrap(currentDocument).writeAuthoringPackage(to: authoring)
+        XCTAssertEqual(try RawPartChannel.readAllParts(from: authoring)["word/theme/theme1.xml"], ordinary)
+        _ = await server.invokeToolForTesting(name: "close_document", arguments: ["doc_id": .string("doc"), "discard_changes": .bool(true)])
+        let reopened = await server.invokeToolForTesting(name: "open_document", arguments: ["doc_id": .string("doc"), "path": .string(original.path)])
+        XCTAssertFalse(reopened.isError == true, text(reopened))
+        let afterReopen = await server.invokeToolForTesting(name: "get_theme", arguments: ["doc_id": .string("doc")])
+        XCTAssertTrue(text(afterReopen).contains("Final Major"), text(afterReopen))
+        XCTAssertTrue(text(afterReopen).contains("Raw Minor"), text(afterReopen))
     }
 
     func testCreateUsesConfiguredOfficialAndExplicitInherit() async throws {

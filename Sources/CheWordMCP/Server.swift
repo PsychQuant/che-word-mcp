@@ -14917,36 +14917,28 @@ actor WordMCPServer {
 
     // MARK: - v3.3.0: Phase 2A — Theme tools (#28)
 
-    /// Read theme1.xml from the document's preserved archive.
-    /// Returns nil when there is no archive (initializer-built doc) or no theme part.
+    /// Read the same effective theme used by both OOXML writers, including an
+    /// applied profile or caller edit that has not yet reached the archive.
     private func readThemeXML(docId: String) throws -> String? {
         guard let doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let archiveTempDir = doc.archiveTempDir else {
-            return nil
+        guard let data = try doc.effectiveThemeData() else { return nil }
+        guard let xml = String(data: data, encoding: .utf8) else {
+            throw CocoaError(.fileReadInapplicableStringEncoding)
         }
-        let url = archiveTempDir.appendingPathComponent("word/theme/theme1.xml")
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            return nil
-        }
-        return try String(contentsOf: url, encoding: .utf8)
+        return xml
     }
 
     private func writeThemeXML(_ xml: String, docId: String) throws {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let archiveTempDir = doc.archiveTempDir else {
-            throw WordError.parseError("文件無 preserved archive (initializer-built doc 無 theme1.xml 可改)")
-        }
-        let themeDir = archiveTempDir.appendingPathComponent("word/theme")
-        try FileManager.default.createDirectory(at: themeDir, withIntermediateDirectories: true)
-        try xml.write(to: themeDir.appendingPathComponent("theme1.xml"), atomically: true, encoding: .utf8)
-        // v3.5.0: ooxml-swift v0.13.0 dirty-tracking contract — overlay-mode
-        // writer skips theme1.xml unless it appears in modifiedParts. Without
-        // this insert, the next save_document would NOT pick up the new theme.
+        // Explicit raw-part edits participate in core authority and durable
+        // state. Snapshot import's restrictive allowlist does not apply here.
+        // Mark before carry: marking afterwards would discard the new part.
         doc.markPartDirty("word/theme/theme1.xml")
+        try doc.apply(operations: [.carryPart(partPath: "word/theme/theme1.xml", xml: xml)])
         openDocuments[docId] = doc
         documentDirtyState[docId] = true
     }
