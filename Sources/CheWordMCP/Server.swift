@@ -6941,9 +6941,17 @@ actor WordMCPServer {
 
     /// The inspector's ref with its id canonicalized. Qualified form is built
     /// from the tuple, never by splitting a string (an id may itself contain `:`).
-    static func canonicalRef(_ ref: ImageRelationshipRef) -> ImageRelationshipRef {
-        ImageRelationshipRef(part: ref.part, id: canonicalAttributeValue(ref.id))
-    }
+    /// The inspector's refs, unchanged.
+    ///
+    /// This used to run `canonicalAttributeValue` over `ref.id`. That was an
+    /// emulation of libxml2's attribute-value normalisation, written when the
+    /// inspector reported ids as raw text. Since ooxml-swift 3.7.0 the
+    /// inspector reports ids **already decoded by the XML parser**
+    /// (PsychQuant/ooxml-swift#137), so normalising again folded a decoded
+    /// newline into a space and produced an id matching nothing — the orphan
+    /// lookup missed, and the row fell back to `referenced: yes`. A fail-open
+    /// on exactly the shape #199 exists to catch.
+    static func canonicalRef(_ ref: ImageRelationshipRef) -> ImageRelationshipRef { ref }
 
     /// Orphans the save gate will refuse: canonical qualified refs not in the
     /// (canonical) baseline. The gate and the listing both call this.

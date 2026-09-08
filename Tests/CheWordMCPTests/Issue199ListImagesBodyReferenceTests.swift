@@ -222,11 +222,21 @@ final class Issue199ListImagesBodyReferenceTests: XCTestCase {
         let server = await WordMCPServer()
         _ = try ok(await server.invokeToolForTesting(name: "open_document", arguments: ["path": .string(fixture.path), "doc_id": .string("s199b3")]), "open")
         let listing = text(await server.invokeToolForTesting(name: "list_images", arguments: ["doc_id": .string("s199b3")]))
-        XCTAssertTrue(listing.contains("\"word/document.xml:rId53\" (in baseline)"), "decoded on both sides: \(listing)")
-        XCTAssertTrue(listing.contains("save_document will NOT refuse"), listing)
+        // ooxml-swift 3.7.0 refuses a package whose rels spells an id with a
+        // character or entity reference — one of the nine legal spellings the
+        // 3.7.0 CHANGELOG names as newly refused, because the merge's text view
+        // and the XML parser's view of that file disagree. So the listing can no
+        // longer reach a body-reference verdict here, and the honest answer is
+        // `unknown` WITH the reason, not a guess in either direction.
+        XCTAssertFalse(listing.contains("referenced: yes"), "no verdict may be invented: \(listing)")
+        XCTAssertTrue(listing.contains("body-reference check unavailable"), listing)
+        XCTAssertTrue(listing.contains("character or entity reference"), "the reason is the library's, named: \(listing)")
+        XCTAssertTrue(listing.contains("rId53"), "the refused id is named: \(listing)")
+        // The gate must agree with the listing: it cannot inspect either, so it
+        // refuses rather than saving a package it could not verify.
         let saved = await server.invokeToolForTesting(name: "save_document", arguments: ["doc_id": .string("s199b3")])
-        XCTAssertNotEqual(saved.isError, true, "the gate must agree with the listing (R2 B1′ polarity): \(text(saved))")
-        XCTAssertFalse(text(saved).contains("E_IMAGE_CONSISTENCY"), text(saved))
+        XCTAssertEqual(saved.isError, true, "the gate agrees with the listing (R2 B1′ polarity): \(text(saved))")
+        XCTAssertTrue(text(saved).contains("E_IMAGE_CONSISTENCY"), text(saved))
     }
 
     // MARK: - (c) consistent document
@@ -406,6 +416,10 @@ final class Issue199ListImagesBodyReferenceTests: XCTestCase {
         let listing = text(await server.invokeToolForTesting(name: "list_images", arguments: ["source_path": .string(fixture.path)]))
         let rowsStarting = listing.components(separatedBy: "\n").filter { $0.hasPrefix("- id: \"") }
         XCTAssertEqual(rowsStarting.count, 3, "exactly the three real relationships, one line each: \(listing)")
+        // Guards the fail-open that ooxml-swift 3.7.0's decoded ids exposed: the
+        // server used to re-normalise the inspector's already-decoded id, so an
+        // id containing a decoded newline matched nothing in the orphan set and
+        // the row fell back to `referenced: yes` — precisely the forged shape.
         XCTAssertEqual(count(#"(?m)referenced: yes$"#, in: listing), 1, "only the genuine referenced image ends a line with `referenced: yes`: \(listing)")
         XCTAssertEqual(count(#"(?m)referenced: NO \(orphan\)$"#, in: listing), 2, listing)
         XCTAssertFalse(listing.contains("\n- id: \"rId9\""), listing)
@@ -561,7 +575,15 @@ final class Issue199ListImagesBodyReferenceTests: XCTestCase {
         XCTAssertEqual(WordMCPServer.canonicalAttributeValue("&#9;x"), "\tx", "a character reference to TAB is NOT normalized (XML 1.0 §3.3.3)")
         XCTAssertEqual(WordMCPServer.canonicalAttributeValue("&#0;&#xD800;&#x110000;&bogus;&"), "&#0;&#xD800;&#x110000;&bogus;&", "invalid XML Chars and unknown entities stay as written")
         XCTAssertEqual(WordMCPServer.canonicalAttributeValue("plain"), "plain")
-        XCTAssertEqual(WordMCPServer.canonicalRef(ImageRelationshipRef(part: "word/document.xml", id: "rI&#100;:6")).qualified, "word/document.xml:rId:6", "qualified form is built from the tuple, never by splitting on ':' (R2 DA-3)")
+        // `canonicalRef` passes the inspector's ref through unchanged: since
+        // ooxml-swift 3.7.0 the ids it reports are already decoded by the XML
+        // parser (PsychQuant/ooxml-swift#137). Decoding again here folded a
+        // decoded newline into a space, so the orphan lookup missed and the row
+        // fell back to `referenced: yes` — a fail-open on the exact shape #199
+        // exists to catch. The raw-text scan below still decodes, because it
+        // reads rels text itself.
+        XCTAssertEqual(WordMCPServer.canonicalRef(ImageRelationshipRef(part: "word/document.xml", id: "rId\u{A}6")).qualified, "word/document.xml:rId\u{A}6", "the library's decoded id is not re-normalised")
+        XCTAssertEqual(WordMCPServer.canonicalRef(ImageRelationshipRef(part: "word/document.xml", id: "rI&#100;:6")).qualified, "word/document.xml:rI&#100;:6", "a literal ampersand in a decoded id stays literal")
         XCTAssertEqual(WordMCPServer.describeInspectionFailure(Precondition(description: "x at /var/folders/zz/che-word-mcp/abc/doc.docx and /Volumes/Ext/y.docx and word/charts/chart1.xml end")), "Precondition: x at <path> and <path> and word/charts/chart1.xml end")
         XCTAssertTrue(WordMCPServer.hasUnpairedCommentOpener(String(repeating: "-->", count: 5) + String(repeating: "<!--", count: 5)))
         XCTAssertFalse(WordMCPServer.hasUnpairedCommentOpener("<a><!-- x --><!-- y --></a>"))

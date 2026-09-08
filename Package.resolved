@@ -41,8 +41,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/PsychQuant/ooxml-swift.git",
       "state" : {
-        "revision" : "96f92f8b1fd8efc40fdf5097bef755e0732b2dd0",
-        "version" : "3.6.4"
+        "revision" : "e10909831516e60661b25b1d392898c0cbf70caf",
+        "version" : "3.7.0"
       }
     },
     {
@@ -77,8 +77,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-nio.git",
       "state" : {
-        "revision" : "0b18836bd8b0162e7e17a995a3fbee20ed8f3b2b",
-        "version" : "2.101.3"
+        "revision" : "a931f2c1de8dd49381ce3bf2e279d033f68d8865",
+        "version" : "2.102.0"
       }
     },
     {
