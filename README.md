@@ -6,11 +6,11 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 
 ## 文件格式 profile（原始碼建置功能，尚未發布）
 
-`create_document`、`open_document`、`execute_script` 新增可選 `profile: "inherit" | "official"`。此功能需要以 SwiftPM editable dependency 整合尚未發布的 OOXMLSwift profile/store；本機最終驗收使用 OOXMLSwift `992a3d67b772e99e420a7ffcbb54749dece39ceb`，追蹤中的遠端 pin 並非此修補。目前發布 binary 不提供，本次未更新 release 版本。
+`create_document`、`open_document`、`execute_script` 新增可選 `profile: "inherit" | "official"`。此功能需要以 SwiftPM editable dependency 整合尚未發布的 OOXMLSwift profile/store；本機最終驗收使用 OOXMLSwift `3aa221aa3bba3657af68f1c8d22416d3efe9863e`，追蹤中的遠端 pin 並非此修補。目前發布 binary 不提供，本次未更新 release 版本。
 
 與新版 macdoc 共用 `~/.config/macdoc/config.json`：新建依明示 profile → `document.defaultProfile` → inherit；開啟既有文件及 replay 僅採明示 profile。以新版 macdoc `config document import-official --template /path/to/Normal.dotm` 匯入安全快照，再以 `config document set-default official` 選擇新建預設。匯入不複製正文、不修改 Normal、不自動切換預設；來源變更不影響已保存的快照。
 
-官方繁中字型為標楷體，OOXML 寫入 `DFKai-SB`。最終 core 重新產生的同一份 DOCX 已由 Mac Word 16.112.3 與 Windows Word 16.0.20326 實際匯出：兩邊皆為 1 頁 A4、12 pt、左右 90 pt／上下 72 pt、段後 8 pt，PDF 實際嵌入 DFKaiShu-SB-Estd-BF 與 Aptos，PNG 無缺字、裁切或重疊。null、錯誤型別、未知名稱及缺失／損毀快照會明確報錯，沒有 fallback。格式套用成功才註冊 session；既有 inherit 不標 dirty、不觸發 autosave，official 沿用正常修改與存檔保護。execute_script 在驗證與發布前套用，仍沿用原有 overwrite 與驗證錯誤契約。
+官方繁中字型為標楷體，OOXML 寫入 `DFKai-SB`。core `992a3d67` 產生的 DOCX 已由 Mac Word 16.112.3 與 Windows Word 16.0.20326 實際匯出：兩邊皆為 1 頁 A4、12 pt、左右 90 pt／上下 72 pt、段後 8 pt，PDF 實際嵌入 DFKaiShu-SB-Estd-BF 與 Aptos，PNG 無缺字、裁切或重疊。最終 reader 修補 core `3aa221aa` 以原合成測試固定 IDs／時間重新產檔，全部 10 個 package parts 與已驗輸入逐位元組相同，沿用該證據，本輪未重新執行 Word。null、錯誤型別、未知名稱及缺失／損毀快照會明確報錯，沒有 fallback。格式套用成功才註冊 session；既有 inherit 不標 dirty、不觸發 autosave，official 沿用正常修改與存檔保護。execute_script 在驗證與發布前套用，仍沿用原有 overwrite 與驗證錯誤契約。
 
 新建 adapter 在首次序列化前套用 profile；`inherit` 只移除記憶體中可證明由 factory 產生的預設字型，並保留 caller 明示字型。provenance 不序列化到 OOXML，讀回文件的字型視為來源文件所有，不以 style ID 或相同字型值猜測後刪除。
 
