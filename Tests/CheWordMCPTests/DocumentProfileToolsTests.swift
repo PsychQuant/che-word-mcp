@@ -156,6 +156,35 @@ final class DocumentProfileToolsTests: XCTestCase {
         }
     }
 
+    func testOfficialScriptPreservesCarriedExternalHyperlinkRelationship() async throws {
+        let dir = try directory(), config = dir.appendingPathComponent("config.json")
+        try DocumentProfileStore(configURL: config).importOfficial(from: template(in: dir))
+        let w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        let r = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+        var doc = WordDocument.emptyAuthoringDocument()
+        try doc.apply(operations: [
+            .carryPart(partPath: "word/document.xml", xml: "<w:document xmlns:w=\"\(w)\" xmlns:r=\"\(r)\"><w:body><w:p><w:hyperlink r:id=\"rIdLink\"><w:r><w:t>既有連結</w:t></w:r></w:hyperlink></w:p><w:sectPr/></w:body></w:document>"),
+            .carryPart(partPath: "word/_rels/document.xml.rels", xml: "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rIdLink\" Type=\"\(r)/hyperlink\" Target=\"https://example.com/keep\" TargetMode=\"External\"/></Relationships>")
+        ])
+        let script = dir.appendingPathComponent("carried.mdocx.swift")
+        try ScriptExporter.exportSwift(log: doc.operationLog).write(to: script, atomically: true, encoding: .utf8)
+        let server = await WordMCPServer(documentConfigURL: config)
+        let output = dir.appendingPathComponent("profiled.docx")
+        let result = await server.invokeToolForTesting(name: "execute_script", arguments: [
+            "script_path": .string(script.path), "output_path": .string(output.path), "profile": .string("official")])
+        XCTAssertFalse(result.isError == true, text(result))
+        let parts = try RawPartChannel.readAllParts(from: output)
+        let rels = try XMLDocument(data: XCTUnwrap(parts["word/_rels/document.xml.rels"]))
+        let matches = try rels.nodes(forXPath: "//*[local-name()='Relationship' and @Id='rIdLink']")
+        XCTAssertEqual(matches.count, 1)
+        let link = try XCTUnwrap(matches.first as? XMLElement)
+        XCTAssertEqual(link.attribute(forName: "Target")?.stringValue, "https://example.com/keep")
+        XCTAssertEqual(link.attribute(forName: "TargetMode")?.stringValue, "External")
+        var reopened = try DocxReader.read(from: output)
+        defer { reopened.close() }
+        XCTAssertTrue(reopened.getText().contains("既有連結"))
+    }
+
     func testBadProfileArgumentsFailBeforeSessionRegistrationOrOutput() async throws {
         let dir = try directory(), config = dir.appendingPathComponent("config.json"), original = try source(in: dir)
         let server = await WordMCPServer(documentConfigURL: config)
