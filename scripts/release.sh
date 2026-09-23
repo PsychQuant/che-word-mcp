@@ -66,7 +66,10 @@ swift test --filter ScriptPipelineParityTests \
 
 echo "→ [1/7] universal release build"
 swift build -c release --arch arm64 --arch x86_64
-BIN=".build/apple/Products/Release/$BINARY_NAME"
+# Ask SwiftPM where it put the universal product instead of hard-coding it:
+# Swift 6.4's build backend writes to .build/out/Products/Release, not the
+# .build/apple/Products/Release this script assumed until 4.0.11.
+BIN="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/$BINARY_NAME"
 [[ -f "$BIN" ]] || { echo "error: built binary not found at $BIN" >&2; exit 4; }
 
 echo "→ [2/7] codesign (Developer ID, hardened runtime, timestamp)"
