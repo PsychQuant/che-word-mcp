@@ -1396,11 +1396,11 @@ actor WordMCPServer {
                         ]),
                         "bold": .object([
                             "type": .string("boolean"),
-                            "description": .string("粗體")
+                            "description": .string("粗體。true＝加上；false＝明確取消（寫成關，會蓋過 basedOn 樣式的粗體）；省略＝不變")
                         ]),
                         "italic": .object([
                             "type": .string("boolean"),
-                            "description": .string("斜體")
+                            "description": .string("斜體。true＝加上；false＝明確取消（寫成關，會蓋過 basedOn 樣式的斜體）；省略＝不變")
                         ]),
                         "color": .object([
                             "type": .string("string"),
@@ -1450,11 +1450,11 @@ actor WordMCPServer {
                         ]),
                         "bold": .object([
                             "type": .string("boolean"),
-                            "description": .string("粗體")
+                            "description": .string("粗體。true＝加上；false＝明確取消（寫成關，會蓋過 basedOn 樣式的粗體）；省略＝不變")
                         ]),
                         "italic": .object([
                             "type": .string("boolean"),
-                            "description": .string("斜體")
+                            "description": .string("斜體。true＝加上；false＝明確取消（寫成關，會蓋過 basedOn 樣式的斜體）；省略＝不變")
                         ]),
                         "color": .object([
                             "type": .string("string"),
