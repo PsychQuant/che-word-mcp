@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.11] - 2026-09-23
+
 ### Fixed
 
 - **`format_text` 的 `bold: false`、`italic: false`、`underline: false` 真的會取消格式**（#197；upstream
@@ -15,11 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run properties 為起點套用 partial patch，取消粗體時不再順帶清掉沒指定的斜體、字型等屬性。
   `paragraph_index` 在 revision 路徑與非 revision 路徑一樣只計 body 直屬段落（tool 描述的契約）。
 - `format_text` 的 `bold` / `italic` / `underline` 參數描述寫明三態：`true` 加上、`false` 明確取消、省略不變。
-
-## [4.0.11] - 2026-09-03
-
-### Fixed
-
 - **三個浮水印寫側工具改為誠實失敗**（#201，與 #172 同款處置）。`insert_watermark` / `insert_image_watermark` /
   `remove_watermark` 過去驗完參數就回「Watermark inserted / removed」，而每個 header part 一個位元組都沒動——
   讀側 `list_watermarks` / `get_watermark` 是真的 VML parser，所以「插完再列」看得到矛盾，但不列就不會知道。
@@ -43,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- ooxml-swift 依賴下限升到 **3.8.0**：run 的 bold / italic / strikethrough / noProof 分得出「沒寫」「開」「明確關」，
+  `format_text` 的 `false` 靠它才寫得出明確的關（PsychQuant/ooxml-swift#115）。
 - **每一個以 `Error: ` 字串回傳的拒絕在協定層都是 `isError: true`**（#202）。`handleToolCall` 只在 handler throw 時設 `isError`；過去有
   115 個拒絕以 `return "Error: …"` 字串回傳（Server.swift 106 + ReadbackTools.swift 4 個單行，加上 `E_DIRTY_DOC` /
   `E_IMAGE_CONSISTENCY` / `E_IMAGE_CONSISTENCY_INSPECTION` / reload-dirty 5 個多行 `"""` gate），client 拿到的是
@@ -57,6 +56,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 升級注意
 
+- `format_text` 的 `bold` / `italic` / `underline: false` 由 no-op 變成真的取消格式。曾經傳 `false`、實際上依賴「什麼都不改」
+  的呼叫端會看到格式被移除；要保持不變請省略該欄位。
 - 三個浮水印寫側工具由「必回成功字串」變成「必回 `isError`」。依賴舊成功字串、從不檢查內容的自動化流程會在 4.0.10 → 4.0.11 硬失敗；
   沒有真能用的行為被拿掉，故仍走 patch 版號。
 - 依 `isError` 分流的 client 從 4.0.11 起會看到**所有以 `Error: ` 字串回傳的拒絕**變成 error（4.0.10 只有 throw 路徑會）（#202）；
