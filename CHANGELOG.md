@@ -58,6 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `format_text` 的 `bold` / `italic` / `underline: false` 由 no-op 變成真的取消格式。曾經傳 `false`、實際上依賴「什麼都不改」
   的呼叫端會看到格式被移除；要保持不變請省略該欄位。
+- `update_style` 與 `create_style` 的 `bold` / `italic: false` 同理（同一套 ooxml-swift 3.8.0 語意）：`update_style` 過去不會取消樣式
+  既有的粗體／斜體，現在會；`create_style` 傳 `false` 會寫成明確的關，蓋過 basedOn 樣式。兩個工具的參數描述已寫明三態。
 - 三個浮水印寫側工具由「必回成功字串」變成「必回 `isError`」。依賴舊成功字串、從不檢查內容的自動化流程會在 4.0.10 → 4.0.11 硬失敗；
   沒有真能用的行為被拿掉，故仍走 patch 版號。
 - 依 `isError` 分流的 client 從 4.0.11 起會看到**所有以 `Error: ` 字串回傳的拒絕**變成 error（4.0.10 只有 throw 路徑會）（#202）；
