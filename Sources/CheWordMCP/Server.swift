@@ -1049,15 +1049,15 @@ actor WordMCPServer {
                         ]),
                         "bold": .object([
                             "type": .string("boolean"),
-                            "description": .string("粗體")
+                            "description": .string("粗體。true＝加上；false＝明確取消（寫成關，會蓋過樣式的粗體）；省略＝不變")
                         ]),
                         "italic": .object([
                             "type": .string("boolean"),
-                            "description": .string("斜體")
+                            "description": .string("斜體。true＝加上；false＝明確取消（寫成關，會蓋過樣式的斜體）；省略＝不變")
                         ]),
                         "underline": .object([
                             "type": .string("boolean"),
-                            "description": .string("底線")
+                            "description": .string("底線。true＝單線底線；false＝移除既有底線；省略＝不變")
                         ]),
                         "font_size": .object([
                             "type": .string("integer"),
@@ -1396,11 +1396,11 @@ actor WordMCPServer {
                         ]),
                         "bold": .object([
                             "type": .string("boolean"),
-                            "description": .string("粗體")
+                            "description": .string("粗體。true＝加上；false＝明確取消（寫成關，會蓋過 basedOn 樣式的粗體）；省略＝不變")
                         ]),
                         "italic": .object([
                             "type": .string("boolean"),
-                            "description": .string("斜體")
+                            "description": .string("斜體。true＝加上；false＝明確取消（寫成關，會蓋過 basedOn 樣式的斜體）；省略＝不變")
                         ]),
                         "color": .object([
                             "type": .string("string"),
@@ -1450,11 +1450,11 @@ actor WordMCPServer {
                         ]),
                         "bold": .object([
                             "type": .string("boolean"),
-                            "description": .string("粗體")
+                            "description": .string("粗體。true＝加上；false＝明確取消（寫成關，會蓋過 basedOn 樣式的粗體）；省略＝不變")
                         ]),
                         "italic": .object([
                             "type": .string("boolean"),
-                            "description": .string("斜體")
+                            "description": .string("斜體。true＝加上；false＝明確取消（寫成關，會蓋過 basedOn 樣式的斜體）；省略＝不變")
                         ]),
                         "color": .object([
                             "type": .string("string"),
@@ -7682,9 +7682,40 @@ actor WordMCPServer {
             let runIndex = args["run_index"]?.intValue ?? 0
             let author = args["author"]?.stringValue
             let date = parseISODate(args["date"]?.stringValue)
+            // Index exactly as applyRunPropertiesAsRevision and formatParagraph
+            // do — direct body children only. getParagraphs() also descends
+            // into block-level SDTs, so after any SDT paragraph it would seed
+            // the patch from a different paragraph than the one being changed.
+            let paragraphs: [Paragraph] = doc.body.children.compactMap {
+                if case .paragraph(let paragraph) = $0 { return paragraph }
+                return nil
+            }
+            guard paragraphIndex >= 0, paragraphIndex < paragraphs.count else {
+                throw WordError.invalidIndex(paragraphIndex)
+            }
+            let runs = paragraphs[paragraphIndex].runs
+            guard runIndex >= 0, runIndex < runs.count else {
+                throw WordError.invalidIndex(runIndex)
+            }
+            // applyRunPropertiesAsRevision replaces the complete rPr value.
+            // Start from the existing run so omitted MCP arguments remain
+            // unchanged; explicit false/nil assignments remain intentional.
+            var replacement = runs[runIndex].properties
+            if let bold = args["bold"]?.boolValue { replacement.bold = bold }
+            if let italic = args["italic"]?.boolValue { replacement.italic = italic }
+            if let underline = args["underline"]?.boolValue {
+                replacement.underline = underline ? .single : nil
+            }
+            if let fontSize = args["font_size"]?.intValue {
+                replacement.fontSize = fontSize * 2
+            }
+            if let fontName = args["font_name"]?.stringValue {
+                replacement.fontName = fontName
+            }
+            if let color = args["color"]?.stringValue { replacement.color = color }
             let revId = try doc.applyRunPropertiesAsRevision(
                 atParagraph: paragraphIndex, atRunIndex: runIndex,
-                newProperties: format, author: author, date: date
+                newProperties: replacement, author: author, date: date
             )
             try await storeDocument(doc, for: docId)
             return "Applied formatting to paragraph \(paragraphIndex) run \(runIndex) as revision \(revId)"
