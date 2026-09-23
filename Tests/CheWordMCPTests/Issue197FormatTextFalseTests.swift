@@ -99,6 +99,71 @@ final class Issue197FormatTextFalseTests: XCTestCase {
         XCTAssertTrue(previous.italic)
     }
 
+    /// paragraph_index counts direct body paragraphs only (the tool's contract,
+    /// and what applyRunPropertiesAsRevision uses). A block-level SDT paragraph
+    /// before the target must not become the seed for the target's patch.
+    func testFormatTextAsRevisionSeedsFromIndexedParagraphAfterBlockSDT() async throws {
+        var sdtProperties = RunProperties()
+        sdtProperties.bold = true
+        var targetProperties = RunProperties()
+        targetProperties.bold = true
+        targetProperties.italic = true
+
+        var document = WordDocument()
+        let control = ContentControl(
+            sdt: StructuredDocumentTag(id: 197001, tag: "wrap", type: .richText),
+            content: ""
+        )
+        document.body.children = [
+            .contentControl(control, children: [
+                .paragraph(Paragraph(runs: [Run(text: "inside sdt", properties: sdtProperties)])),
+            ]),
+            .paragraph(Paragraph(runs: [Run(text: "target", properties: targetProperties)])),
+        ]
+        let source = FileManager.default.temporaryDirectory
+            .appendingPathComponent("format-false-sdt-src-\(UUID().uuidString).docx")
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("format-false-sdt-out-\(UUID().uuidString).docx")
+        defer {
+            try? FileManager.default.removeItem(at: source)
+            try? FileManager.default.removeItem(at: output)
+        }
+        try DocxWriter.write(document, to: source)
+
+        let server = await WordMCPServer()
+        let docId = "format-false-sdt-\(UUID().uuidString)"
+        try await requireSuccess(server, "open_document", [
+            "path": .string(source.path),
+            "doc_id": .string(docId),
+        ])
+        try await requireSuccess(server, "enable_track_changes", [
+            "doc_id": .string(docId),
+            "author": .string("Reviewer"),
+        ])
+        try await requireSuccess(server, "format_text", [
+            "doc_id": .string(docId),
+            "paragraph_index": .int(0),
+            "run_index": .int(0),
+            "bold": .bool(false),
+            "as_revision": .bool(true),
+        ])
+        try await requireSuccess(server, "save_document", [
+            "doc_id": .string(docId),
+            "path": .string(output.path),
+        ])
+
+        var reopened = try DocxReader.read(from: output)
+        defer { reopened.close() }
+        let direct = reopened.body.children.compactMap { child -> Paragraph? in
+            if case .paragraph(let paragraph) = child { return paragraph }
+            return nil
+        }
+        let target = try XCTUnwrap(direct.first?.runs.first)
+        XCTAssertEqual(target.text, "target")
+        XCTAssertFalse(target.properties.bold)
+        XCTAssertTrue(target.properties.italic, "the SDT paragraph's properties must not seed the target")
+    }
+
     private func requireSuccess(
         _ server: WordMCPServer,
         _ name: String,
