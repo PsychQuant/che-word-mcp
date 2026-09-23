@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-09-24
+
 > 版號從 4.0.x 跳到 **4.1.0**：這一版替三個工具加了新的可選參數，屬於向下相容的新功能。
 > 依 semver 應該 bump minor；舊呼叫端不給 `profile` 時行為不變。
 
