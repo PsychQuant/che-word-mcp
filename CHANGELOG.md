@@ -9,17 +9,191 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `format_text` 現在把 `bold: false`、`italic: false`、`underline: false` 當成明確移除，
-  不再回報成功後原格式仍留在文件。省略的欄位維持不變；`as_revision: true` 也會先從既有
-  run properties 套用 partial patch，避免取消 bold 時順帶清掉未指定的 italic／字型等屬性
-  （#197；upstream PsychQuant/ooxml-swift#115）。
-- 補上 ooxml-swift 3.5.x `rawSlotExecutionFailure` 的錯誤描述，使 dependency 升級維持
-  exhaustive switch 與可讀的 MCP 診斷。
+- **`format_text` 的 `bold: false`、`italic: false`、`underline: false` 真的會取消格式**（#197；upstream
+  PsychQuant/ooxml-swift#115）。過去這三個 `false` 是 no-op：回報成功，原格式仍留在文件。現在 `false` 寫成明確的關
+  （`<w:b w:val="0"/>` 等），段落樣式本身是粗體／斜體時也會蓋過；省略的欄位維持不變。`as_revision: true` 先以既有
+  run properties 為起點套用 partial patch，取消粗體時不再順帶清掉沒指定的斜體、字型等屬性。
+  `paragraph_index` 在 revision 路徑與非 revision 路徑一樣只計 body 直屬段落（tool 描述的契約）。
+- `format_text` 的 `bold` / `italic` / `underline` 參數描述寫明三態：`true` 加上、`false` 明確取消、省略不變。
 
-### Release gate
+## [4.0.11] - 2026-09-03
 
-- 目前 draft integration 精確指向 ooxml-swift #115 的驗證 commit；在 upstream 合併並
-  發版前不得合併本 change，release 前必須換回 version constraint。
+### Fixed
+
+- **三個浮水印寫側工具改為誠實失敗**（#201，與 #172 同款處置）。`insert_watermark` / `insert_image_watermark` /
+  `remove_watermark` 過去驗完參數就回「Watermark inserted / removed」，而每個 header part 一個位元組都沒動——
+  讀側 `list_watermarks` / `get_watermark` 是真的 VML parser，所以「插完再列」看得到矛盾，但不列就不會知道。
+  現在三者在既有的參數與 `documentNotFound` 檢查之後拋 `ToolNotImplemented`（`isError: true`），訊息具名它
+  本該寫入的 OOXML：文字浮水印是每個 `word/header*.xml` 內的 VML `<w:pict><v:shape id="PowerPlusWaterMarkObject…"
+  o:spt="136"><v:textpath string=…/></v:shape></w:pict>` run；圖片浮水印另需 `<v:imagedata r:id=…/>` 與 header
+  的 image relationship 加 media part；移除則是拿掉 header parts 內的這些 shape。三個 tool 的 description 也註明
+  「目前未實作，呼叫會回 isError」。讀側行為不變（`WatermarkToolsHonestFailureTests` 同時鎖住讀側與「stub 不
+  弄髒 session」）。真正的文字浮水印實作屬 Plan 量級，另立 #208；讀側對 Word 自己產生的**圖片**浮水印
+  （`WordPictureWatermark` / `type="#_x0000_t75"`）目前是假陰性，另見 #209。
+- **`insert_image_watermark` 的檔案存在性檢查一併移除**（#201 verify）。它從不讀位元組，而「不存在」回一般字串（`isError` 未設）、
+  「存在」拋錯的組合，讓這個工具變成極性反轉的存在性 oracle；現在任何輸入都以同一種方式失敗。
+- **`ToolNotImplemented` 的訊息帶各自的 issue 號**（#172 五個保護工具、#201 三個浮水印工具），不再一律指向 #172。
+- **通道契約有測試釘住**：`handleToolCall` 改為 internal，`WatermarkToolsHonestFailureTests` 直接呼叫它，斷言 throw 在協定層變成
+  `isError: true`、不逸出成 JSON-RPC error（`invokeToolForTesting` 自帶的 catch 會遮住這種回歸）。
+
+### Corrected（對 4.0.8 條目的更正）
+
+- 4.0.8 寫「#201 修好時本項已就位」（header 圖片孤兒偵測路徑）——#201 的修法是誠實失敗，`insert_image_watermark` 仍不寫任何東西，
+  那條路徑要到 #208 才可達。
+
+### Changed
+
+- **每一個以 `Error: ` 字串回傳的拒絕在協定層都是 `isError: true`**（#202）。`handleToolCall` 只在 handler throw 時設 `isError`；過去有
+  115 個拒絕以 `return "Error: …"` 字串回傳（Server.swift 106 + ReadbackTools.swift 4 個單行，加上 `E_DIRTY_DOC` /
+  `E_IMAGE_CONSISTENCY` / `E_IMAGE_CONSISTENCY_INSPECTION` / reload-dirty 5 個多行 `"""` gate），client 拿到的是
+  success result——依 `isError` 分流的 client 會把「拒絕存檔」讀成「存檔成功」。現在全部改為 `throw ToolRefusal(message)`，
+  catch 補回 `Error: ` 前綴，**client 看到的文字逐字元不變**，只有 `isError` 從缺變 `true`。
+  `RefusalIsErrorSweepTests` 兩層：source-level sweep（Sources/ 內不得再出現 `return "Error:`、以 `Error:` 開頭的
+  字面、拋出時仍帶 `Error:` 前綴的字面（雙前綴）、或 `return refusal` / `return formatSpliceError(` 這種 helper 建字串再回傳
+  的形態）與 protocol-level 案例（直接打 `handleToolCall`）。**守備範圍要講清楚**：sweep 擋的是**新寫的**字串拒絕；已轉換
+  的站點若被改回 `return`，只有帶協定層 `isError` 釘的站點會被抓（目前約 11 站），其餘靠 #216 逐站補釘。5 個 `No matches found…` 類資訊性回覆不是拒絕，
+  維持 success。**範圍邊界**：另有 37 處拒絕以 JSON 字面回傳（32 處寫側、在 `storeDocument` 之前 return）仍是 success，
+  處置是 API-shape 決定，另立 #214；拒絕訊息的機器可讀碼另見 #212。
+
+### 升級注意
+
+- 三個浮水印寫側工具由「必回成功字串」變成「必回 `isError`」。依賴舊成功字串、從不檢查內容的自動化流程會在 4.0.10 → 4.0.11 硬失敗；
+  沒有真能用的行為被拿掉，故仍走 patch 版號。
+- 依 `isError` 分流的 client 從 4.0.11 起會看到**所有以 `Error: ` 字串回傳的拒絕**變成 error（4.0.10 只有 throw 路徑會）（#202）；
+  JSON 字面形態的 37 處尚未納入（#214），對那些工具仍不能只信 `isError`。這是修正不是回歸：
+  拒絕的文字沒變，只是協定旗標終於對了；只讀文字的 client 不受影響。
+
+
+## [4.0.10] - 2026-09-03
+
+### Fixed
+
+- **無圖短路改為封包級**（PsychQuant/macdoc#175 verify R3，logic N4）。4.0.8 的 `documentMayCarryImages` 列舉
+  body / header / footer 三個 typed 來源，仍會把 3.6.2 起 inspector 對 footnotes / charts / diagrams 的覆蓋整片取消。
+  現在 open / revert / reload / 通過 gate 的存檔時一併記下 `PackageInspector` 在整個封包數到的 image relationship
+  數；只要開檔時封包任何 part 宣告過圖片，或 session 內 typed 集合有圖，就不短路。封包無法檢查時視為「有圖」，永不短路。
+
+### Changed
+
+- ooxml-swift 依賴下限升到 **3.6.4**：graft 的命名空間宣告改放在移植的段落上、不再動 root——3.6.3 的作法讓 root 變 dirty，
+  70/80 份真實文件的 CRLF prolog 被改成 LF、epilog 被丟（3.6.2 沒有這個問題）；3.6.4 起 graft 之外的每個位元組都不變。
+
+### Corrected（對 4.0.8 條目的更正）
+
+- 「append-image 不再觸發 lossy 路徑」需加條件：只有當插圖是該 session 對 `document.xml` 的**第一個** typed 變更時
+  才走 graft；先 `insert_paragraph`（帶 index）再插圖、或任何 anchored 插圖（`after_text` / `before_text` / `index` /
+  `into_table_cell` / `after_image_id`），仍走整份 typed 重序列化（PsychQuant/ooxml-swift#133）。
+- 4.0.8 申報的 autosave 成本（每次 mutation 約 +0.7 s）是在 ooxml-swift 3.6.1 上量的；R3 在 3.6.3 重測約低 2.4–2.8 倍，
+  含圖文件每次 mutation 約 +0.25–0.3 s。
+
+## [4.0.9] - 2026-09-03
+
+### Changed
+
+- ooxml-swift 依賴下限升到 **3.6.3**（PsychQuant/macdoc#175 verify R3）：3.6.2 的 graft 在 root 只宣告 `xmlns:w`
+  的文件上會寫出未宣告 `w14:/wp:/a:/pic:` 前綴的 `document.xml`（Word 拒開）；3.6.3 會在 root 補宣告。
+  真實 Word 文件的 root 本來就宣告齊全、不受影響；`create_document` 產出的文件 root 亦含 w14。
+  另修 `PackageInspector` 巢狀 part 的 OPC rels 路徑公式（`<dir>/_rels/<name>.rels`）。
+  本版無 server 端程式碼變更。
+
+## [4.0.8] - 2026-09-03
+
+### Fixed
+
+- **`checkpoint` 的 gate 改為「依意圖」而非「依路徑字串」**（PsychQuant/macdoc#175 verify R2）。4.0.7 用
+  `standardizedFileURL` 字串比對判斷是否指向來源檔，R2 以下載回來的公證 binary 實打：大小寫變體
+  （APFS 預設大小寫不敏感）與任意路徑都不過 gate，正本被覆寫、破損交付檔靜默產出——而拒絕訊息還宣稱
+  checkpoint 繞不過。現在**任何顯式 `path` 的 checkpoint 都過 gate**（同 `allow_orphan_images` 逃生口，
+  新增於 checkpoint schema）；只有預設 recovery sidecar（不帶 path，寫 `<source>.autosave.docx`）維持不 gate。
+- **`.unsaved.docx` sidecar 不再無條件覆寫既有檔**（R2 security S4，實測曾毀掉一個使用者檔）。名稱已被占用時
+  改寫 `<source>.unsaved-<timestamp>.docx`；本 server 寫下的 sidecar 會在下一次通過 gate 的存檔後清除，
+  使用者自己的檔案永不動。
+- **無圖短路改看整個封包**：4.0.7 的 `images.isEmpty` 短路把 3.6.1 剛加的 header/footer 孤兒偵測整片關掉
+  （header 圖不在 `document.images`）。現在 header/footer 的 image relationship 也算「可能帶圖」。
+  今天此路徑只因 `insert_image_watermark` 是 no-op（#201）而不可達；#201 修好時本項已就位。
+
+### Changed
+
+- ooxml-swift 依賴下限升到 **3.6.2**：不可投影的 append（含插圖）改為把新段落 graft 進 live tree、
+  其餘位元組原樣 blob-copy，不再整份 `document.xml` 走 typed 序列化——R2 regression 對 27 份真實文件 A/B
+  發現 typed fallback 讓 4 份正文被靜默改寫（論文掉 73 段），本版起 append-image 不再觸發那條路徑。
+  另補 Run 層 tree-backed guard、inspector 註解／`>`／巢狀 parts 三修。
+- 誠實申報 4.0.7 未寫的成本：`autosave: true` 每次 mutation 多一次完整序列化＋封包檢查（19 圖論文約
+  +0.7 s、阻塞 actor），且 autosave 被 gate 拒絕時 mutation 仍回成功（狀態在 sidecar、stderr 有警告）。
+  `open_document` 另多一次封包解析（約 0.2 s）建立 baseline。
+
+### Tests
+
+- `Issue175R3CheckpointSidecarTests`（6）：大小寫變體與任意路徑被擋、allow 放行、預設 sidecar 不擋、既有
+  `.unsaved.docx` 不被覆寫、成功存檔後清理、header 圖不短路。
+
+## [4.0.7] - 2026-09-03
+
+### Fixed
+
+- **image-consistency gate 的三條側門與 baseline 設計**（PsychQuant/macdoc#175 verify R1，
+  4.0.6 出貨後由 6-AI 交叉驗證抓到）。4.0.6 的 baseline 是「每次 save 當下重讀來源檔的孤兒集合」，
+  所以任何未經 gate 的寫回（`autosave: true`、`checkpoint` 指向原檔、shutdown flush）都會把
+  session 新產生的孤兒洗成「開檔時就有」，gate 隨即永久解除——而拒絕訊息本身還會把 agent 誘導到
+  `checkpoint`。現在：
+  - baseline 是 **開檔時的快照**（revert / reload / 通過 gate 的存檔後更新），存在 session state，
+    不再從可變磁碟檔重建。一個修法同時消掉 R1 的 security S2、DA N2、codex F6、logic L5/L6。
+  - `autosave: true` 覆寫的是使用者的正本，不是 sidecar——現在過同一道 gate；拒絕時狀態寫到
+    `<source>.unsaved.docx` 並在 stderr 告警，正本不動。
+  - shutdown flush（正常 transport 結束後就會跑）同樣過 gate；拒絕時寫 `<source>.unsaved.docx`。
+    4.0.6 會在使用者收到「No file was written」幾秒後，由同一支 binary 無 gate 覆寫原檔且不留 `.bak`。
+  - `checkpoint` 指向來源檔時視同存檔、過 gate；sidecar 目標維持不設 gate。
+- **gate 改為 fail-closed**：序列化或封包檢查本身失敗時回 `E_IMAGE_CONSISTENCY_INSPECTION` 並拒絕，
+  不再以 `try?` 把「檢查失敗」當「檢查通過」（R1 codex F3 / logic M5）。
+- **`allow_orphan_images` 型別嚴檢**：非 boolean（如字串 `"true"`）回錯誤，不再安靜當 false。
+- **拒絕訊息重寫**：先列兩種可能原因（圖被丟 vs 刻意刪圖）並要求先比對 `list_images` 與
+  `get_paragraphs` 再重插，明言 checkpoint / autosave / 換路徑都繞不過。
+- 存檔路徑錯誤現在先於 gate 回報（`effectiveSavePath` 先跑）。
+
+### Changed
+
+- ooxml-swift 依賴下限升到 **3.6.1**：`PackageInspector` 改 per-part 比對（header/footer 圖的孤兒
+  現在看得到、跨 part 同號 rId 不再遮蔽）；`appendParagraph` 白名單補齊 Paragraph 層 7 個集合與
+  `rFonts.cs`。拒絕訊息中的孤兒改以 `part:rId` 表示。
+- 無圖片的文件跳過 gate（R1 實測 gate 讓存檔成本翻倍；session-new 孤兒必經 `insertImage`，
+  短路不漏 #175 簽名）。
+- `mcpb/manifest.json` 由 4.0.6 起與 release 版號對齊（4.0.6 那次是把停在 3.18.0 的欄位一次補正，
+  當時未記錄）。
+
+### Tests
+
+- `Issue175R2SaveGateTests`（8）：baseline 快照與通過 gate 後更新、checkpoint 指向原檔被擋且不解除 gate、
+  finalize 拒絕後 session 存活、autosave 拒絕寫 sidecar 不寫正本、非 boolean 旗標報錯、fail-closed 訊息。
+
+## [4.0.6] - 2026-09-01
+
+### Fixed
+
+- **append 模式插圖不再於存檔時靜默消失**（PsychQuant/macdoc#175）。ooxml-swift 依賴下限
+  升到 **3.6.0**：`appendParagraph` 的 op-emission 快路徑改由正面白名單
+  `isOpPayloadRepresentable` 把關，含 `<w:drawing>`（或任何 op payload 無法表示的內容）的
+  段落一律走 typed fallback，不再被投影成丟失 drawing 的 `RunPayload`（ooxml-swift#128）。
+  實際事故：7 張圖的交付文件少了 4 張，`insert_image_from_path` / `list_images` /
+  `save_document` 全程回報成功。
+
+### Added
+
+- **存檔前 image-consistency gate**（`E_IMAGE_CONSISTENCY`，defense-in-depth）。
+  `save_document` / `finalize_document` 在寫檔前先序列化並以 ooxml-swift 3.6.0 的
+  `PackageInspector.imageConsistencyReport` 檢查：若這次存檔會寫出**本 session 新產生的**
+  孤兒 image relationship（rels/media 存在但無任何 XML part 引用——#175 的簽名），拒絕
+  寫檔並回報孤兒 rId 與三計數（bodyDrawings / imageRelationships / mediaEntries）。
+  - 開檔時就存在的孤兒（第三方 writer 的合法殘留）以 open-baseline diff 放行，不誤傷。
+  - 刻意刪除含圖段落想保留殘留 relationship 時，新參數 `allow_orphan_images: true` 放行。
+  - 拒絕發生在任何磁碟寫入之前（含 `.bak` 搬移），且 session 存活可繼續修復。
+  - autosave 與 shutdown-flush 路徑刻意不設 gate——最後防線寧可寫出去。
+- 矩陣列 1/2/6 的 MCP 層 regression tests（`Issue175SaveImageConsistencyTests`，10 tests：
+  斷言一律讀「存檔後的 bytes」而非 session 記憶體——後者正是原事故中說謊的那一面）。
+
+### Changed
+
+- `describeTranscodeError` 補上 ooxml-swift 3.5.0 新增的 `.rawSlotExecutionFailure` case
+  （pin bump 帶入的 exhaustive-switch 要求）。
 
 ## [4.0.5] - 2026-08-20
 
