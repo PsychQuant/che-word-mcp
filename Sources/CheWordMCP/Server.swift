@@ -1049,15 +1049,15 @@ actor WordMCPServer {
                         ]),
                         "bold": .object([
                             "type": .string("boolean"),
-                            "description": .string("粗體")
+                            "description": .string("粗體。true＝加上；false＝明確取消（寫成關，會蓋過樣式的粗體）；省略＝不變")
                         ]),
                         "italic": .object([
                             "type": .string("boolean"),
-                            "description": .string("斜體")
+                            "description": .string("斜體。true＝加上；false＝明確取消（寫成關，會蓋過樣式的斜體）；省略＝不變")
                         ]),
                         "underline": .object([
                             "type": .string("boolean"),
-                            "description": .string("底線")
+                            "description": .string("底線。true＝單線底線；false＝移除既有底線；省略＝不變")
                         ]),
                         "font_size": .object([
                             "type": .string("integer"),
@@ -7682,7 +7682,14 @@ actor WordMCPServer {
             let runIndex = args["run_index"]?.intValue ?? 0
             let author = args["author"]?.stringValue
             let date = parseISODate(args["date"]?.stringValue)
-            let paragraphs = doc.getParagraphs()
+            // Index exactly as applyRunPropertiesAsRevision and formatParagraph
+            // do — direct body children only. getParagraphs() also descends
+            // into block-level SDTs, so after any SDT paragraph it would seed
+            // the patch from a different paragraph than the one being changed.
+            let paragraphs: [Paragraph] = doc.body.children.compactMap {
+                if case .paragraph(let paragraph) = $0 { return paragraph }
+                return nil
+            }
             guard paragraphIndex >= 0, paragraphIndex < paragraphs.count else {
                 throw WordError.invalidIndex(paragraphIndex)
             }
