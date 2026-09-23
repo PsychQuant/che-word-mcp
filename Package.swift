@@ -6,12 +6,7 @@ let package = Package(
     platforms: [.macOS(.v13)],
     dependencies: [
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.0"),
-        // Draft integration for PsychQuant/ooxml-swift#115. Replace this
-        // exact revision with the released version constraint before merge.
-        .package(
-            url: "https://github.com/PsychQuant/ooxml-swift.git",
-            revision: "216093a67b34987230772e77a6dcdee75fe8561a"
-        ),
+        .package(url: "https://github.com/PsychQuant/ooxml-swift.git", from: "3.6.4"),
         .package(url: "https://github.com/PsychQuant/markdown-swift.git", from: "0.2.0"),
         .package(url: "https://github.com/PsychQuant/word-to-md-swift.git", from: "1.0.0"),
         .package(url: "https://github.com/PsychQuant/latex-math-swift.git", from: "0.2.0"),
