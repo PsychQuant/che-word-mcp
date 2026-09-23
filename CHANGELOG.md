@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> 版號從 4.0.x 跳到 **4.1.0**：這一版替三個工具加了新的可選參數，屬於向下相容的新功能。
+> 依 semver 應該 bump minor；舊呼叫端不給 `profile` 時行為不變。
+
+### Added
+
+- **`create_document`、`open_document`、`execute_script` 的可選 `profile`**（`inherit` / `official`；#223，
+  PsychQuant/macdoc#185）。與 macdoc CLI 0.9.0+ 共用 `~/.config/macdoc/config.json` 的 `document` 區段。
+  - `create_document`：未指定時用設定檔的 `defaultProfile`，再退回 `inherit`；明確指定時優先於設定。
+  - `open_document`：未指定時保留原格式，不讀新文件的預設值。明確給 `official` 時套用快照並標示為已修改；
+    明確給 `inherit` 不改文件，也不觸發 dirty 或 autosave。
+  - `execute_script`：未指定時照腳本重播；指定時在驗證與發布之前套用。
+  - 錯誤型別、`null`、未知名稱、official 快照缺失或損毀都會明確失敗；套用失敗不註冊新 session、不發布輸出。
+  - 自訂設定檔路徑可經 server constructor 的 `documentConfigURL` 注入。
+
+### Fixed
+
+- **套用 profile 之後，theme 工具的修改會真的保存下來**（#223）。`update_theme_color` / `update_theme_fonts` / `set_theme`
+  過去直接改解壓出來的 `theme1.xml`，而套用過 profile 的文件由 writer 從記憶體中的有效 theme 輸出，修改因此被蓋掉。
+  現在讀取走 `effectiveThemeData()`、寫入走 `carryPart`，與 writer 看的是同一份來源；`get_theme` 也改讀這份有效 theme。
+- **`open_document` 套用 official 後 autosave 失敗時回滾整個 session**（#223）。過去會留下一個半初始化、
+  已登記 doc_id 的 session。
+
+### Changed
+
+- ooxml-swift 下限提高到 **3.9.0**。除了 profile API，也帶上 raw-channel slot 填入空白段落時 run 繼承段落標記 rPr 的修正
+  （PsychQuant/ooxml-swift#166、PsychQuant/macdoc#199）：`execute_script` 填官方表單的空白欄位時，字型與表單一致，
+  不再落到 docDefaults。
+
 ## [4.0.11] - 2026-09-23
 
 ### Fixed
