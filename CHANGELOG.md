@@ -99,7 +99,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   的 `setUp`／`tearDown` 一律持有，讓這個 class 的所有測試方法彼此互斥——`swift test --parallel`
   仍可平行跑其他檔案，只有這一個 class 內部退回序列執行；(2) 把兩個測試原本「比對整個共用命名空間
   的新增項目」的斷言，換成一個確定性的、只看單一路徑的檢查：`Server.swift` 的 `openDocument` 新增
-  一個 debug-log 事件（`openDocument.archiveExtracted`，只在 `forceDebugLogging` 開啟時記錄），
+  一個 debug-log 事件（`openDocument.archiveExtracted`，只在 debug logging 開啟時記錄——測試裡是
+  `forceDebugLogging: true`，正式環境是 `CHE_WORD_MCP_LOG_LEVEL=debug`），
   在 `DocxReader.read` 成功的當下記錄這次呼叫實際拿到的 `archiveTempDir` 路徑；測試改成透過
   `debugEventLogForTesting()` 取出這次失敗呼叫真正對應的那一個路徑，直接斷言「這個路徑不存在」，
   不再依賴對整個共用目錄做前後 diff。另外新增一個獨立、非計時相依的示範測試
