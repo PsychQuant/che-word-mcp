@@ -53,8 +53,22 @@ final class DocumentProfileToolsTests: XCTestCase {
         precondition(fd >= 0, "could not open the archive-namespace test lock file at \(Self.archiveNamespaceLockPath)")
         // Blocks (does not spin or poll) until any other process's hold on
         // this same lock file releases — i.e., until the previously
-        // running test in this class finishes its tearDown.
-        flock(fd, LOCK_EX)
+        // running test in this class finishes its tearDown. Retries on
+        // EINTR (Codex R4 finding): flock's return value was previously
+        // ignored, so a signal-interrupted acquisition would silently
+        // continue WITHOUT the lock, defeating the whole fix without any
+        // visible failure. Any other failure closes the descriptor and
+        // throws, rather than letting the test run unprotected.
+        while true {
+            if flock(fd, LOCK_EX) == 0 { break }
+            if errno == EINTR { continue }
+            let reason = String(cString: strerror(errno))
+            close(fd)
+            struct LockAcquisitionFailed: Error, CustomStringConvertible {
+                let description: String
+            }
+            throw LockAcquisitionFailed(description: "could not acquire the archive-namespace test lock (\(reason)) — refusing to run unprotected against sibling tests")
+        }
         archiveNamespaceLockFD = fd
     }
 
@@ -71,10 +85,19 @@ final class DocumentProfileToolsTests: XCTestCase {
     /// not timing-dependent like the empirical `--parallel` reproduction
     /// (see #232 R4 report for those runs' output). Shows that a
     /// before/after diff of the shared archive namespace can be non-empty
-    /// purely because of an entry NO che-word-mcp code created, proving the
-    /// snapshot-diff technique itself needs the exclusion the lock above
-    /// now provides — this test does not take the lock, is independent of
-    /// the fix, and always passes; it documents *why* the fix is needed.
+    /// purely because of an entry no che-word-mcp document-open/save
+    /// operation ever created (the entry below is created directly by this
+    /// test method, standing in for a concurrently-running sibling test).
+    ///
+    /// This test DOES run under the class's setUp/tearDown lock like every
+    /// other method here (Codex R4: an earlier version of this comment
+    /// incorrectly said it did not) — but its proof does not DEPEND on that
+    /// lock: it demonstrates the snapshot-diff technique's flaw using only
+    /// its own single-threaded before/after pair, so it would demonstrate
+    /// the same thing even without the class lock. It documents *why* the
+    /// real fix (the lock, plus the two tests below reading a specific
+    /// archive path off `debugEventLogForTesting()` instead of diffing this
+    /// namespace) was needed — it does not itself exercise that fix.
     func testSharedArchiveNamespaceSnapshotDiffIsFooledByAnUnrelatedConcurrentEntry() throws {
         let namespace = FileManager.default.temporaryDirectory.appendingPathComponent(ZipHelper.readerNamespace)
         try FileManager.default.createDirectory(at: namespace, withIntermediateDirectories: true)
@@ -100,7 +123,7 @@ final class DocumentProfileToolsTests: XCTestCase {
         // `unrelated` too. Either way proves the same point: a bare diff of
         // this shared namespace cannot attribute an entry to any one test.
         XCTAssertTrue(apparentLeak.contains(unrelated.lastPathComponent),
-                       "an entry this test did not create, and che-word-mcp never touched, shows up as an apparent leak in a bare before/after diff of the shared namespace: \(apparentLeak)")
+                       "an entry no che-word-mcp document-open/save operation ever created shows up as an apparent leak in a bare before/after diff of the shared namespace: \(apparentLeak)")
     }
 
     private func directory() throws -> URL {
