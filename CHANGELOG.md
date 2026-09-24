@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **表格儲存格的段落級定址：`get_cell_paragraphs`、`update_cell_paragraph`**（#194，PsychQuant/macdoc#156）。
+  - `get_cell_paragraphs`（支援 Direct Mode）：列出某一格內的段落，格式是 `[k] 文字`，`k` 從 0 開始。
+  - `update_cell_paragraph`：只改寫該格第 `paragraph_index` 個段落。同格其他段落、各段落已建模的段落格式（縮排、對齊、間距…），
+    以及其他列的同字串都不動。該段落的 runs 換成單一 run，沿用原本第一個 run 的格式。
+  - 過去多段落的格子只能用 `update_cell` 整格覆寫（N 段塌成一段）或 `replace_text` 全域取代（同字串的其他列一起被改）。
+  - 座標（表格、列、欄、段落）在寫入前全部檢查，越界即失敗，文件不變。
+  - 限制：typed model 未建模的 pPr 子元素（例如 `w:kinsoku`）經 typed 寫入後會消失，屬既有限制，見 PsychQuant/ooxml-swift#168。
+
+### Changed
+
+- ooxml-swift 下限提高到 **3.10.0**。除了 cell 段落 API，也帶上格式 profile 的 OPC relationship 檢查、設定檔跨程序鎖，
+  以及快照清理（PsychQuant/macdoc#194、#195、#196、#204）。
+- **`scripts/release.sh` 改從隔離的建置樹建置**（#195，PsychQuant/macdoc#163）。先在 HEAD commit 建立 detached worktree，
+  建置完成後、簽章之前，再次確認來源沒有漂移（檔案、HEAD、並行的主樹編輯）；binary 路徑以 `--show-bin-path` 取得。
+  簽章與公證的 bytes 因此一定對應到 release tag 所指的 commit。
+
 ## [4.1.0] - 2026-09-24
 
 > 版號從 4.0.x 跳到 **4.1.0**：這一版替三個工具加了新的可選參數，屬於向下相容的新功能。
