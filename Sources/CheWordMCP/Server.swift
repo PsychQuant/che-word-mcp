@@ -224,7 +224,7 @@ actor WordMCPServer {
     ## Direct Mode Tools (source_path supported)
 
     **Read content**: `get_text`, `get_document_text`, `get_paragraphs`, `get_document_info`, `search_text`
-    **List elements**: `list_images`, `list_styles`, `get_tables`, `list_comments`, `list_hyperlinks`, `list_bookmarks`, `list_footnotes`, `list_endnotes`, `get_revisions`
+    **List elements**: `list_images`, `list_styles`, `get_tables`, `get_cell_paragraphs`, `list_comments`,`list_hyperlinks`, `list_bookmarks`, `list_footnotes`, `list_endnotes`, `get_revisions`
     **Properties**: `get_document_properties`, `get_section_properties`, `get_word_count_by_section`
     **Export**: `export_markdown`
 
@@ -1242,6 +1242,37 @@ actor WordMCPServer {
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("table_index"), .string("row"), .string("col"), .string("text")])
+                ])
+            ),
+            Tool(
+                name: "get_cell_paragraphs",
+                description: "列出表格儲存格內的段落與其 paragraph_index（從 0 開始；支援 Direct Mode）。給 update_cell_paragraph 定址用：多段落儲存格不必整格覆寫。",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼（Session Mode）")]),
+                        "source_path": .object(["type": .string("string"), "description": .string("檔案路徑（Direct Mode，免開啟）")]),
+                        "table_index": .object(["type": .string("integer"), "description": .string("表格索引（從 0 開始）")]),
+                        "row": .object(["type": .string("integer"), "description": .string("列索引（從 0 開始）")]),
+                        "col": .object(["type": .string("integer"), "description": .string("欄索引（從 0 開始）")])
+                    ]),
+                    "required": .array([.string("table_index"), .string("row"), .string("col")])
+                ])
+            ),
+            Tool(
+                name: "update_cell_paragraph",
+                description: "只改寫表格儲存格內第 paragraph_index 個段落的文字；同格其他段落、各段落的段落格式與其他列的同字串都不動。該段落的 runs 換成單一 run，沿用原第一個 run 的格式。座標在寫入前全部檢查，越界即失敗且不修改文件。",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "doc_id": .object(["type": .string("string"), "description": .string("文件識別碼")]),
+                        "table_index": .object(["type": .string("integer"), "description": .string("表格索引（從 0 開始）")]),
+                        "row": .object(["type": .string("integer"), "description": .string("列索引（從 0 開始）")]),
+                        "col": .object(["type": .string("integer"), "description": .string("欄索引（從 0 開始）")]),
+                        "paragraph_index": .object(["type": .string("integer"), "description": .string("儲存格內段落索引（從 0 開始；見 get_cell_paragraphs）")]),
+                        "text": .object(["type": .string("string"), "description": .string("該段落的新文字")])
+                    ]),
+                    "required": .array([.string("doc_id"), .string("table_index"), .string("row"), .string("col"), .string("paragraph_index"), .string("text")])
                 ])
             ),
             Tool(
@@ -6225,6 +6256,10 @@ actor WordMCPServer {
             return try await getTables(args: args)
         case "update_cell":
             return try await updateCell(args: args)
+        case "get_cell_paragraphs":
+            return try await getCellParagraphs(args: args)
+        case "update_cell_paragraph":
+            return try await updateCellParagraph(args: args)
         case "delete_table":
             return try await deleteTable(args: args)
         case "merge_cells":
@@ -8041,6 +8076,54 @@ actor WordMCPServer {
         try await storeDocument(doc, for: docId)
 
         return "Updated cell at table[\(tableIndex)][\(row)][\(col)]"
+    }
+
+    private func getCellParagraphs(args: [String: Value]) async throws -> String {
+        guard let tableIndex = args["table_index"]?.intValue else {
+            throw WordError.missingParameter("table_index")
+        }
+        guard let row = args["row"]?.intValue else {
+            throw WordError.missingParameter("row")
+        }
+        guard let col = args["col"]?.intValue else {
+            throw WordError.missingParameter("col")
+        }
+        let (doc, _) = try await resolveDocument(args: args)
+        let texts = try doc.cellParagraphTexts(tableIndex: tableIndex, row: row, col: col)
+        var result = "Cell table[\(tableIndex)][\(row)][\(col)] has \(texts.count) paragraph(s):"
+        for (index, text) in texts.enumerated() {
+            result += "\n[\(index)] \(text)"
+        }
+        return result
+    }
+
+    private func updateCellParagraph(args: [String: Value]) async throws -> String {
+        guard let docId = args["doc_id"]?.stringValue else {
+            throw WordError.missingParameter("doc_id")
+        }
+        guard let tableIndex = args["table_index"]?.intValue else {
+            throw WordError.missingParameter("table_index")
+        }
+        guard let row = args["row"]?.intValue else {
+            throw WordError.missingParameter("row")
+        }
+        guard let col = args["col"]?.intValue else {
+            throw WordError.missingParameter("col")
+        }
+        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+            throw WordError.missingParameter("paragraph_index")
+        }
+        guard let text = args["text"]?.stringValue else {
+            throw WordError.missingParameter("text")
+        }
+        guard var doc = openDocuments[docId] else {
+            throw WordError.documentNotFound(docId)
+        }
+
+        try doc.updateCellParagraph(tableIndex: tableIndex, row: row, col: col, paragraphIndex: paragraphIndex, text: text)
+        try await storeDocument(doc, for: docId)
+
+        return "Updated paragraph \(paragraphIndex) in cell table[\(tableIndex)][\(row)][\(col)]"
     }
 
     private func deleteTable(args: [String: Value]) async throws -> String {
