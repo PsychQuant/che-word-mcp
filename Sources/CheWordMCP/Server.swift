@@ -3672,13 +3672,14 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "set_header_row",
-                description: "標記 row 為表頭（emit <w:tblHeader/>），跨頁分割時自動重複",
+                description: "標記表格標題列（emit <w:tblHeader/>），跨頁分割時自動重複。row_index 與 row_count 擇一：row_index 標記單一 row 為表頭（未提供任一參數時預設 row_index=0）；row_count 標記從第一列起的前 N 列為表頭。同時提供兩者會回傳參數錯誤（#230）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
                         "doc_id": .object(["type": .string("string")]),
                         "table_index": .object(["type": .string("integer")]),
-                        "row_index": .object(["type": .string("integer"), "description": .string("預設 0")])
+                        "row_index": .object(["type": .string("integer"), "description": .string("標記單一 row 為表頭（從 0 開始）。與 row_count 擇一；兩者皆未提供時預設 0")]),
+                        "row_count": .object(["type": .string("integer"), "description": .string("標記從第一列起的前 N 列為表頭（1 到表格列數）。與 row_index 擇一")])
                     ]),
                     "required": .array([.string("doc_id"), .string("table_index")])
                 ])
@@ -6039,29 +6040,6 @@ actor WordMCPServer {
                 ])
             ),
 
-            // 13.17 set_header_row - 設定標題列
-            Tool(
-                name: "set_header_row",
-                description: "設定表格標題列（跨頁時重複顯示）",
-                inputSchema: .object([
-                    "type": .string("object"),
-                    "properties": .object([
-                        "doc_id": .object([
-                            "type": .string("string"),
-                            "description": .string("文件識別碼")
-                        ]),
-                        "table_index": .object([
-                            "type": .string("integer"),
-                            "description": .string("表格索引（從 0 開始）")
-                        ]),
-                        "row_count": .object([
-                            "type": .string("integer"),
-                            "description": .string("標題列數量（從第一列算起，預設 1）")
-                        ])
-                    ]),
-                    "required": .array([.string("doc_id"), .string("table_index")])
-                ])
-            ),
             // Phase 4 (v3.6.0, closes #37): autosave / checkpoint / recover_from_autosave.
             Tool(
                 name: "checkpoint",
@@ -6751,8 +6729,6 @@ actor WordMCPServer {
             return try await setTableAlignment(args: args)
         case "set_cell_vertical_alignment":
             return try await setCellVerticalAlignment(args: args)
-        case "set_header_row":
-            return try await setHeaderRow(args: args)
 
         // Phase 4 (v3.6.0, closes #37)
         case "checkpoint":
@@ -14980,34 +14956,6 @@ actor WordMCPServer {
         return "Cell vertical alignment set to '\(alignment)' for table \(tableIndex), row \(row), col \(col)"
     }
 
-    /// 設定標題列
-    private func setHeaderRow(args: [String: Value]) async throws -> String {
-        guard let docId = args["doc_id"]?.stringValue else {
-            throw WordError.missingParameter("doc_id")
-        }
-        guard let tableIndex = args["table_index"]?.intValue else {
-            throw WordError.missingParameter("table_index")
-        }
-        guard let doc = openDocuments[docId] else {
-            throw WordError.documentNotFound(docId)
-        }
-
-        let rowCount = args["row_count"]?.intValue ?? 1
-
-        let tables = doc.getTables()
-        guard tableIndex >= 0 && tableIndex < tables.count else {
-            throw WordError.invalidIndex(tableIndex)
-        }
-
-        let table = tables[tableIndex]
-        guard rowCount > 0 && rowCount <= table.rows.count else {
-            throw ToolRefusal("Row count must be between 1 and \(table.rows.count)")
-        }
-
-        // 標題列需要在 <w:trPr> 中設定 <w:tblHeader/>
-        return "Header row(s) set for table \(tableIndex): first \(rowCount) row(s) will repeat across pages"
-    }
-
     // MARK: - v3.3.0: Phase 2A — Theme tools (#28)
 
     /// Read the same effective theme used by both OOXML writers, including an
@@ -16444,11 +16392,37 @@ actor WordMCPServer {
         return "Set table_layout=\(type.rawValue) on table \(tableIndex)"
     }
 
+    /// 設定表格標題列（#230：合併原本互相矛盾的兩份 schema）。
+    /// row_index 標記單一 row 為表頭（向下相容既有行為，未提供任一參數時預設 row_index=0）；
+    /// row_count 標記從第一列起的前 N 列為表頭。兩者同時提供視為參數錯誤，不可默默挑一個生效。
     private func setHeaderRowTool(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
         guard let tableIndex = args["table_index"]?.intValue else { throw WordError.missingParameter("table_index") }
-        let rowIndex = args["row_index"]?.intValue ?? 0
+
+        let rowIndexArg = args["row_index"]?.intValue
+        let rowCountArg = args["row_count"]?.intValue
+        if rowIndexArg != nil && rowCountArg != nil {
+            throw WordError.invalidParameter("row_index/row_count", "row_index 與 row_count 擇一，不可同時提供")
+        }
+
+        if let rowCount = rowCountArg {
+            let tables = doc.getTables()
+            guard tableIndex >= 0 && tableIndex < tables.count else {
+                return "{ \"error\": \"out_of_bounds\", \"index\": \(tableIndex) }"
+            }
+            let table = tables[tableIndex]
+            guard rowCount > 0 && rowCount <= table.rows.count else {
+                throw WordError.invalidParameter("row_count", "must be between 1 and \(table.rows.count)")
+            }
+            for i in 0..<rowCount {
+                try doc.setHeaderRow(tableIndex: tableIndex, rowIndex: i)
+            }
+            try await storeDocument(doc, for: docId)
+            return "Marked first \(rowCount) row(s) as header on table \(tableIndex)"
+        }
+
+        let rowIndex = rowIndexArg ?? 0
         do {
             try doc.setHeaderRow(tableIndex: tableIndex, rowIndex: rowIndex)
         } catch WordError.invalidIndex(let i) {

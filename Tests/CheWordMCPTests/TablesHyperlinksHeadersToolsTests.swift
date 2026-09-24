@@ -119,6 +119,137 @@ final class TablesHyperlinksHeadersToolsTests: XCTestCase {
         XCTAssertTrue(resultText(r).contains("header"), "tool failed: \(resultText(r))")
     }
 
+    // MARK: - #230: set_header_row dedupe (row_index / row_count merged schema)
+
+    /// row_index marks exactly that row as header — verified against the
+    /// actual `<w:tblHeader/>` in the saved document, not just the reply text.
+    func testSetHeaderRowRowIndexEmitsTblHeaderOnlyOnThatRow() async throws {
+        let server = await WordMCPServer()
+        let docId = "shr-230-idx-\(UUID().uuidString)"
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shr-230-idx-\(UUID().uuidString).docx")
+        defer {
+            Task { await discardDocument(server, id: docId) }
+            try? FileManager.default.removeItem(at: output)
+        }
+        await openFreshDocument(server, id: docId)
+        await insertTable(server, docId: docId, rows: 3, cols: 2)
+
+        let r = await server.invokeToolForTesting(name: "set_header_row", arguments: [
+            "doc_id": .string(docId),
+            "table_index": .int(0),
+            "row_index": .int(1)
+        ])
+        XCTAssertTrue(resultText(r).contains("row 1"), "tool failed: \(resultText(r))")
+
+        _ = await server.invokeToolForTesting(name: "save_document", arguments: [
+            "doc_id": .string(docId),
+            "path": .string(output.path)
+        ])
+        var reopened = try DocxReader.read(from: output)
+        defer { reopened.close() }
+        let table = try XCTUnwrap(reopened.getTables().first)
+        XCTAssertEqual(table.rows.map(\.properties.isHeader), [false, true, false])
+    }
+
+    /// row_count marks the first N rows (from row 0) as header — the
+    /// semantic the dead duplicate schema promised but its handler never
+    /// actually ran (#230).
+    func testSetHeaderRowRowCountEmitsTblHeaderOnFirstNRows() async throws {
+        let server = await WordMCPServer()
+        let docId = "shr-230-cnt-\(UUID().uuidString)"
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shr-230-cnt-\(UUID().uuidString).docx")
+        defer {
+            Task { await discardDocument(server, id: docId) }
+            try? FileManager.default.removeItem(at: output)
+        }
+        await openFreshDocument(server, id: docId)
+        await insertTable(server, docId: docId, rows: 3, cols: 2)
+
+        let r = await server.invokeToolForTesting(name: "set_header_row", arguments: [
+            "doc_id": .string(docId),
+            "table_index": .int(0),
+            "row_count": .int(2)
+        ])
+        XCTAssertTrue(resultText(r).contains("first 2"), "tool failed: \(resultText(r))")
+
+        _ = await server.invokeToolForTesting(name: "save_document", arguments: [
+            "doc_id": .string(docId),
+            "path": .string(output.path)
+        ])
+        var reopened = try DocxReader.read(from: output)
+        defer { reopened.close() }
+        let table = try XCTUnwrap(reopened.getTables().first)
+        XCTAssertEqual(table.rows.map(\.properties.isHeader), [true, true, false])
+    }
+
+    /// Neither parameter given: backward-compatible default of row_index=0 —
+    /// the behavior every existing caller of the (dispatch-reachable) schema
+    /// already depended on.
+    func testSetHeaderRowDefaultsToRowZeroWhenNeitherProvided() async throws {
+        let server = await WordMCPServer()
+        let docId = "shr-230-default-\(UUID().uuidString)"
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shr-230-default-\(UUID().uuidString).docx")
+        defer {
+            Task { await discardDocument(server, id: docId) }
+            try? FileManager.default.removeItem(at: output)
+        }
+        await openFreshDocument(server, id: docId)
+        await insertTable(server, docId: docId, rows: 2, cols: 2)
+
+        let r = await server.invokeToolForTesting(name: "set_header_row", arguments: [
+            "doc_id": .string(docId),
+            "table_index": .int(0)
+        ])
+        XCTAssertTrue(resultText(r).contains("row 0"), "tool failed: \(resultText(r))")
+
+        _ = await server.invokeToolForTesting(name: "save_document", arguments: [
+            "doc_id": .string(docId),
+            "path": .string(output.path)
+        ])
+        var reopened = try DocxReader.read(from: output)
+        defer { reopened.close() }
+        let table = try XCTUnwrap(reopened.getTables().first)
+        XCTAssertEqual(table.rows.map(\.properties.isHeader), [true, false])
+    }
+
+    /// Supplying both row_index and row_count is ambiguous — the two dead
+    /// schemas never agreed on precedence, so we refuse instead of silently
+    /// picking one (per #230's "呼叫端不能在沒有錯誤訊息的情況下得到不同結果").
+    func testSetHeaderRowRejectsBothRowIndexAndRowCount() async throws {
+        let server = await WordMCPServer()
+        let docId = "shr-230-both-\(UUID().uuidString)"
+        await openFreshDocument(server, id: docId)
+        defer { Task { await discardDocument(server, id: docId) } }
+        await insertTable(server, docId: docId, rows: 3, cols: 2)
+
+        let r = await server.invokeToolForTesting(name: "set_header_row", arguments: [
+            "doc_id": .string(docId),
+            "table_index": .int(0),
+            "row_index": .int(0),
+            "row_count": .int(2)
+        ])
+        XCTAssertEqual(r.isError, true, "expected a parameter error: \(resultText(r))")
+    }
+
+    /// row_count outside 1...rows.count must error, not silently clamp or no-op.
+    func testSetHeaderRowRowCountOutOfBoundsReturnsError() async throws {
+        let server = await WordMCPServer()
+        let docId = "shr-230-oob-\(UUID().uuidString)"
+        await openFreshDocument(server, id: docId)
+        defer { Task { await discardDocument(server, id: docId) } }
+        await insertTable(server, docId: docId, rows: 2, cols: 2)
+
+        let r = await server.invokeToolForTesting(name: "set_header_row", arguments: [
+            "doc_id": .string(docId),
+            "table_index": .int(0),
+            "row_count": .int(5)
+        ])
+        XCTAssertEqual(r.isError, true, "expected an out-of-bounds error: \(resultText(r))")
+    }
+
     func testSetTableIndent720TwipsAfterTask63() async throws {
         let server = await WordMCPServer()
         let docId = "sti-63-\(UUID().uuidString)"
