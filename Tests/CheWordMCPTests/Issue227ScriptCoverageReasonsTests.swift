@@ -249,6 +249,16 @@ final class Issue227ScriptCoverageReasonsTests: XCTestCase {
         ])
         XCTAssertEqual(verified.isError, true,
                        "a paragraphs-only rebuild must fail byte-equal verification: \(resultText(verified))")
+        // The error must be the comparison's verdict (ScriptVerificationFailure),
+        // not some other failure such as a rejected parameter or unreadable
+        // reference — and it must name the part that differs.
+        XCTAssertTrue(resultText(verified).contains("byte-equal 驗證失敗"),
+                      "must be a completed-but-unequal verdict: \(resultText(verified))")
+        XCTAssertTrue(resultText(verified).contains("word/document.xml"),
+                      "the differing part must be named: \(resultText(verified))")
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: dir.appendingPathComponent("verified.docx").path),
+                       "a failed verification publishes nothing")
     }
 
     /// Slots work on this path as they do on the CLI: a synthesized id is a
