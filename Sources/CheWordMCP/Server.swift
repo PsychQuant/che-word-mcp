@@ -8281,10 +8281,24 @@ actor WordMCPServer {
 
         var results: [String] = []
 
+        // #232 R2 (Codex finding): `border_size` used to be parsed only
+        // inside the `border_style`-gated block, so a mistyped border_size
+        // supplied WITHOUT border_style was never read and never errored —
+        // the border feature is optional-on-border_style, but the
+        // parameter's own type should not depend on a sibling's presence.
+        // Same for `cell_row`/`cell_col` below: an `if let` chain
+        // short-circuits, so a mistyped cell_col was never even evaluated
+        // when cell_row was absent. Parse both unconditionally first so a
+        // present-but-mistyped value always errors, then gate activation as
+        // before.
+        let borderSizeIfPresent = try optionalInt(args, "border_size")
+        let cellRowIfPresent = try optionalInt(args, "cell_row")
+        let cellColIfPresent = try optionalInt(args, "cell_col")
+
         // 設定邊框
         if let borderStyle = args["border_style"]?.stringValue {
             let style = BorderStyle(rawValue: borderStyle) ?? .single
-            let size = try optionalInt(args, "border_size") ?? 4
+            let size = borderSizeIfPresent ?? 4
             let color = args["border_color"]?.stringValue ?? "000000"
 
             let border = Border(style: style, size: size, color: color)
@@ -8295,8 +8309,8 @@ actor WordMCPServer {
         }
 
         // 設定儲存格底色
-        if let cellRow = try optionalInt(args, "cell_row"),
-           let cellCol = try optionalInt(args, "cell_col"),
+        if let cellRow = cellRowIfPresent,
+           let cellCol = cellColIfPresent,
            let shadingColor = args["shading_color"]?.stringValue {
             let shading = CellShading(fill: shadingColor)
             try doc.setCellShading(tableIndex: tableIndex, row: cellRow, col: cellCol, shading: shading)

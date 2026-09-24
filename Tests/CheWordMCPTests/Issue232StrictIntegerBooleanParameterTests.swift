@@ -397,17 +397,23 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         XCTAssertEqual(afterFlags, [false, false], "row_count=\"3\" must not silently fall back to row_index=0 (#230's motivating regression)")
     }
 
+    /// #232 R2 (Codex LOW finding): `row_count: 1.0` marks exactly one row
+    /// as header, which is indistinguishable from the pre-#232 regression
+    /// (a silently-ignored row_count falling back to `row_index=0`, also
+    /// one row). Use `row_count: 2.0` on this fixture's 2-row table instead
+    /// — `[true, true]` can only come from the double actually converting
+    /// to `2`, not from any fallback path.
     func testSetHeaderRowAcceptsWholeValuedDoubleRowCount() async throws {
         let server = await WordMCPServer()
         let id = "s232-header-row-double"
         try await openFixtureDocument(server, id: id)
         let result = await server.invokeToolForTesting(
             name: "set_header_row",
-            arguments: ["doc_id": .string(id), "table_index": .int(0), "row_count": .double(1.0)]
+            arguments: ["doc_id": .string(id), "table_index": .int(0), "row_count": .double(2.0)]
         )
         XCTAssertNotEqual(result.isError, true, resultText(result))
         let flags = await headerFlags(server, id: id)
-        XCTAssertEqual(flags, [true, false], "row_count=1.0 must mark exactly the first row as header")
+        XCTAssertEqual(flags, [true, true], "row_count=2.0 must mark both fixture rows as header")
     }
 
     func testInsertTableRejectsStringRowsNamingTheParameter() async throws {
@@ -607,9 +613,12 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
     /// `regex` on item N would throw straight out of the whole function,
     /// aborting the call AND silently discarding item N-1's already-applied
     /// (but not yet persisted) replacement. Fixed by moving the parse
-    /// inside an equivalent per-item catch. This proves both halves: the
-    /// earlier item is actually applied, and the later item fails by name
-    /// without taking the whole call down with it.
+    /// inside an equivalent per-item catch.
+    ///
+    /// Valid → invalid → valid (R2, Codex LOW finding): proves the failure
+    /// doesn't just "not roll back what came before" but also doesn't stop
+    /// the loop — item 2, which comes AFTER the failing item, must still
+    /// run and its effect must be observable.
     func testReplaceTextBatchIsolatesAPerItemBoolTypeErrorFromOtherItems() async throws {
         let server = await WordMCPServer()
         let id = "s232-replace-batch"
@@ -622,26 +631,30 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
                 "replacements": .array([
                     .object(["find": .string("Anchor"), "replace": .string("Anchored")]),
                     .object(["find": .string("Anchored"), "replace": .string("x"), "regex": .string("no")]),
+                    .object(["find": .string("Anchored"), "replace": .string("Final")]),
                 ]),
             ]
         )
         XCTAssertNotEqual(result.isError, true, "a per-item type error must not fail the whole batch call: \(resultText(result))")
         let text = resultText(result)
-        XCTAssertTrue(text.contains("1 applied, 1 failed"), text)
+        XCTAssertTrue(text.contains("2 applied, 1 failed"), text)
         XCTAssertTrue(text.contains("regex"), "the failed item's message should name the parameter: \(text)")
 
         let search = await server.invokeToolForTesting(
-            name: "search_text", arguments: ["doc_id": .string(id), "query": .string("Anchored")]
+            name: "search_text", arguments: ["doc_id": .string(id), "query": .string("Final")]
         )
         XCTAssertNotEqual(search.isError, true, resultText(search))
         XCTAssertTrue(
-            resultText(search).hasPrefix("Found"),
-            "item 0's valid replacement must still have been applied: \(resultText(search))"
+            resultText(search).contains("Found 1 match"),
+            "item 2 (after the failing item) must still have run: \(resultText(search))"
         )
     }
 
     /// Same shape as the replace_text_batch fix, for `search_text_batch`'s
-    /// per-query `case_sensitive`.
+    /// per-query `case_sensitive`. Valid → invalid → valid, and each valid
+    /// item's assertion checks the actual match count, not just that its
+    /// `=== [i] query=... ===` heading line is present (R2, Codex LOW
+    /// finding — the heading alone appears for a zero-match query too).
     func testSearchTextBatchIsolatesAPerItemBoolTypeErrorFromOtherItems() async throws {
         let server = await WordMCPServer()
         let id = "s232-search-batch"
@@ -654,12 +667,51 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
                 "queries": .array([
                     .string("Anchor"),
                     .object(["query": .string("Anchor"), "case_sensitive": .string("no")]),
+                    .string("Anchor"),
                 ]),
             ]
         )
         XCTAssertNotEqual(result.isError, true, "a per-item type error must not fail the whole batch call: \(resultText(result))")
         let text = resultText(result)
-        XCTAssertTrue(text.contains("[0] query='Anchor' ==="), "the first (valid) query must still have run: \(text)")
+        XCTAssertTrue(
+            text.contains("[0] query='Anchor' ===\nFound 1 match"),
+            "the first (valid) query must have actually found a match, not just run: \(text)"
+        )
         XCTAssertTrue(text.contains("[1] FAIL:") && text.contains("case_sensitive"), text)
+        XCTAssertTrue(
+            text.contains("[2] query='Anchor' ===\nFound 1 match"),
+            "the third query (after the failing item) must still run and find a match: \(text)"
+        )
+    }
+
+    /// #232 R2 (Codex MEDIUM finding): `border_size` used to be parsed only
+    /// inside the `border_style`-gated block, so a mistyped `border_size`
+    /// supplied WITHOUT `border_style` was never read and never errored.
+    func testSetTableStyleRejectsStringBorderSizeEvenWithoutBorderStyle() async throws {
+        let server = await WordMCPServer()
+        let id = "s232-table-style-border-size"
+        try await openFixtureDocument(server, id: id)
+        let result = await server.invokeToolForTesting(
+            name: "set_table_style",
+            arguments: ["doc_id": .string(id), "table_index": .int(0), "border_size": .string("4")]
+        )
+        XCTAssertEqual(result.isError, true)
+        XCTAssertTrue(resultText(result).contains("border_size"), resultText(result))
+    }
+
+    /// #232 R2 (Codex MEDIUM finding): `cell_col`'s type was only checked
+    /// when `cell_row` was also present — an `if let a = ..., let b = ...`
+    /// chain short-circuits, so `cell_col`'s `try optionalInt` was never
+    /// even evaluated when `cell_row` was absent.
+    func testSetTableStyleRejectsStringCellColEvenWithoutCellRow() async throws {
+        let server = await WordMCPServer()
+        let id = "s232-table-style-cell-col"
+        try await openFixtureDocument(server, id: id)
+        let result = await server.invokeToolForTesting(
+            name: "set_table_style",
+            arguments: ["doc_id": .string(id), "table_index": .int(0), "cell_col": .string("0")]
+        )
+        XCTAssertEqual(result.isError, true)
+        XCTAssertTrue(resultText(result).contains("cell_col"), resultText(result))
     }
 }
