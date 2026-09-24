@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   現在合併成一份 schema：`row_index` 標記單一列（未提供任一參數時預設 0，與先前唯一會執行的行為
   完全相同）；`row_count` 現在真的實作了「標記前 N 列」語意；兩者同時提供回傳參數錯誤，不再有任何
   參數被靜默忽略。加了 `tools/list` 名稱不得重複的一般性測試，以及兩種語意各自對照實際
-  `<w:tblHeader/>` 輸出的行為測試。
+  `<w:tblHeader/>` 輸出的行為測試，並驗證錯誤路徑不會造成任何文件變更（`row_count` 越界、為 0、為
+  負值、與 `row_index` 同時提供時皆同）。
 
 ## [4.3.0] - 2026-09-24
 

@@ -218,11 +218,18 @@ final class TablesHyperlinksHeadersToolsTests: XCTestCase {
     /// Supplying both row_index and row_count is ambiguous — the two dead
     /// schemas never agreed on precedence, so we refuse instead of silently
     /// picking one (per #230's "呼叫端不能在沒有錯誤訊息的情況下得到不同結果").
+    /// Also proves the rejected call is a true no-op: saving afterwards shows
+    /// no row was marked as header.
     func testSetHeaderRowRejectsBothRowIndexAndRowCount() async throws {
         let server = await WordMCPServer()
         let docId = "shr-230-both-\(UUID().uuidString)"
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shr-230-both-\(UUID().uuidString).docx")
+        defer {
+            Task { await discardDocument(server, id: docId) }
+            try? FileManager.default.removeItem(at: output)
+        }
         await openFreshDocument(server, id: docId)
-        defer { Task { await discardDocument(server, id: docId) } }
         await insertTable(server, docId: docId, rows: 3, cols: 2)
 
         let r = await server.invokeToolForTesting(name: "set_header_row", arguments: [
@@ -232,14 +239,31 @@ final class TablesHyperlinksHeadersToolsTests: XCTestCase {
             "row_count": .int(2)
         ])
         XCTAssertEqual(r.isError, true, "expected a parameter error: \(resultText(r))")
+
+        _ = await server.invokeToolForTesting(name: "save_document", arguments: [
+            "doc_id": .string(docId),
+            "path": .string(output.path)
+        ])
+        var reopened = try DocxReader.read(from: output)
+        defer { reopened.close() }
+        let table = try XCTUnwrap(reopened.getTables().first)
+        XCTAssertEqual(table.rows.map(\.properties.isHeader), [false, false, false],
+                        "a rejected call must not mutate the document")
     }
 
-    /// row_count outside 1...rows.count must error, not silently clamp or no-op.
+    /// row_count outside 1...rows.count must error, not silently clamp or
+    /// no-op, and (like the mutual-exclusivity case above) must not mutate
+    /// the document.
     func testSetHeaderRowRowCountOutOfBoundsReturnsError() async throws {
         let server = await WordMCPServer()
         let docId = "shr-230-oob-\(UUID().uuidString)"
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shr-230-oob-\(UUID().uuidString).docx")
+        defer {
+            Task { await discardDocument(server, id: docId) }
+            try? FileManager.default.removeItem(at: output)
+        }
         await openFreshDocument(server, id: docId)
-        defer { Task { await discardDocument(server, id: docId) } }
         await insertTable(server, docId: docId, rows: 2, cols: 2)
 
         let r = await server.invokeToolForTesting(name: "set_header_row", arguments: [
@@ -248,6 +272,42 @@ final class TablesHyperlinksHeadersToolsTests: XCTestCase {
             "row_count": .int(5)
         ])
         XCTAssertEqual(r.isError, true, "expected an out-of-bounds error: \(resultText(r))")
+
+        _ = await server.invokeToolForTesting(name: "save_document", arguments: [
+            "doc_id": .string(docId),
+            "path": .string(output.path)
+        ])
+        var reopened = try DocxReader.read(from: output)
+        defer { reopened.close() }
+        let table = try XCTUnwrap(reopened.getTables().first)
+        XCTAssertEqual(table.rows.map(\.properties.isHeader), [false, false],
+                        "a rejected call must not mutate the document")
+    }
+
+    /// row_count = 0 and negative row_count are both outside 1...rows.count
+    /// and must error, matching the dead schema's own documented bound
+    /// ("Row count must be between 1 and N") rather than being treated as
+    /// "no rows" or silently clamped.
+    func testSetHeaderRowRowCountZeroOrNegativeReturnsError() async throws {
+        let server = await WordMCPServer()
+        let docId = "shr-230-zero-\(UUID().uuidString)"
+        await openFreshDocument(server, id: docId)
+        defer { Task { await discardDocument(server, id: docId) } }
+        await insertTable(server, docId: docId, rows: 2, cols: 2)
+
+        let zero = await server.invokeToolForTesting(name: "set_header_row", arguments: [
+            "doc_id": .string(docId),
+            "table_index": .int(0),
+            "row_count": .int(0)
+        ])
+        XCTAssertEqual(zero.isError, true, "row_count=0 must error: \(resultText(zero))")
+
+        let negative = await server.invokeToolForTesting(name: "set_header_row", arguments: [
+            "doc_id": .string(docId),
+            "table_index": .int(0),
+            "row_count": .int(-1)
+        ])
+        XCTAssertEqual(negative.isError, true, "row_count=-1 must error: \(resultText(negative))")
     }
 
     func testSetTableIndent720TwipsAfterTask63() async throws {
