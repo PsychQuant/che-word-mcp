@@ -17,7 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `word reverse --paragraphs-only`：只匯出段落文字與 styleId，缺 `w14:paraId` 的段落依序合成 `p1`、`p2`…
   （`slots` 可指定這些 id）。
   - **不保證 byte-equal。** 表格等非段落 body 內容、run／段落格式、節設定、頁首頁尾、樣式定義與其他 parts
-    都不在腳本裡；重播只還原段落文字與 styleId，拿去 `execute_script` 做 `verify_byte_equal_against` 會失敗。
+    都不在腳本裡；重播只還原段落文字與 styleId。來源只要含被省略或改寫的內容，`execute_script` 的
+    `verify_byte_equal_against` 就會回報不符。
   - 回傳 JSON 另成一形：`paragraphs_only`、`byte_equal: false`、`omitted_body_blocks`（被略過的 body 區塊，
     依出現順序）、`slot_count`、`output_path`。不含 `dsl_parts` 與 `form_gaps_empty`：這條路徑沒有任何 part 經過
     byte-equal 證明，也沒有量 form gap。

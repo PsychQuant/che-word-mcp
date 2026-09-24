@@ -773,8 +773,9 @@ final class ScriptPipelineParityTests: XCTestCase {
     /// slot, and agree on the root cause that makes this path relevant.
     ///
     /// What is byte-identical here is the two faces' SCRIPTS. The rebuild a
-    /// paragraphs-only script produces is not byte-equal to its source
-    /// (pinned in Issue227ScriptCoverageReasonsTests). The MCP side is a port
+    /// paragraphs-only script produces is not guaranteed to be byte-equal to
+    /// its source (Issue227ScriptCoverageReasonsTests pins a case where it
+    /// is not). The MCP side is a port
     /// of the CLI's reverse loop, not a shared library call, so this test is
     /// the only thing guarding the two copies against drift.
     ///

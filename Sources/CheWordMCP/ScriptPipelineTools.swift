@@ -169,8 +169,9 @@ func scriptPipelineCoverage(sourcePath: String) throws -> ScriptCoverageReport {
 
 /// docx → paragraphs-only `.mdocx.swift` script, the MCP face of
 /// `macdoc word reverse --paragraphs-only` (#227). Paragraph text + styleId
-/// only; everything else is omitted and the rebuild is NOT byte-equal to the
-/// source. Strict slots and write-nothing-on-failure as on the default path.
+/// only; everything else is omitted and the rebuild is not guaranteed to be
+/// byte-equal to the source. Strict slots and write-nothing-on-failure as on
+/// the default path.
 func scriptPipelineExportParagraphsOnly(
     sourcePath: String,
     outputPath: String,
