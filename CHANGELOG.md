@@ -44,18 +44,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handler-scoped 版本。R2 另外修正 `set_table_style`：`border_size` 過去只在 `border_style` 一併
   提供時才被解析，`cell_col` 過去只在 `cell_row` 也提供時才被解析（`if let a = ..., let b = ...`
   短路求值，`b` 那句根本不會被求值）——單獨提供型別不符的 `border_size`／`cell_col` 會被完全略過、
-  不報錯。現在兩者一律先解析（驗證型別），只有是否「生效」仍依賴同伴參數是否存在。已知限制：這是
-  「多參數合成一個可選功能、群組內較早的可選繫結短路掉較晚繫結的型別檢查」這一類問題的其中兩個
-  具體案例，檔案裡還有約 31 處 `if let ... = try optionalInt/optionalBool(...)` 的組合繫結，
-  這次沒有逐一稽核；如有人擔心其餘案例，屬於另一個 issue 的範圍。
-  R3 審查另外具名指出同一大類、但不是「組合繫結」形狀的條件式讀取（同樣沒有修正，理由同上）：
-  `format_text` 的 `run_index` 只在 `as_revision: true` 時才被讀取；分頁邊界設定的自訂整數只在
-  非預設樣式分支才被讀取；`accept_all_revisions`／`reject_all_revisions` 的 `all: true` 分支
-  不會讀取 `revision_id`；`replyToComment` 的 `try (optionalInt(args, "comment_id") ??
-  optionalInt(args, "parent_comment_id"))`——`comment_id` 非 nil 時，`parent_comment_id` 型別
-  不符也不會被求值到（`??` 短路）。這些都是「參數在某些呼叫組合下對該次呼叫本來就無效，所以沒被
-  讀取」的既有設計，不是本次遷移新引入的落差；是否要求「即使無效也要先驗證型別」是比 #232 更廣的
-  規範問題，同樣留給後續 issue。
+  不報錯。現在兩者一律先解析（驗證型別），只有是否「生效」仍依賴同伴參數是否存在。
+  **R4 把 R3 點名的其餘條件式／短路讀取也一併修正**（原本記錄為已知限制，現已解決，不再是限制）：
+  `format_text` 的 `run_index`（原本只在 `as_revision: true` 時讀取）、`set_page_margins` 的
+  `top`／`right`／`bottom`／`left`（原本只在未提供 `preset` 時讀取）、`accept_revision`／
+  `reject_revision` 的 `revision_id`（原本只在 `all: true` 之外才讀取）、`replyToComment` 的
+  `try (optionalInt(args, "comment_id") ?? optionalInt(args, "parent_comment_id"))`（`??`
+  短路：`comment_id` 非 nil 時 `parent_comment_id` 型別不符不會被求值到）、`merge_cells` 的
+  `end_row`／`end_col`（原本只在對應的 `direction` case 才讀取）皆比照 `set_table_style` 的做法
+  改為無條件先解析驗證型別，「是否生效」（哪個必填、哪個被使用）維持原本依同伴參數／模式選擇的邏輯
+  不變。另外把 `insert_paragraph`／`insert_image_from_path`／`insert_equation` 的
+  `into_table_cell` 三個站點也改為三個欄位獨立解析（原本鏈式 `guard let a = ..., let b = ...,
+  let c = ... else { throw "requires all three fields" }` 會在 `table_index` 缺漏時短路，
+  使後面欄位的型別完全不會被求值——如果 `row` 型別不符但 `table_index` 也缺漏，過去只會看到通用的
+  「requires all three fields」，現在會先看到指名 `row` 的型別錯誤）；這三處本來就會在缺欄位時報錯
+  （不是靜默成功），這次修的是錯誤訊息的精確度，不是「靜默通過」的行為。
+  已知限制（R4 稽核後仍未修正，範圍認定不變）：`Server.swift` 裡還有約 25 處
+  `if let ... = try optionalInt/optionalBool(...)` 的多參數組合繫結未逐一稽核（原始約 31 處中，
+  `set_table_style`／`into_table_cell` × 3 已於 R2／R4 處理）；是否要求「即使該次呼叫用不到，
+  也要先驗證型別」對這些剩餘案例成立，是比 #232 本身更廣的規範問題，留給後續 issue 決定範圍後
+  逐一稽核。
   `replace_text_batch`／`search_text_batch` 的 per-item `regex`／`match_case`／`case_sensitive`
   型別檢查也在 R1 修正：原本被機械遷移放在該 item 的 `do`／`catch` 範圍**之外**，型別不符會直接
   拋出整個函式，不只中止該批次其餘項目，還會讓前面已經套用（但尚未 persist）的項目一併遺失——
@@ -76,6 +84,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   負值、與 `row_index` 同時提供時皆同）。
   當時記錄的已知限制（`row_index`／`row_count` 沿用檔案既有的 `args["x"]?.intValue` 慣例，型別不符
   的值與缺漏視為相同）已由上方 #232 解決。
+
+- **`DocumentProfileToolsTests` 兩個測試在 `swift test --parallel` 下不穩定**
+  （`testOpenOfficialAutosaveWordLockFailureRollsBackSessionAndAllowsRetry`、
+  `...WriteFailureRollsBackSessionAndAllowsRetry`）。根因：兩者透過「快照 ooxml-swift 的
+  `ZipHelper` 解壓縮暫存命名空間（`NSTemporaryDirectory()/che-word-mcp/`，一個寫死、跨行程共用、
+  無法從 che-word-mcp 這端重新導向的路徑——`NSTemporaryDirectory()` 刻意忽略 `TMPDIR`）前後兩次
+  目錄列表、比對新增項目是否為空」來驗證「失敗的 open 有釋放它解壓出來的暫存目錄」。`swift test
+  --parallel` 會把同一個測試 class 的不同測試方法（甚至只跑這一個 class）拆進不同的 worker
+  **行程**執行（已用 `swift test --parallel --filter DocumentProfileToolsTests` 反覆重現驗證），
+  而任何同時在跑、且會開啟／儲存任一份真實 `.docx` 的測試（包含同一個 class 的其他 10 個測試）都會
+  在同一個共用命名空間留下短暫的目錄項目，讓這個快照比對把「別人的暫時項目」誤判為「自己的洩漏」。
+  修法（非 retry、非放寬斷言）：(1) 新增一個跨行程的 `flock` advisory lock，`DocumentProfileToolsTests`
+  的 `setUp`／`tearDown` 一律持有，讓這個 class 的所有測試方法彼此互斥——`swift test --parallel`
+  仍可平行跑其他檔案，只有這一個 class 內部退回序列執行；(2) 把兩個測試原本「比對整個共用命名空間
+  的新增項目」的斷言，換成一個確定性的、只看單一路徑的檢查：`Server.swift` 的 `openDocument` 新增
+  一個 debug-log 事件（`openDocument.archiveExtracted`，只在 `forceDebugLogging` 開啟時記錄），
+  在 `DocxReader.read` 成功的當下記錄這次呼叫實際拿到的 `archiveTempDir` 路徑；測試改成透過
+  `debugEventLogForTesting()` 取出這次失敗呼叫真正對應的那一個路徑，直接斷言「這個路徑不存在」，
+  不再依賴對整個共用目錄做前後 diff。另外新增一個獨立、非計時相依的示範測試
+  （`testSharedArchiveNamespaceSnapshotDiffIsFooledByAnUnrelatedConcurrentEntry`），在同一個
+  行程內人為製造一個「與 che-word-mcp 無關」的暫存項目，證明舊技術（前後 diff 整個共用目錄）在
+  結構上就分辨不出「別人的雜訊」與「自己的洩漏」——這個測試本身不受 lock 保護（故意的），驗證的是
+  機制本身，不是修法本身。修法後以 `swift test --parallel`（全套件與單獨 filter 這個 class 兩種）
+  各連續跑 5 次以上皆為綠燈；`swift test`（不帶 `--parallel`）同樣全綠。
 
 ## [4.3.0] - 2026-09-24
 

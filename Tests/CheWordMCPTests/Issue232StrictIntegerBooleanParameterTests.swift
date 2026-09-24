@@ -765,4 +765,125 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         XCTAssertEqual(result.isError, true)
         XCTAssertTrue(resultText(result).contains("cell_col"), resultText(result))
     }
+
+    // MARK: - R4: remaining conditional / short-circuited reads
+
+    /// `set_page_margins`'s custom top/right/bottom/left used to be parsed
+    /// only in the `else` branch of the `preset` gate — a mistyped `top`
+    /// supplied ALONGSIDE `preset` was silently never read.
+    func testSetPageMarginsRejectsStringTopEvenWithPreset() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r4-page-margins"
+        try await openFixtureDocument(server, id: id)
+        let result = await server.invokeToolForTesting(
+            name: "set_page_margins",
+            arguments: ["doc_id": .string(id), "preset": .string("normal"), "top": .string("1000")]
+        )
+        XCTAssertEqual(result.isError, true)
+        XCTAssertTrue(resultText(result).contains("top"), resultText(result))
+    }
+
+    /// `format_text`'s `run_index` used to be parsed only inside the
+    /// `if asRevision` block — a mistyped `run_index` supplied without
+    /// `as_revision:true` was silently never read.
+    func testFormatTextRejectsStringRunIndexEvenWithoutAsRevision() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r4-format-text-run-index"
+        try await openFixtureDocument(server, id: id)
+        let result = await server.invokeToolForTesting(
+            name: "format_text",
+            arguments: ["doc_id": .string(id), "paragraph_index": .int(0), "run_index": .string("0")]
+        )
+        XCTAssertEqual(result.isError, true)
+        XCTAssertTrue(resultText(result).contains("run_index"), resultText(result))
+    }
+
+    /// `accept_revision`'s `revision_id` used to be parsed only in the
+    /// `else` branch of the `all` gate — a mistyped `revision_id` supplied
+    /// alongside `all:true` was silently never read.
+    func testAcceptRevisionRejectsStringRevisionIdEvenWithAllTrue() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r4-accept-revision"
+        try await openFixtureDocument(server, id: id)
+        let result = await server.invokeToolForTesting(
+            name: "accept_revision",
+            arguments: ["doc_id": .string(id), "all": .bool(true), "revision_id": .string("1")]
+        )
+        XCTAssertEqual(result.isError, true)
+        XCTAssertTrue(resultText(result).contains("revision_id"), resultText(result))
+    }
+
+    /// Same shape as above, for `reject_revision`.
+    func testRejectRevisionRejectsStringRevisionIdEvenWithAllTrue() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r4-reject-revision"
+        try await openFixtureDocument(server, id: id)
+        let result = await server.invokeToolForTesting(
+            name: "reject_revision",
+            arguments: ["doc_id": .string(id), "all": .bool(true), "revision_id": .string("1")]
+        )
+        XCTAssertEqual(result.isError, true)
+        XCTAssertTrue(resultText(result).contains("revision_id"), resultText(result))
+    }
+
+    /// `reply_to_comment`'s `comment_id ?? parent_comment_id` used to
+    /// short-circuit on a non-nil `comment_id`, so a mistyped
+    /// `parent_comment_id` supplied alongside a valid `comment_id` was
+    /// silently never validated.
+    func testReplyToCommentRejectsStringParentCommentIdEvenWithValidCommentId() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r4-reply-comment"
+        try await openFixtureDocument(server, id: id)
+        try await insertFixtureComment(server, id: id)
+        let result = await server.invokeToolForTesting(
+            name: "reply_to_comment",
+            arguments: [
+                "doc_id": .string(id), "comment_id": .int(0), "parent_comment_id": .string("0"),
+                "text": .string("reply"),
+            ]
+        )
+        XCTAssertEqual(result.isError, true)
+        XCTAssertTrue(resultText(result).contains("parent_comment_id"), resultText(result))
+    }
+
+    /// `merge_cells`'s `end_row`/`end_col` used to be parsed only inside
+    /// their own `direction` switch case — a mistyped `end_row` supplied
+    /// with `direction:"horizontal"` (which never reads `end_row`) was
+    /// silently never validated.
+    func testMergeCellsRejectsStringEndRowEvenWithHorizontalDirection() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r4-merge-cells"
+        try await openFixtureDocument(server, id: id)
+        let result = await server.invokeToolForTesting(
+            name: "merge_cells",
+            arguments: [
+                "doc_id": .string(id), "table_index": .int(0), "direction": .string("horizontal"),
+                "row": .int(0), "col": .int(0), "end_col": .int(1), "end_row": .string("1"),
+            ]
+        )
+        XCTAssertEqual(result.isError, true)
+        XCTAssertTrue(resultText(result).contains("end_row"), resultText(result))
+    }
+
+    /// `insert_paragraph`'s `into_table_cell.row` used to be unreachable
+    /// (never evaluated, so never type-checked) when `table_index` in the
+    /// same dict was absent — a chained `guard let a = ..., let b = ...`
+    /// short-circuits on the first nil. Independent parsing means a
+    /// wrong-typed `row` is now caught and named even though `table_index`
+    /// is missing from the same dict.
+    func testInsertParagraphNamesRowTypeErrorEvenWhenTableIndexIsAbsentFromIntoTableCell() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r4-into-table-cell-precision"
+        try await openFixtureDocument(server, id: id)
+        let result = await server.invokeToolForTesting(
+            name: "insert_paragraph",
+            arguments: [
+                "doc_id": .string(id),
+                "text": .string("cell text"),
+                "into_table_cell": .object(["row": .string("0"), "col": .int(0)]),
+            ]
+        )
+        XCTAssertEqual(result.isError, true)
+        XCTAssertTrue(resultText(result).contains("row"), resultText(result))
+    }
 }
