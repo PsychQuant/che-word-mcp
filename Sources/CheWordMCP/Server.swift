@@ -253,7 +253,7 @@ actor WordMCPServer {
         self.documentProfileStore = DocumentProfileStore(configURL: documentConfigURL ?? DocumentProfileStore.defaultConfigURL)
         self.server = Server(
             name: "che-word-mcp",
-            version: "4.1.0",
+            version: "4.2.0",
             instructions: Self.serverInstructions,
             capabilities: .init(tools: .init())
         )
