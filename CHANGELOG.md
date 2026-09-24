@@ -30,6 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     （需 `MACDOC_CLI_PATH`；有 `MACDOC_TEMPLATE_DIR` 時連 JPA 範本一起比）。這項檢查只比兩個入口產出的腳本，
     不代表腳本重播後與原檔 byte-equal。
 
+### Changed
+
+- ooxml-swift 下限提高到 **3.11.0**（PsychQuant/macdoc#212、#213、#214）。格式 profile 的 `importOfficial` 改依
+  `word/_rels/document.xml.rels` 解析 styles／theme／fontTable；匯入只接受 UTF-8；缺欄位的錯誤會指名欄位並附修法。
+  **沒有 rels part 的合成範本現在會被拒絕**（真實的 Word 範本都有 rels）；本 repo 的測試 fixture 已補上。
+
 ## [4.2.0] - 2026-09-24
 
 > 新增兩個工具，屬於向下相容的新功能，bump minor。
