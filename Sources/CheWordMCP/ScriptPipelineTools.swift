@@ -8,6 +8,10 @@
 // layer reimplements ZERO transcode logic; behavior parity with the CLI is
 // structural, and the parity tests in ScriptPipelineParityTests only guard it.
 //
+// One exception (#227): the paragraphs-only reverse loop lives in the macdoc
+// CLI rather than in ooxml-swift, so `paragraphsOnlyReverse` is a port. For
+// that path the gated cross-check is the guard, not a backstop.
+//
 // Registration (Tool entries + handleToolCall cases) lives in Server.swift,
 // following the MarkdownExportTools satellite-file precedent.
 
@@ -33,6 +37,21 @@ struct ScriptCoverageRow: Sendable {
     let bytes: Int
     /// DSL share of this part's bytes in [0, 1].
     let dslRatio: Double
+    /// Why this part stayed on the raw channel: ReverseExtractor.rawReasons
+    /// passed through verbatim (#227). nil when no reason was computed, which
+    /// is the case for every DSL part.
+    let rawReason: String?
+}
+
+/// Summary of a paragraphs-only export (#227). Deliberately a different
+/// shape from ScriptExportSummary: this path proves nothing byte-equal and
+/// measures no form gaps, so it has no dslParts / formGapsEmpty to report.
+struct ParagraphsOnlyExportSummary: Sendable {
+    /// Body-level blocks the paragraphs-only reverse skipped, one entry per
+    /// occurrence in document order ("table", "contentControl", …).
+    let omittedBodyBlocks: [String]
+    /// Number of slot designations baked into the exported script.
+    let slotCount: Int
 }
 
 struct ScriptCoverageReport: Sendable {
@@ -58,6 +77,22 @@ func describeTranscodeError(_ error: TranscodeError) -> String {
         return "slot「\(name)」無法建立: \(reason)"
     case .rawSlotExecutionFailure(let name, let reason):
         return "raw slot「\(name)」執行失敗: \(reason)"
+    }
+}
+
+/// paragraphs-only export refused because an oplog sidecar sits next to the
+/// source (#227). `macdoc word reverse` exports the sidecar log whenever one
+/// exists, ignoring --paragraphs-only; export_script does not read sidecars,
+/// so for this input it cannot produce the script the CLI produces. Refusing
+/// keeps the two faces from silently diverging.
+struct ParagraphsOnlySidecarConflict: LocalizedError {
+    let sidecarPath: String
+
+    var errorDescription: String? {
+        "來源檔旁有 oplog sidecar（\(sidecarPath)，或同目錄的 legacy <stem>.oplog.jsonl），未寫出任何檔案。"
+            + "macdoc word reverse 在這種情況會改匯出 sidecar 的操作紀錄、忽略 --paragraphs-only；"
+            + "export_script 不讀 sidecar，產不出同一份腳本，所以拒絕 paragraphs_only。"
+            + "要段落腳本請先移開 sidecar；要 sidecar 的腳本請改用 macdoc word reverse。"
     }
 }
 
@@ -126,9 +161,85 @@ func scriptPipelineCoverage(sourcePath: String) throws -> ScriptCoverageReport {
                 partPath: part.partPath,
                 channel: part.dslBytes > 0 ? "dsl" : "raw",
                 bytes: part.dslBytes + part.rawBytes,
-                dslRatio: part.coverageRatio)
+                dslRatio: part.coverageRatio,
+                rawReason: result.rawReasons[part.partPath])
         },
         aggregateRatio: report.aggregateRatio)
+}
+
+/// docx → paragraphs-only `.mdocx.swift` script, the MCP face of
+/// `macdoc word reverse --paragraphs-only` (#227). Paragraph text + styleId
+/// only; everything else is omitted and the rebuild is NOT byte-equal to the
+/// source. Strict slots and write-nothing-on-failure as on the default path.
+func scriptPipelineExportParagraphsOnly(
+    sourcePath: String,
+    outputPath: String,
+    slots: [SlotDesignation] = []
+) throws -> ParagraphsOnlyExportSummary {
+    let sourceURL = URL(fileURLWithPath: sourcePath)
+    guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+        throw ScriptPipelineError.fileNotFound(sourcePath)
+    }
+    // Same lookup the CLI uses to decide it will export the sidecar instead.
+    if try SidecarStore.loadLog(alongside: sourceURL) != nil {
+        throw ParagraphsOnlySidecarConflict(
+            sidecarPath: SidecarStore.oplogURL(for: sourceURL).path)
+    }
+    let reversed = try paragraphsOnlyReverse(from: sourceURL)
+    let source = try ScriptExporter.exportSwift(log: reversed.log, slots: slots)
+    try source.write(to: URL(fileURLWithPath: outputPath),
+                     atomically: true, encoding: .utf8)
+    return ParagraphsOnlyExportSummary(
+        omittedBodyBlocks: reversed.omittedBodyBlocks,
+        slotCount: slots.count)
+}
+
+/// Builds the paragraphs-only authoring log from the docx typed views.
+///
+/// PORT, not a shared call: this is a line-for-line copy of
+/// `MacDoc.Word.Reverse.reverseEngineer(from:)` (macdoc v0.10.0,
+/// Sources/MacDocCLI/MacDoc+Word.swift). Unlike the full-fidelity path, that
+/// logic lives in the CLI, not in ooxml-swift, so the two faces cannot share
+/// it structurally until it is hoisted into the library. Until then the
+/// gated cross-check in ScriptPipelineParityTests is what guards
+/// byte-identical scripts — change both copies together.
+///
+/// The one deliberate difference is the skipped-block label: the CLI prints
+/// `String(describing:).prefix(30)` to stderr; here the case name alone is
+/// returned. It is informational only and never reaches the script.
+func paragraphsOnlyReverse(from url: URL) throws
+    -> (log: OperationLog, omittedBodyBlocks: [String])
+{
+    let document = try DocxReader.read(from: url, wireTreeBackedViews: true)
+    var log = OperationLog()
+    var omitted: [String] = []
+
+    var paragraphIndex = 0
+    for child in document.body.children {
+        switch child {
+        case .paragraph(let paragraph):
+            paragraphIndex += 1
+            var paraId: String?
+            if let raw = paragraph.elementID?.raw,
+               raw.hasPrefix("w14:paraId=") {
+                paraId = String(raw.dropFirst("w14:paraId=".count))
+            }
+            // Paragraphs without a w14:paraId get a synthesized sequential
+            // id (p<N>, N counts every top-level paragraph from 1) so the
+            // script uses DSL Paragraph blocks and slots can target them.
+            log.append(.appendParagraph(in: nil, paragraph: ParagraphPayload(
+                text: paragraph.text,
+                styleId: paragraph.properties.style,
+                paraId: paraId ?? "p\(paragraphIndex)")), source: .swift)
+        case .table:
+            omitted.append("table")
+        default:
+            let described = String(describing: child)
+            omitted.append(described.split(separator: "(", maxSplits: 1)
+                .first.map(String.init) ?? described)
+        }
+    }
+    return (log, omitted)
 }
 
 
@@ -170,19 +281,38 @@ extension WordMCPServer {
                 slots.append(SlotDesignation(name: name, paraId: paraId))
             }
         }
-        let summary: ScriptExportSummary
-        do {
-            summary = try scriptPipelineExport(
-                sourcePath: sourcePath, outputPath: outputPath, slots: slots)
-        } catch let error as TranscodeError {
-            // Strict mode: surface the transcoder's location/name-bearing
-            // reason (B2). Attribution split per verify R2 #1: only a
-            // designation failure is a `slots` problem — any other
-            // TranscodeError came from processing the SOURCE document.
-            if case .slotDesignationFailure = error {
-                throw WordError.invalidParameter("slots", describeTranscodeError(error))
+        // #227: same strict typing as the other optional parameters —
+        // present-but-mistyped errors, explicit null counts as absent.
+        var paragraphsOnly = false
+        if let rawFlag = args["paragraphs_only"], rawFlag != .null {
+            guard let flag = rawFlag.boolValue else {
+                throw WordError.invalidParameter(
+                    "paragraphs_only", "必須是布林值（收到非布林型別）")
             }
-            throw WordError.invalidParameter("source_path", describeTranscodeError(error))
+            paragraphsOnly = flag
+        }
+
+        if paragraphsOnly {
+            let summary = try Self.mappingTranscodeErrors {
+                try scriptPipelineExportParagraphsOnly(
+                    sourcePath: sourcePath, outputPath: outputPath, slots: slots)
+            }
+            // A separate response shape on purpose: no dsl_parts (nothing is
+            // byte-equal-proven) and no form_gaps_empty (not measured), plus
+            // an explicit byte_equal:false so no caller can read this as the
+            // full-fidelity result.
+            return try scriptPipelineJSON([
+                "paragraphs_only": true,
+                "byte_equal": false,
+                "omitted_body_blocks": summary.omittedBodyBlocks,
+                "slot_count": summary.slotCount,
+                "output_path": outputPath,
+            ])
+        }
+
+        let summary = try Self.mappingTranscodeErrors {
+            try scriptPipelineExport(
+                sourcePath: sourcePath, outputPath: outputPath, slots: slots)
         }
         return try scriptPipelineJSON([
             "dsl_parts": summary.dslParts,
@@ -192,6 +322,21 @@ extension WordMCPServer {
         ])
     }
 
+    /// Strict mode: surface the transcoder's location/name-bearing reason
+    /// (B2). Attribution split per verify R2 #1: only a designation failure
+    /// is a `slots` problem — any other TranscodeError came from processing
+    /// the SOURCE document. Shared by both export_script paths (#227).
+    private static func mappingTranscodeErrors<T>(_ body: () throws -> T) throws -> T {
+        do {
+            return try body()
+        } catch let error as TranscodeError {
+            if case .slotDesignationFailure = error {
+                throw WordError.invalidParameter("slots", describeTranscodeError(error))
+            }
+            throw WordError.invalidParameter("source_path", describeTranscodeError(error))
+        }
+    }
+
     func getScriptCoverageTool(args: [String: Value]) async throws -> String {
         guard let sourcePath = args["source_path"]?.stringValue else {
             throw WordError.missingParameter("source_path")
@@ -199,12 +344,18 @@ extension WordMCPServer {
         let report = try scriptPipelineCoverage(sourcePath: sourcePath)
         return try scriptPipelineJSON([
             "parts": report.parts.map { row in
-                [
+                var entry: [String: Any] = [
                     "part_path": row.partPath,
                     "channel": row.channel,
                     "bytes": row.bytes,
                     "dsl_ratio": row.dslRatio,
-                ] as [String: Any]
+                ]
+                // #227: absent, never null, when no reason was computed —
+                // DSL rows keep exactly their pre-#227 shape.
+                if let reason = row.rawReason {
+                    entry["raw_reason"] = reason
+                }
+                return entry
             },
             "aggregate_ratio": report.aggregateRatio,
         ])

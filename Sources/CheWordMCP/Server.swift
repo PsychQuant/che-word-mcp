@@ -570,6 +570,12 @@ actor WordMCPServer {
         }
     }
 
+    /// Tool definitions as `tools/list` would serve them, so tests can pin
+    /// descriptions and schemas without scraping the source (#227).
+    func toolsForTesting() -> [Tool] {
+        allTools
+    }
+
     func isDocumentDirtyForTesting(_ docId: String) -> Bool {
         isDirty(docId: docId)
     }
@@ -6103,7 +6109,7 @@ actor WordMCPServer {
             // (handlers in ScriptPipelineTools.swift, design Decision 1/5).
             Tool(
                 name: "export_script",
-                description: "docx → full-fidelity .mdocx.swift 重建腳本（與 macdoc word reverse 同一條 transcoder code path：raw byte-equal floor + typed DSL 升級）。可選 slots 指定具名內容槽（strict mode：指定失敗即錯誤、不寫檔）。回傳 JSON summary（dsl_parts / form_gaps_empty / slot_count / output_path）。DSL 升級邊界：只有 word/document.xml 嘗試 DSL 升級（sibling parts 一律 raw by design），且為 part-level 全有全無——本 MCP 自產（ooxml-swift 1.5.0+）與真實 Word 的純段落文件可升級；文件內含 rich table 或 legacy 無 w14:paraId 段落時整個 part 停留 raw channel（byte-equal 可重播、不可讀編輯）。",
+                description: "docx → full-fidelity .mdocx.swift 重建腳本（與 macdoc word reverse 同一條 transcoder code path：raw byte-equal floor + typed DSL 升級）。可選 slots 指定具名內容槽（strict mode：指定失敗即錯誤、不寫檔）。回傳 JSON summary（dsl_parts / form_gaps_empty / slot_count / output_path）。DSL 升級邊界：只有 word/document.xml 嘗試 DSL 升級（sibling parts 一律 raw by design），且為 part-level 全有全無——本 MCP 自產（ooxml-swift 1.5.0+）與真實 Word 的純段落文件可升級；文件內含 rich table 或 legacy 無 w14:paraId 段落時整個 part 停留 raw channel（byte-equal 可重播、不可讀編輯）。paragraphs_only=true 是另一條路徑，對應 macdoc word reverse --paragraphs-only：只匯出段落文字與 styleId，缺 w14:paraId 的段落依序合成 id（p1、p2…，N 計入所有 body 頂層段落，slots 可指定這些 id）；表格、content control 等非段落 body 內容，以及 run／段落格式、節設定、頁首頁尾、樣式定義與其他 parts 一律省略。這條路徑不保證 byte-equal：重播只還原段落文字與 styleId，拿去 execute_script 做 verify_byte_equal_against 會失敗。回傳 JSON 改為（paragraphs_only / byte_equal:false / omitted_body_blocks / slot_count / output_path），不含 dsl_parts 與 form_gaps_empty。來源檔旁有 oplog sidecar 時拒絕執行：CLI 此時會改匯出 sidecar，export_script 不讀 sidecar，產不出同一份腳本。適用時機：get_script_coverage 顯示 word/document.xml 的 raw_reason 為 paragraph-no-paraId，且需要可讀腳本或 slot；其他 raw_reason 沒有這條替代路徑。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -6126,6 +6132,10 @@ actor WordMCPServer {
                                 ]),
                                 "required": .array([.string("name"), .string("para_id")])
                             ])
+                        ]),
+                        "paragraphs_only": .object([
+                            "type": .string("boolean"),
+                            "description": .string("true 時只匯出段落文字與 styleId（同 macdoc word reverse --paragraphs-only），省略表格等非段落內容、格式與其他 parts，不保證 byte-equal。預設 false（full-fidelity，輸出與不帶此參數時相同）")
                         ])
                     ]),
                     "required": .array([.string("source_path"), .string("output_path")])
@@ -6134,7 +6144,7 @@ actor WordMCPServer {
 
             Tool(
                 name: "get_script_coverage",
-                description: "docx 的 dual-track 覆蓋率報告（與 macdoc word reverse --coverage 同數字）：每個 XML part 的 DSL/raw channel、位元組數、DSL ratio，加 aggregate。回傳 JSON。注意：只有 word/document.xml 會嘗試 DSL 升級（sibling parts 一律 raw by design），且升級是 part-level 全有全無——文件內含 rich table 或 legacy 無 w14:paraId 段落時，整個 document.xml 降 raw（非 subtree 局部降級）。",
+                description: "docx 的 dual-track 覆蓋率報告（與 macdoc word reverse --coverage 同數字）：每個 XML part 的 DSL/raw channel、位元組數、DSL ratio，加 aggregate。回傳 JSON。注意：只有 word/document.xml 會嘗試 DSL 升級（sibling parts 一律 raw by design），且升級是 part-level 全有全無——文件內含 rich table 或 legacy 無 w14:paraId 段落時，整個 document.xml 降 raw（非 subtree 局部降級）。落 raw 的 part 另帶 raw_reason：ReverseExtractor 算出的根因原樣透傳（例如 sibling-part、table、paragraph-no-paraId、byte-mismatch）；DSL part 不帶這個欄位。只有 word/document.xml 的 raw_reason 為 paragraph-no-paraId 時有替代路徑：export_script 帶 paragraphs_only=true，可取得可讀的段落腳本與 slot，代價是省略其他內容、不保證 byte-equal。其他根因沒有這條路。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
