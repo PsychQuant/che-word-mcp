@@ -6933,6 +6933,16 @@ actor WordMCPServer {
 
         let url = URL(fileURLWithPath: path)
         var doc = try DocxReader.read(from: url)
+        // #232 R4 test seam: records which extracted-archive path THIS open
+        // attempt owns, the moment DocxReader.read succeeds — independent of
+        // whether the rest of this call later fails and rolls the session
+        // back. Lets a test assert on that ONE specific path's fate instead
+        // of diffing ooxml-swift's shared, unscoped `che-word-mcp` temp
+        // namespace (which every concurrently-running test that touches any
+        // real .docx also writes into, and which nothing here can redirect
+        // per-test — see DocumentProfileToolsTests.swift's root-cause doc
+        // comment). No-op unless debug logging is enabled.
+        logDebug(event: "openDocument.archiveExtracted", [("doc_id", docId), ("archive_temp_dir", doc.archiveTempDir?.path ?? "nil")])
         do {
             if let profile { try doc.applyFormattingProfile(profile, context: .existingDocument) }
         } catch {
@@ -7510,9 +7520,15 @@ actor WordMCPServer {
 
         if let cellDict = args["into_table_cell"]?.objectValue {
             // F5 (v3.15.1): malformed partial dict returns structured error instead of silent fallthrough.
-            guard let tableIdx = try optionalInt(cellDict, "table_index"),
-                  let row = try optionalInt(cellDict, "row"),
-                  let col = try optionalInt(cellDict, "col") else {
+            // #232 R4: each field parsed independently (not chained in one
+            // guard) so a wrong-typed field is always caught, even when an
+            // earlier field in the dict happens to be absent — a chained
+            // `guard let a = ..., let b = ...` short-circuits on the first
+            // nil and never evaluates b at all.
+            let tableIdxArg = try optionalInt(cellDict, "table_index")
+            let rowArg = try optionalInt(cellDict, "row")
+            let colArg = try optionalInt(cellDict, "col")
+            guard let tableIdx = tableIdxArg, let row = rowArg, let col = colArg else {
                 throw ToolRefusal("insert_paragraph: into_table_cell requires all three fields (table_index, row, col); got partial dict")
             }
             do {
@@ -7828,8 +7844,11 @@ actor WordMCPServer {
 
         // v3.12.0+ (#45): per-call opt-in for revision-tracked formatting.
         let asRevision = try optionalBool(args, "as_revision") ?? false
+        // #232 R4: parsed before the as_revision gate — a mistyped run_index
+        // supplied without as_revision:true used to be silently ignored.
+        let runIndexIfPresent = try optionalInt(args, "run_index")
         if asRevision {
-            let runIndex = try optionalInt(args, "run_index") ?? 0
+            let runIndex = runIndexIfPresent ?? 0
             let author = args["author"]?.stringValue
             let date = parseISODate(args["date"]?.stringValue)
             // Index exactly as applyRunPropertiesAsRevision and formatParagraph
@@ -8243,15 +8262,27 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
+        // #232 R4: all four parsed unconditionally, before the direction
+        // switch — a mistyped end_row supplied with direction:"horizontal"
+        // (or a mistyped end_col with direction:"vertical") used to be
+        // silently ignored, since each switch case only ever read the
+        // fields relevant to its own direction. Which ones are REQUIRED
+        // still depends on direction; only the type validation is now
+        // unconditional.
+        let rowArg = try optionalInt(args, "row")
+        let colArg = try optionalInt(args, "col")
+        let endColArg = try optionalInt(args, "end_col")
+        let endRowArg = try optionalInt(args, "end_row")
+
         switch direction.lowercased() {
         case "horizontal":
-            guard let row = try optionalInt(args, "row") else {
+            guard let row = rowArg else {
                 throw WordError.missingParameter("row")
             }
-            guard let col = try optionalInt(args, "col") else {
+            guard let col = colArg else {
                 throw WordError.missingParameter("col")
             }
-            guard let endCol = try optionalInt(args, "end_col") else {
+            guard let endCol = endColArg else {
                 throw WordError.missingParameter("end_col")
             }
             try doc.mergeCellsHorizontal(tableIndex: tableIndex, row: row, startCol: col, endCol: endCol)
@@ -8259,13 +8290,13 @@ actor WordMCPServer {
             return "Merged cells horizontally: row \(row), columns \(col) to \(endCol)"
 
         case "vertical":
-            guard let row = try optionalInt(args, "row") else {
+            guard let row = rowArg else {
                 throw WordError.missingParameter("row")
             }
-            guard let col = try optionalInt(args, "col") else {
+            guard let col = colArg else {
                 throw WordError.missingParameter("col")
             }
-            guard let endRow = try optionalInt(args, "end_row") else {
+            guard let endRow = endRowArg else {
                 throw WordError.missingParameter("end_row")
             }
             try doc.mergeCellsVertical(tableIndex: tableIndex, col: col, startRow: row, endRow: endRow)
@@ -8599,16 +8630,20 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
+        // #232 R4: parse the custom margins unconditionally, before the
+        // preset gate — a mistyped top/right/bottom/left supplied ALONGSIDE
+        // preset used to be silently ignored (never read at all) instead of
+        // erroring, same class of bug as set_table_style's border_size.
+        let top = try optionalInt(args, "top")
+        let right = try optionalInt(args, "right")
+        let bottom = try optionalInt(args, "bottom")
+        let left = try optionalInt(args, "left")
+
         // 優先使用預設名稱
         if let preset = args["preset"]?.stringValue {
             try doc.setPageMargins(name: preset)
         } else {
             // 使用自訂值
-            let top = try optionalInt(args, "top")
-            let right = try optionalInt(args, "right")
-            let bottom = try optionalInt(args, "bottom")
-            let left = try optionalInt(args, "left")
-
             doc.setPageMargins(top: top, right: right, bottom: bottom, left: left)
         }
 
@@ -8923,9 +8958,15 @@ actor WordMCPServer {
         }
         if let cellDict = args["into_table_cell"]?.objectValue {
             // F5 (v3.15.1): malformed partial dict returns structured error instead of silent fallthrough.
-            guard let tableIdx = try optionalInt(cellDict, "table_index"),
-                  let row = try optionalInt(cellDict, "row"),
-                  let col = try optionalInt(cellDict, "col") else {
+            // #232 R4: each field parsed independently (not chained in one
+            // guard) so a wrong-typed field is always caught, even when an
+            // earlier field in the dict happens to be absent — a chained
+            // `guard let a = ..., let b = ...` short-circuits on the first
+            // nil and never evaluates b at all.
+            let tableIdxArg = try optionalInt(cellDict, "table_index")
+            let rowArg = try optionalInt(cellDict, "row")
+            let colArg = try optionalInt(cellDict, "col")
+            guard let tableIdx = tableIdxArg, let row = rowArg, let col = colArg else {
                 throw ToolRefusal("insert_image_from_path: into_table_cell requires all three fields (table_index, row, col); got partial dict")
             }
             do {
@@ -9635,13 +9676,16 @@ actor WordMCPServer {
         }
 
         let acceptAll = try optionalBool(args, "all") ?? false
+        // #232 R4: parsed before the acceptAll gate — a mistyped revision_id
+        // supplied alongside all:true used to be silently ignored.
+        let revisionIdIfPresent = try optionalInt(args, "revision_id")
 
         if acceptAll {
             doc.acceptAllRevisions()
             try await storeDocument(doc, for: docId)
             return "Accepted all revisions"
         } else {
-            guard let revisionId = try optionalInt(args, "revision_id") else {
+            guard let revisionId = revisionIdIfPresent else {
                 throw WordError.missingParameter("revision_id")
             }
             try doc.acceptRevision(revisionId: revisionId)
@@ -9659,13 +9703,16 @@ actor WordMCPServer {
         }
 
         let rejectAll = try optionalBool(args, "all") ?? false
+        // #232 R4: parsed before the rejectAll gate — a mistyped revision_id
+        // supplied alongside all:true used to be silently ignored.
+        let revisionIdIfPresent = try optionalInt(args, "revision_id")
 
         if rejectAll {
             doc.rejectAllRevisions()
             try await storeDocument(doc, for: docId)
             return "Rejected all revisions"
         } else {
-            guard let revisionId = try optionalInt(args, "revision_id") else {
+            guard let revisionId = revisionIdIfPresent else {
                 throw WordError.missingParameter("revision_id")
             }
             try doc.rejectRevision(revisionId: revisionId)
@@ -9989,9 +10036,15 @@ actor WordMCPServer {
         let anchorInfo: String
         if displayMode, let cellDict = intoTableCellDict {
             // F5 (v3.15.1): malformed partial dict returns structured error.
-            guard let tableIdx = try optionalInt(cellDict, "table_index"),
-                  let row = try optionalInt(cellDict, "row"),
-                  let col = try optionalInt(cellDict, "col") else {
+            // #232 R4: each field parsed independently (not chained in one
+            // guard) so a wrong-typed field is always caught, even when an
+            // earlier field in the dict happens to be absent — a chained
+            // `guard let a = ..., let b = ...` short-circuits on the first
+            // nil and never evaluates b at all.
+            let tableIdxArg = try optionalInt(cellDict, "table_index")
+            let rowArg = try optionalInt(cellDict, "row")
+            let colArg = try optionalInt(cellDict, "col")
+            guard let tableIdx = tableIdxArg, let row = rowArg, let col = colArg else {
                 throw ToolRefusal("insert_equation: into_table_cell requires all three fields (table_index, row, col); got partial dict")
             }
             location = .intoTableCell(tableIndex: tableIdx, row: row, col: col)
@@ -10501,7 +10554,12 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let commentId = try (optionalInt(args, "comment_id") ?? optionalInt(args, "parent_comment_id")) else {
+        // #232 R4: both parsed unconditionally — `??` used to short-circuit
+        // on a non-nil comment_id, so a present-but-mistyped
+        // parent_comment_id was silently never validated.
+        let commentIdArg = try optionalInt(args, "comment_id")
+        let parentCommentIdArg = try optionalInt(args, "parent_comment_id")
+        guard let commentId = commentIdArg ?? parentCommentIdArg else {
             throw WordError.missingParameter("comment_id")
         }
         guard let replyText = try resolveCommentReplyText(args: args) else {
