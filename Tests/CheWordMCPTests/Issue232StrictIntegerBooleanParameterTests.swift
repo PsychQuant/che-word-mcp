@@ -14,20 +14,46 @@ import OOXMLSwift
 /// call silently fell back to `row_index=0` instead of erroring.
 ///
 /// Three independent layers, matching che-pptx-mcp#5 / che-pptx-mcp#10:
-///  (A) direct unit tests of `optionalInt`/`optionalBool` themselves —
-///      exhaustive over the JSON type space, no document fixture needed.
-///  (B) a schema-driven source sweep — every `"type": "integer"` /
+///  (A) direct unit tests of `optionalInt`/`optionalBool` themselves — every
+///      JSON `Value` case that isn't the expected one (string/bool/array/
+///      object for `optionalInt`; string/int/array/object for
+///      `optionalBool`), plus the numeric edge cases (fractional, NaN,
+///      ±Infinity, out-of-`Int`-range), no document fixture needed.
+///  (B) a schema-driven source sweep — every top-level `"type": "integer"` /
 ///      `"type": "boolean"` property in `tools/list` must NOT be read via the
 ///      unsafe `ident["key"]?.intValue` / `ident["key"]?.boolValue` pattern
-///      anywhere in Sources/, and (with two documented exceptions) must have
-///      a matching `optionalInt(..., "key")` / `optionalBool(..., "key")`
-///      call site. This is what fails when a future contributor adds a new
-///      integer/boolean parameter and reads it the old way.
+///      anywhere in Sources/, and (with the documented exceptions in
+///      `testEveryIntegerAndBooleanSchemaParameterHasAStrictReader` below)
+///      must have a matching `optionalInt(..., "key")` /
+///      `optionalBool(..., "key")` call site SOMEWHERE in the file. This is
+///      what fails when a future contributor adds a new top-level
+///      integer/boolean parameter and reads it the old way — it does not
+///      recurse into nested object/array schemas, and it does not prove the
+///      call site is reachable on every code path (see that test's own doc
+///      comment for both limitations in detail).
 ///  (C) representative end-to-end calls through `invokeToolForTesting`,
 ///      spanning every call-site shape the #232 migration touched (required
 ///      int via guard+missingParameter, optional int with a numeric
 ///      default, optional int/bool with no default, optional bool with a
-///      default, and a multi-clause nested-dict guard).
+///      default, a multi-clause nested-dict guard, and two conditionally-
+///      gated reads that used to skip validation entirely — see
+///      `testSetTableStyleRejectsStringBorderSizeEvenWithoutBorderStyle`).
+///
+/// Known scope boundary (Codex R3): `Server.swift` has other reads gated the
+/// same conditional-branch way the `set_table_style` fixes address —
+/// `format_text`'s `run_index` (only read when `as_revision` is true),
+/// page-margin presets (custom integers only read on the non-preset
+/// branch), `accept_all_revisions`/`reject_all_revisions` (skip reading
+/// `revision_id` when `all: true`), and `replyToComment`'s
+/// `try (optionalInt(args, "comment_id") ?? optionalInt(args,
+/// "parent_comment_id"))` (a non-nil `comment_id` short-circuits validating
+/// a present-but-mistyped `parent_comment_id`). These were not individually
+/// fixed — #232's literal scope is "a single `args[x]` read must not
+/// conflate wrong-type with absent", not "every argument must validate
+/// regardless of which branch of the tool's own logic would actually use
+/// it." Auditing every conditional/mode-gated read in the file for the
+/// latter, broader property is a separate, larger undertaking better suited
+/// to its own follow-up issue.
 final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
 
     // MARK: - (A) optionalInt / optionalBool unit tests
@@ -172,6 +198,20 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         }
     }
 
+    /// (Codex R3): `optionalBool` had no direct test naming `.double`,
+    /// `.array`, or `.object` explicitly, only `.string`/`.int` — the
+    /// doc comment above claims exhaustive coverage of the JSON type space,
+    /// so it needs one per remaining case.
+    func testOptionalBoolRejectsDoubleArrayAndObject() async throws {
+        let server = await WordMCPServer()
+        for bad: Value in [.double(1.0), .array([.bool(true)]), .object([:])] {
+            do {
+                _ = try await server.optionalBool(["flag": bad], "flag")
+                XCTFail("expected invalidParameter for \(bad)")
+            } catch is WordError { /* expected */ }
+        }
+    }
+
     // MARK: - (B) schema-driven source sweep
 
     private static var sourcesDir: URL {
@@ -234,8 +274,8 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         XCTAssertTrue(offenders.isEmpty, "unsafe direct .intValue/.boolValue subscript chain found:\n\(offenders.joined(separator: "\n"))")
     }
 
-    /// (B.2) — every `"type": "integer"` / `"type": "boolean"` schema
-    /// property (besides the documented exceptions) has a matching
+    /// (B.2) — every TOP-LEVEL `"type": "integer"` / `"type": "boolean"`
+    /// schema property (besides the documented exceptions) has a matching
     /// `optionalInt(..., "key")` / `optionalBool(..., "key")` call site.
     /// This is what fails when a new integer/boolean parameter is added but
     /// never actually gets the strict-typing treatment. It caught two real,
@@ -245,17 +285,24 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
     /// `checked` — both fixed alongside this test (see (C) below for the
     /// end-to-end regression tests for each).
     ///
-    /// Known limitation (Codex R1): `hasCall` matches a key name against
-    /// EVERY `optionalInt`/`optionalBool` call site in the file, not just
-    /// the specific tool's own handler — it does not parse the `switch` in
-    /// `executeToolTask` to scope the search per tool. In principle a new
-    /// tool that declares an integer/boolean parameter sharing a key name
-    /// already read by some unrelated tool (e.g. a hypothetical new
-    /// `"index"` parameter that is never actually read) could pass this
-    /// sweep. It did catch both real bugs above because neither
-    /// `reset_level` nor `checked` was read by any handler before the fix —
-    /// building a dispatch-table-aware, handler-scoped version would close
-    /// this gap but is a larger, separate undertaking.
+    /// Known limitations, neither closed by this test (Codex R1/R3):
+    ///  - `hasCall` matches a key name against EVERY `optionalInt`/
+    ///    `optionalBool` call site in the file, not just the specific
+    ///    tool's own handler — it does not parse the `switch` in
+    ///    `executeToolTask` to scope the search per tool. In principle a
+    ///    new tool that declares an integer/boolean parameter sharing a key
+    ///    name already read by some unrelated tool (e.g. a hypothetical new
+    ///    `"index"` parameter that is never actually read) could pass this
+    ///    sweep. It did catch both real bugs above because neither
+    ///    `reset_level` nor `checked` was read by any handler before the
+    ///    fix — building a dispatch-table-aware, handler-scoped version
+    ///    would close this gap but is a larger, separate undertaking.
+    ///  - It only walks `schema["properties"]` one level deep. A newly
+    ///    declared integer/boolean property nested inside an `"object"`- or
+    ///    `"array"`-typed top-level property (like `insert_paragraph`'s
+    ///    `into_table_cell.table_index`, which IS covered, but only by the
+    ///    one representative runtime test in (C), not by this sweep) is
+    ///    invisible to this test. It does not recurse.
     func testEveryIntegerAndBooleanSchemaParameterHasAStrictReader() async throws {
         let server = await WordMCPServer()
         let tools = await server.toolsForTesting()
@@ -347,10 +394,14 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         XCTAssertNotEqual(table.isError, true, resultText(table))
     }
 
-    /// `list_comments` returns early with a non-error "No comments in
-    /// document" string before it ever reaches `context_chars`/
-    /// `include_context` — a fixture with no comments would make a
-    /// wrong-type probe pass for the wrong reason.
+    /// `list_comments` used to return early with a non-error "No comments in
+    /// document" string before it ever reached `context_chars`/
+    /// `include_context` (fixed in R1, see `testListCommentsRejectsStringContextCharsEvenWithNoComments`
+    /// below — parsing now happens before that early return). This fixture
+    /// helper is kept anyway for the two tests above: it exercises the
+    /// non-empty-comments code path specifically (the branch that reads
+    /// `comments` for real), which is a different code path worth covering
+    /// in its own right, not a workaround for the now-fixed bypass.
     private func insertFixtureComment(_ server: WordMCPServer, id: String) async throws {
         let comment = await server.invokeToolForTesting(
             name: "insert_comment",

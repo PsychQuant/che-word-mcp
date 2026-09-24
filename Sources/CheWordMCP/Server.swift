@@ -173,23 +173,32 @@ actor WordMCPServer {
 
     // MARK: - Strict JSON parameter helpers (#232)
     //
-    // Every integer/boolean parameter across every tool goes through
+    // Almost every integer/boolean parameter across every tool goes through
     // `optionalInt`/`optionalBool` instead of `Value.intValue`/`Value.boolValue`
-    // directly. `Value.intValue` only matches the `.int` JSON case — a wrong
-    // JSON type (string `"3"`, bool, array, object) OR a JSON `null` OR an
-    // absent key all fall through to `nil` identically, so callers writing
-    // `args["x"]?.intValue ?? default` cannot tell "caller sent the wrong
-    // type" from "caller sent nothing" — the tool silently runs with the
-    // default and reports success. `optionalInt`/`optionalBool` keep the
+    // directly (the handful of exceptions — a permanent #201 stub, one
+    // pre-existing hand-rolled strict reader, one pinned-message tool — are
+    // named where each is declared, and in
+    // `Issue232StrictIntegerBooleanParameterTests.swift`'s coverage-sweep
+    // exception lists). `Value.intValue` only matches the `.int` JSON case —
+    // a wrong JSON type (string `"3"`, bool, array, object) OR a JSON `null`
+    // OR an absent key all fall through to `nil` identically, so callers
+    // writing `args["x"]?.intValue ?? default` cannot tell "caller sent the
+    // wrong type" from "caller sent nothing" — the tool silently runs with
+    // the default and reports success. `optionalInt`/`optionalBool` keep the
     // "absent/null → nil" behaviour (existing call sites still decide
     // required-vs-optional the same way they always did, via `guard ... else
     // { throw WordError.missingParameter(...) }` or `?? default`) but make a
     // *present, wrong-typed* value a thrown `WordError.invalidParameter`
-    // naming the key, so it always surfaces to the caller instead of being
-    // absorbed. Same shape as che-pptx-mcp#5 / che-pptx-mcp#10's
-    // `optionalInt`/`optionalBool`, adapted to this file's existing
-    // `WordError.invalidParameter(String, String)` case instead of a new
-    // error type.
+    // naming the key. This only helps for a call site that is actually
+    // reached — a parameter read behind a conditional branch that a given
+    // call doesn't take (e.g. an option that only matters when a sibling
+    // flag is set) still isn't validated on that call, unless the call site
+    // was restructured to parse unconditionally (as `set_table_style`'s
+    // `border_size`/`cell_row`/`cell_col` now are; see #232 CHANGELOG entry
+    // for the ones that were and weren't audited for this). Same shape as
+    // che-pptx-mcp#5 / che-pptx-mcp#10's `optionalInt`/`optionalBool`,
+    // adapted to this file's existing `WordError.invalidParameter(String,
+    // String)` case instead of a new error type.
     //
     // A JSON integer decodes to `.int` outright; a whole-valued JSON double
     // (e.g. `3.0`, which the MCP SDK's `Value` decoder produces for any JSON
