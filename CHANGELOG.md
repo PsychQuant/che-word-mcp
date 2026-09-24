@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   參數被靜默忽略。加了 `tools/list` 名稱不得重複的一般性測試，以及兩種語意各自對照實際
   `<w:tblHeader/>` 輸出的行為測試，並驗證錯誤路徑不會造成任何文件變更（`row_count` 越界、為 0、為
   負值、與 `row_index` 同時提供時皆同）。
+  已知限制：`row_index`／`row_count` 沿用檔案既有的 `args["x"]?.intValue` 慣例，型別不符的值（例如
+  字串 `"2"`）與缺漏視為相同，不會單獨報錯——這是整份 `Server.swift` 數百個整數參數共通的既有慣例，
+  非本次新增，跨檔案的嚴格型別檢查（比照 che-pptx-mcp #5 的先例）屬於另一個 issue 的範圍。
 
 ## [4.3.0] - 2026-09-24
 
