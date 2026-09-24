@@ -16395,6 +16395,12 @@ actor WordMCPServer {
     /// 設定表格標題列（#230：合併原本互相矛盾的兩份 schema）。
     /// row_index 標記單一 row 為表頭（向下相容既有行為，未提供任一參數時預設 row_index=0）；
     /// row_count 標記從第一列起的前 N 列為表頭。兩者同時提供視為參數錯誤，不可默默挑一個生效。
+    ///
+    /// 已知限制（#230 review 記錄，非本次範圍）：`row_index`／`row_count` 沿用整個檔案既有的
+    /// `args["x"]?.intValue` 慣例——型別不符的值（例如字串 `"2"`）與缺漏視為相同（皆為 nil），
+    /// 不會被單獨攔下報錯。這與檔案裡其餘所有整數參數的行為一致，不是本次合併新引入的落差；
+    /// 若要修，屬於跨全檔案（表格／超連結／章節等上百個整數參數）的嚴格型別檢查，應另開 issue
+    /// 處理（可參考 che-pptx-mcp #5 的先例），不在 #230 的「消除重複註冊」範圍內。
     private func setHeaderRowTool(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
