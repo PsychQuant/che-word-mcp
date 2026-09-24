@@ -13,25 +13,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   原本 `args["x"]?.intValue`／`args["x"]?.boolValue` 把「型別不符」與「缺漏」視為相同結果（皆為
   `nil`），present-but-mistyped 的值會被當成沒給、套用預設值後回報成功——`set_header_row` 傳
   `"row_count": "3"`（字串）過去會被當成沒給，默默退回 `row_index=0` 且不報錯，正是這個問題的
-  動機案例（#230 review 記錄）。
+  動機案例（#230 review 記錄，見下方 #230 條目的已知限制）。
   現在全部改走新增的 `optionalInt`／`optionalBool`：只接受 JSON 整數（或能被 `Int(exactly:)`
   無損轉換的整數值 double，如 `3.0`；`0.5`、`NaN`、`±Infinity`、超出 `Int` 範圍一律拒絕）／JSON
   `true`／`false`；字串、陣列、物件、其他數字型別一律回 `WordError.invalidParameter` 並指名參數；
   `null` 與缺漏仍視同未提供（維持既有的必填／選填判斷不變）。這是行為變更：呼叫端如果曾經依賴
   「型別不符時默默套用預設值」，現在會改成收到參數錯誤。
-  範圍：`Server.swift`／`ReadbackTools.swift` 全部 264 個直接 `["x"]?.intValue`／`["x"]?.boolValue`
-  呼叫點（262+2 個 `.intValue`、102+2 個 `.boolValue`）；順手修正兩個既有的 schema／實作對不上的
-  bug（`insert_sequence_field` 的 schema 宣告 `reset_level`、實作卻讀 `reset_on_heading`；
+  範圍：`Server.swift`／`ReadbackTools.swift` 全部 372 個直接 `["x"]?.intValue`／`["x"]?.boolValue`
+  呼叫點（268 個 `.intValue`：Server.swift 262 + ReadbackTools.swift 6；104 個 `.boolValue`：
+  Server.swift 102 + ReadbackTools.swift 2）；順手修正兩個既有的 schema／實作對不上的 bug
+  （`insert_sequence_field` 的 schema 宣告 `reset_level`、實作卻讀 `reset_on_heading`；
   `insert_checkbox` 的 schema 宣告 `checked`、實作卻讀 `is_checked`——兩者過去無論傳什麼型別都
-  被忽略）。`ScriptPipelineTools.swift`（#134/#227 既有的手寫嚴格檢查）、`allowOrphanImagesFlag`
-  （R1 #14 既有的嚴格檢查，`Issue175R2SaveGateTests.swift` 有直接 pin）、`insert_equation` 的
-  `display_mode`（`Issue98InsertEquationLibBypassTests.swift` pin 了特定英文措辭）、以及
-  `insert_watermark`／`insert_image_watermark` 的幾何／視覺參數（#201 永久 stub，參數從未被讀取）
-  維持原樣，未強行套用新 helper。
+  被忽略，改名後同時修正）。`ScriptPipelineTools.swift`（#134/#227 既有的手寫嚴格檢查）、
+  `allowOrphanImagesFlag`（R1 #14 既有的嚴格檢查，`Issue175R2SaveGateTests.swift` 有直接 pin）、
+  `insert_equation` 的 `display_mode`（`Issue98InsertEquationLibBypassTests.swift` pin 了特定
+  英文措辭；R1 修正了它與其他布林參數不一致的地方——顯式 JSON `null` 過去會報錯，現在比照
+  `optionalBool` 視同未提供）、以及 `insert_watermark`／`insert_image_watermark` 的幾何／視覺
+  參數（#201 永久 stub，參數從未被讀取）維持原樣，未強行套用新 helper。
   新增 schema-driven 測試：逐一比對 `tools/list` 每個 `"type": "integer"`／`"type": "boolean"`
   參數都有對應的嚴格讀取呼叫點（`testEveryIntegerAndBooleanSchemaParameterHasAStrictReader`），並
   鎖定舊的不安全 subscript pattern 全檔案歸零（`testNoDirectIntOrBoolValueSubscriptChainRemainsInSources`），
-  之後有人新增整數／布林參數卻忘了走嚴格讀取會被這兩個測試擋下。
+  之後有人新增整數／布林參數卻忘了走嚴格讀取會被這兩個測試擋下。已知限制：schema coverage 測試
+  以「該參數鍵名是否在檔案任意處被 `optionalInt`／`optionalBool` 讀取」為準，不是逐工具 handler
+  範圍比對；同一鍵名若被另一個工具正確讀取，理論上可以讓一個「宣告了但完全沒讀」的新工具矇混過關。
+  對已知的重名／忽略案例（本次找到的兩個）此測試確實能抓到，因為當時沒有任何 handler 用該鍵名呼叫
+  helper；但這不是逐工具证明，之後如有人擔心這個落差，可另開 issue 做 dispatch-table-aware 的
+  handler-scoped 版本。
+
+### Fixed
+
+- **`set_header_row` 只保留一個註冊，`tools/list` 不再有兩份互相矛盾的 schema**（#230）。原本
+  `Server.swift` 註冊了兩次：`switch` on tool name 的 dispatch 只執行第一個符合的 `case`（已用最小
+  重現腳本驗證），所以第二份 schema（`row_count`，標記前 N 列）發布給 client 卻從未真的執行——實際
+  永遠是第一份（`row_index`，標記單一列）在跑；帶第二份參數呼叫時 `row_count` 被靜默忽略。
+  現在合併成一份 schema：`row_index` 標記單一列（未提供任一參數時預設 0，與先前唯一會執行的行為
+  完全相同）；`row_count` 現在真的實作了「標記前 N 列」語意；兩者同時提供回傳參數錯誤，不再有任何
+  參數被靜默忽略。加了 `tools/list` 名稱不得重複的一般性測試，以及兩種語意各自對照實際
+  `<w:tblHeader/>` 輸出的行為測試，並驗證錯誤路徑不會造成任何文件變更（`row_count` 越界、為 0、為
+  負值、與 `row_index` 同時提供時皆同）。
+  當時記錄的已知限制（`row_index`／`row_count` 沿用檔案既有的 `args["x"]?.intValue` 慣例，型別不符
+  的值與缺漏視為相同）已由上方 #232 解決。
 
 ## [4.3.0] - 2026-09-24
 
