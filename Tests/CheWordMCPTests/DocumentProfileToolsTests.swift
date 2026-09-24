@@ -19,6 +19,14 @@ final class DocumentProfileToolsTests: XCTestCase {
             "word/document.xml": "<w:document xmlns:w=\"\(w)\"><w:body><w:sectPr><w:pgSz w:w=\"11906\" w:h=\"16838\"/><w:pgMar w:top=\"1440\" w:right=\"1800\" w:bottom=\"1440\" w:left=\"1800\" w:header=\"720\" w:footer=\"720\" w:gutter=\"0\"/></w:sectPr></w:body></w:document>"
         ]
         parts["word/theme/theme1.xml"] = theme
+        // ooxml-swift 3.11.0 起 importOfficial 依 relationship 找 styles／theme（PsychQuant/macdoc#213），
+        // 合成範本必須帶 document.xml.rels；真實的 Word 範本本來就有。
+        let relType = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+        var rels = "<Relationship Id=\"rId1\" Type=\"\(relType)/styles\" Target=\"styles.xml\"/>"
+        if theme != nil {
+            rels += "<Relationship Id=\"rId2\" Type=\"\(relType)/theme\" Target=\"theme/theme1.xml\"/>"
+        }
+        parts["word/_rels/document.xml.rels"] = "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\(rels)</Relationships>"
         for (path, xml) in parts {
             let file = source.appendingPathComponent(path)
             try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
