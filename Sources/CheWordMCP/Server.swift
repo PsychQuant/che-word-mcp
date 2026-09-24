@@ -171,6 +171,78 @@ actor WordMCPServer {
         return detectPresentAnchors(args, anchors: anchors)
     }
 
+    // MARK: - Strict JSON parameter helpers (#232)
+    //
+    // Every integer/boolean parameter across every tool goes through
+    // `optionalInt`/`optionalBool` instead of `Value.intValue`/`Value.boolValue`
+    // directly. `Value.intValue` only matches the `.int` JSON case — a wrong
+    // JSON type (string `"3"`, bool, array, object) OR a JSON `null` OR an
+    // absent key all fall through to `nil` identically, so callers writing
+    // `args["x"]?.intValue ?? default` cannot tell "caller sent the wrong
+    // type" from "caller sent nothing" — the tool silently runs with the
+    // default and reports success. `optionalInt`/`optionalBool` keep the
+    // "absent/null → nil" behaviour (existing call sites still decide
+    // required-vs-optional the same way they always did, via `guard ... else
+    // { throw WordError.missingParameter(...) }` or `?? default`) but make a
+    // *present, wrong-typed* value a thrown `WordError.invalidParameter`
+    // naming the key, so it always surfaces to the caller instead of being
+    // absorbed. Same shape as che-pptx-mcp#5 / che-pptx-mcp#10's
+    // `optionalInt`/`optionalBool`, adapted to this file's existing
+    // `WordError.invalidParameter(String, String)` case instead of a new
+    // error type.
+    //
+    // A JSON integer decodes to `.int` outright; a whole-valued JSON double
+    // (e.g. `3.0`, which the MCP SDK's `Value` decoder produces for any JSON
+    // number carrying a decimal point) is accepted via `Int(exactly:)` —
+    // `0.5`, `NaN`, `±Infinity`, and magnitudes outside `Int` range all fail
+    // that conversion and are rejected, never silently truncated or trapped.
+
+    /// The integer under `key`, or nil when it is absent or JSON null.
+    /// Throws `WordError.invalidParameter` when `key` is present with a
+    /// non-integer JSON type, or a double that isn't exactly representable
+    /// as `Int` (fractional, NaN, ±Infinity, out of `Int` range).
+    func optionalInt(_ args: [String: Value], _ key: String) throws -> Int? {
+        switch args[key] {
+        case nil, .null?:
+            return nil
+        case .int(let value)?:
+            return value
+        case .double(let value)?:
+            guard let exact = Int(exactly: value) else {
+                throw WordError.invalidParameter(key, "必須是整數（收到 \(value)）")
+            }
+            return exact
+        case let other?:
+            throw WordError.invalidParameter(key, "必須是整數，不接受\(Self.jsonTypeName(other))")
+        }
+    }
+
+    /// The boolean under `key`, or nil when it is absent or JSON null.
+    /// Throws `WordError.invalidParameter` when `key` is present with a
+    /// non-boolean JSON type (including numbers and strings like `"true"`).
+    func optionalBool(_ args: [String: Value], _ key: String) throws -> Bool? {
+        switch args[key] {
+        case nil, .null?:
+            return nil
+        case .bool(let value)?:
+            return value
+        case let other?:
+            throw WordError.invalidParameter(key, "必須是布林值，不接受\(Self.jsonTypeName(other))")
+        }
+    }
+
+    private static func jsonTypeName(_ value: Value) -> String {
+        switch value {
+        case .null: return "null"
+        case .bool: return "布林值"
+        case .int, .double: return "數值"
+        case .string: return "字串"
+        case .data: return "二進位資料"
+        case .array: return "陣列"
+        case .object: return "物件"
+        }
+    }
+
     /// One emitted log event. `event` is the dotted name (e.g. `storeDocument.entry`),
     /// `keyValues` is the structured payload.
     struct DebugLogEvent: Sendable, Equatable {
@@ -6788,7 +6860,7 @@ actor WordMCPServer {
             throw WordError.documentAlreadyOpen(docId)
         }
 
-        let autosave = args["autosave"]?.boolValue ?? false
+        let autosave = try optionalBool(args, "autosave") ?? false
         // #170: this used to enable track changes unconditionally, so every new
         // document shipped with `<w:trackChanges/>` in settings.xml — the
         // recipient opened it in Word with the Track Changes button lit, and
@@ -6802,7 +6874,7 @@ actor WordMCPServer {
         // stopped here — the same fix, applied to one of the two ways a session
         // begins. Defaults now match, and both take `track_changes: true` to
         // opt in.
-        let trackChanges = args["track_changes"]?.boolValue ?? false
+        let trackChanges = try optionalBool(args, "track_changes") ?? false
         let profile = try resolveDocumentProfile(args: args, context: .newDocument)
         var doc = WordDocument()
         if let profile { try doc.applyFormattingProfile(profile, context: .newDocument) }
@@ -6841,13 +6913,13 @@ actor WordMCPServer {
         if openDocuments[docId] != nil {
             throw WordError.documentAlreadyOpen(docId)
         }
-        let autosave = args["autosave"]?.boolValue ?? false
+        let autosave = try optionalBool(args, "autosave") ?? false
         // BREAKING v3.0.0: track_changes default flipped from on → off (Refs #13)
-        let trackChanges = args["track_changes"]?.boolValue ?? false
+        let trackChanges = try optionalBool(args, "track_changes") ?? false
         // Phase 4 (v3.6.0, closes #37): per-N-mutations checkpoint throttle.
         // Phase C (Design B, #40): default flipped from 0 to 1.
         // Callers wanting zero autosave overhead must explicitly pass autosave_every: 0.
-        let autosaveEveryN = args["autosave_every"]?.intValue ?? 1
+        let autosaveEveryN = try optionalInt(args, "autosave_every") ?? 1
         let profile = try resolveDocumentProfile(args: args, context: .existingDocument)
 
         let url = URL(fileURLWithPath: path)
@@ -7013,7 +7085,7 @@ actor WordMCPServer {
         if !allowOrphanImages, let refusal = imageConsistencySaveRefusal(doc, docId: docId) {
             throw ToolRefusal(refusal)
         }
-        let keepBak = args["keep_bak"]?.boolValue ?? false
+        let keepBak = try optionalBool(args, "keep_bak") ?? false
         try persistDocumentToDisk(doc, docId: docId, path: path, keepBak: keepBak)
         if documentMayCarryImages(doc, docId: docId) { recordImageBaseline(docId: docId, path: path) }   // acknowledged state is the new baseline
         // Phase 4: clean up <source>.autosave.docx after successful save.
@@ -7036,7 +7108,7 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
         // v3.0.0: explicit discard flag (Refs #12)
-        let discardChanges = args["discard_changes"]?.boolValue ?? false
+        let discardChanges = try optionalBool(args, "discard_changes") ?? false
 
         if isDirty(docId: docId) && !discardChanges {
             throw ToolRefusal("""
@@ -7138,7 +7210,7 @@ actor WordMCPServer {
             throw ToolRefusal("E_NO_AUTOSAVE — no autosave file at '\(autosavePath)'.")
         }
 
-        let discardChanges = args["discard_changes"]?.boolValue ?? false
+        let discardChanges = try optionalBool(args, "discard_changes") ?? false
         if isDirty(docId: docId) && !discardChanges {
             throw ToolRefusal("""
             E_DIRTY_DOC — document '\(docId)' has uncommitted changes.
@@ -7255,7 +7327,7 @@ actor WordMCPServer {
         guard openDocuments[docId] != nil else {
             throw WordError.documentNotFound(docId)
         }
-        let force = args["force"]?.boolValue ?? false
+        let force = try optionalBool(args, "force") ?? false
         if isDirty(docId: docId) && !force {
             throw ToolRefusal("""
             document '\(docId)' has uncommitted changes. Your in-memory edits would be lost.
@@ -7381,7 +7453,7 @@ actor WordMCPServer {
         // printed as "Hi..." — the reader could not tell a short paragraph from
         // a truncated one. Wrong in both directions at once: it truncated
         // without being asked, and claimed elision that had not happened.
-        let summarize = args["summarize"]?.boolValue ?? false
+        let summarize = try optionalBool(args, "summarize") ?? false
 
         var result = "Paragraphs:\n"
         for (index, para) in paragraphs.enumerated() {
@@ -7420,18 +7492,18 @@ actor WordMCPServer {
 
         // Anchor priority (mirrors insert_image_from_path):
         // into_table_cell > after_image_id > after_text > before_text > index > append
-        let textInstance = args["text_instance"]?.intValue ?? 1
+        let textInstance = try optionalInt(args, "text_instance") ?? 1
         // anchor-dx-consistency (#72): explicit text_instance < 1 rejected.
-        if let explicit = args["text_instance"]?.intValue, explicit < 1 {
+        if let explicit = try optionalInt(args, "text_instance"), explicit < 1 {
             throw ToolRefusal("insert_paragraph: text_instance must be ≥ 1, got \(explicit).")
         }
         let resultMessage: String
 
         if let cellDict = args["into_table_cell"]?.objectValue {
             // F5 (v3.15.1): malformed partial dict returns structured error instead of silent fallthrough.
-            guard let tableIdx = cellDict["table_index"]?.intValue,
-                  let row = cellDict["row"]?.intValue,
-                  let col = cellDict["col"]?.intValue else {
+            guard let tableIdx = try optionalInt(cellDict, "table_index"),
+                  let row = try optionalInt(cellDict, "row"),
+                  let col = try optionalInt(cellDict, "col") else {
                 throw ToolRefusal("insert_paragraph: into_table_cell requires all three fields (table_index, row, col); got partial dict")
             }
             do {
@@ -7464,7 +7536,7 @@ actor WordMCPServer {
             } catch let InsertLocationError.textNotFound(searchText, instance) {
                 throw ToolRefusal("insert_paragraph: text '\(searchText)' not found (instance \(instance))")
             }
-        } else if let index = args["index"]?.intValue {
+        } else if let index = try optionalInt(args, "index") {
             doc.insertParagraph(para, at: index)
             resultMessage = "Inserted paragraph at index \(index)"
         } else {
@@ -7484,7 +7556,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let index = args["index"]?.intValue else {
+        guard let index = try optionalInt(args, "index") else {
             throw WordError.missingParameter("index")
         }
         guard let text = args["text"]?.stringValue else {
@@ -7504,7 +7576,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let index = args["index"]?.intValue else {
+        guard let index = try optionalInt(args, "index") else {
             throw WordError.missingParameter("index")
         }
         guard var doc = openDocuments[docId] else {
@@ -7556,8 +7628,8 @@ actor WordMCPServer {
         default:
             throw ToolRefusal("invalid scope '\(scopeString)'. Use 'body' or 'all'.")
         }
-        let regex = args["regex"]?.boolValue ?? false
-        let matchCase = args["match_case"]?.boolValue ?? true
+        let regex = try optionalBool(args, "regex") ?? false
+        let matchCase = try optionalBool(args, "match_case") ?? true
 
         let options = ReplaceOptions(scope: scope, regex: regex, matchCase: matchCase)
         do {
@@ -7592,7 +7664,7 @@ actor WordMCPServer {
                     continue
                 }
                 queryStr = q
-                caseSensitive = obj["case_sensitive"]?.boolValue ?? false
+                caseSensitive = try optionalBool(obj, "case_sensitive") ?? false
             default:
                 output += "\n=== [\(idx)] FAIL: query must be string or object ===\n"
                 continue
@@ -7634,8 +7706,8 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        let stopOnFirstFailure = args["stop_on_first_failure"]?.boolValue ?? false
-        let dryRun = args["dry_run"]?.boolValue ?? false
+        let stopOnFirstFailure = try optionalBool(args, "stop_on_first_failure") ?? false
+        let dryRun = try optionalBool(args, "dry_run") ?? false
 
         var results: [[String: Any]] = []
         var succeeded = 0
@@ -7661,8 +7733,8 @@ actor WordMCPServer {
             // per-item options, fall back to no-op defaults
             let scopeString = item["scope"]?.stringValue ?? "body"
             let scope: ReplaceScope = (scopeString == "all") ? .all : .bodyAndTables
-            let regex = item["regex"]?.boolValue ?? false
-            let matchCase = item["match_case"]?.boolValue ?? true
+            let regex = try optionalBool(item, "regex") ?? false
+            let matchCase = try optionalBool(item, "match_case") ?? true
             let options = ReplaceOptions(scope: scope, regex: regex, matchCase: matchCase)
 
             do {
@@ -7711,7 +7783,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard var doc = openDocuments[docId] else {
@@ -7719,17 +7791,17 @@ actor WordMCPServer {
         }
 
         var format = RunProperties()
-        if let bold = args["bold"]?.boolValue { format.bold = bold }
-        if let italic = args["italic"]?.boolValue { format.italic = italic }
-        if let underline = args["underline"]?.boolValue { format.underline = underline ? .single : nil }
-        if let fontSize = args["font_size"]?.intValue { format.fontSize = fontSize * 2 } // 轉換為半點
+        if let bold = try optionalBool(args, "bold") { format.bold = bold }
+        if let italic = try optionalBool(args, "italic") { format.italic = italic }
+        if let underline = try optionalBool(args, "underline") { format.underline = underline ? .single : nil }
+        if let fontSize = try optionalInt(args, "font_size") { format.fontSize = fontSize * 2 } // 轉換為半點
         if let fontName = args["font_name"]?.stringValue { format.fontName = fontName }
         if let color = args["color"]?.stringValue { format.color = color }
 
         // v3.12.0+ (#45): per-call opt-in for revision-tracked formatting.
-        let asRevision = args["as_revision"]?.boolValue ?? false
+        let asRevision = try optionalBool(args, "as_revision") ?? false
         if asRevision {
-            let runIndex = args["run_index"]?.intValue ?? 0
+            let runIndex = try optionalInt(args, "run_index") ?? 0
             let author = args["author"]?.stringValue
             let date = parseISODate(args["date"]?.stringValue)
             // Index exactly as applyRunPropertiesAsRevision and formatParagraph
@@ -7751,12 +7823,12 @@ actor WordMCPServer {
             // Start from the existing run so omitted MCP arguments remain
             // unchanged; explicit false/nil assignments remain intentional.
             var replacement = runs[runIndex].properties
-            if let bold = args["bold"]?.boolValue { replacement.bold = bold }
-            if let italic = args["italic"]?.boolValue { replacement.italic = italic }
-            if let underline = args["underline"]?.boolValue {
+            if let bold = try optionalBool(args, "bold") { replacement.bold = bold }
+            if let italic = try optionalBool(args, "italic") { replacement.italic = italic }
+            if let underline = try optionalBool(args, "underline") {
                 replacement.underline = underline ? .single : nil
             }
-            if let fontSize = args["font_size"]?.intValue {
+            if let fontSize = try optionalInt(args, "font_size") {
                 replacement.fontSize = fontSize * 2
             }
             if let fontName = args["font_name"]?.stringValue {
@@ -7781,7 +7853,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard var doc = openDocuments[docId] else {
@@ -7795,16 +7867,16 @@ actor WordMCPServer {
         if let lineSpacing = args["line_spacing"]?.doubleValue {
             props.spacing = Spacing(line: Int(lineSpacing * 240)) // 轉換為 1/240 點
         }
-        if let spaceBefore = args["space_before"]?.intValue {
+        if let spaceBefore = try optionalInt(args, "space_before") {
             if props.spacing == nil { props.spacing = Spacing() }
             props.spacing?.before = spaceBefore * 20 // 轉換為 1/20 點
         }
-        if let spaceAfter = args["space_after"]?.intValue {
+        if let spaceAfter = try optionalInt(args, "space_after") {
             if props.spacing == nil { props.spacing = Spacing() }
             props.spacing?.after = spaceAfter * 20
         }
 
-        let asRevision = args["as_revision"]?.boolValue ?? false
+        let asRevision = try optionalBool(args, "as_revision") ?? false
         if asRevision {
             let author = args["author"]?.stringValue
             let date = parseISODate(args["date"]?.stringValue)
@@ -7835,10 +7907,10 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
-        guard let position = args["position"]?.intValue else {
+        guard let position = try optionalInt(args, "position") else {
             throw WordError.missingParameter("position")
         }
         guard let text = args["text"]?.stringValue else {
@@ -7862,13 +7934,13 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
-        guard let start = args["start"]?.intValue else {
+        guard let start = try optionalInt(args, "start") else {
             throw WordError.missingParameter("start")
         }
-        guard let end = args["end"]?.intValue else {
+        guard let end = try optionalInt(args, "end") else {
             throw WordError.missingParameter("end")
         }
         guard var doc = openDocuments[docId] else {
@@ -7889,19 +7961,19 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let fromPara = args["from_paragraph_index"]?.intValue else {
+        guard let fromPara = try optionalInt(args, "from_paragraph_index") else {
             throw WordError.missingParameter("from_paragraph_index")
         }
-        guard let fromStart = args["from_start"]?.intValue else {
+        guard let fromStart = try optionalInt(args, "from_start") else {
             throw WordError.missingParameter("from_start")
         }
-        guard let fromEnd = args["from_end"]?.intValue else {
+        guard let fromEnd = try optionalInt(args, "from_end") else {
             throw WordError.missingParameter("from_end")
         }
-        guard let toPara = args["to_paragraph_index"]?.intValue else {
+        guard let toPara = try optionalInt(args, "to_paragraph_index") else {
             throw WordError.missingParameter("to_paragraph_index")
         }
-        guard let toPos = args["to_position"]?.intValue else {
+        guard let toPos = try optionalInt(args, "to_position") else {
             throw WordError.missingParameter("to_position")
         }
         guard var doc = openDocuments[docId] else {
@@ -7923,7 +7995,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard let style = args["style"]?.stringValue else {
@@ -7945,10 +8017,10 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let rows = args["rows"]?.intValue else {
+        guard let rows = try optionalInt(args, "rows") else {
             throw WordError.missingParameter("rows")
         }
-        guard let cols = args["cols"]?.intValue else {
+        guard let cols = try optionalInt(args, "cols") else {
             throw WordError.missingParameter("cols")
         }
         guard var doc = openDocuments[docId] else {
@@ -7971,7 +8043,7 @@ actor WordMCPServer {
             }
         }
 
-        let index = args["index"]?.intValue
+        let index = try optionalInt(args, "index")
         if let index = index {
             doc.insertTable(table, at: index)
         } else {
@@ -7997,7 +8069,7 @@ actor WordMCPServer {
         // truncated unconditionally (first-row column count in the header,
         // 3 rows, 3 columns, 15 characters per cell) and disclosed only the
         // row truncation, so its own header contradicted its own body.
-        let summarize = args["summarize"]?.boolValue ?? false
+        let summarize = try optionalBool(args, "summarize") ?? false
         let summarizedRowCap = 3
         let summarizedColCap = 3
 
@@ -8042,13 +8114,13 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let tableIndex = args["table_index"]?.intValue else {
+        guard let tableIndex = try optionalInt(args, "table_index") else {
             throw WordError.missingParameter("table_index")
         }
-        guard let row = args["row"]?.intValue else {
+        guard let row = try optionalInt(args, "row") else {
             throw WordError.missingParameter("row")
         }
-        guard let col = args["col"]?.intValue else {
+        guard let col = try optionalInt(args, "col") else {
             throw WordError.missingParameter("col")
         }
         guard let text = args["text"]?.stringValue else {
@@ -8065,13 +8137,13 @@ actor WordMCPServer {
     }
 
     private func getCellParagraphs(args: [String: Value]) async throws -> String {
-        guard let tableIndex = args["table_index"]?.intValue else {
+        guard let tableIndex = try optionalInt(args, "table_index") else {
             throw WordError.missingParameter("table_index")
         }
-        guard let row = args["row"]?.intValue else {
+        guard let row = try optionalInt(args, "row") else {
             throw WordError.missingParameter("row")
         }
-        guard let col = args["col"]?.intValue else {
+        guard let col = try optionalInt(args, "col") else {
             throw WordError.missingParameter("col")
         }
         let (doc, _) = try await resolveDocument(args: args)
@@ -8087,16 +8159,16 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let tableIndex = args["table_index"]?.intValue else {
+        guard let tableIndex = try optionalInt(args, "table_index") else {
             throw WordError.missingParameter("table_index")
         }
-        guard let row = args["row"]?.intValue else {
+        guard let row = try optionalInt(args, "row") else {
             throw WordError.missingParameter("row")
         }
-        guard let col = args["col"]?.intValue else {
+        guard let col = try optionalInt(args, "col") else {
             throw WordError.missingParameter("col")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard let text = args["text"]?.stringValue else {
@@ -8116,7 +8188,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let tableIndex = args["table_index"]?.intValue else {
+        guard let tableIndex = try optionalInt(args, "table_index") else {
             throw WordError.missingParameter("table_index")
         }
         guard var doc = openDocuments[docId] else {
@@ -8133,7 +8205,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let tableIndex = args["table_index"]?.intValue else {
+        guard let tableIndex = try optionalInt(args, "table_index") else {
             throw WordError.missingParameter("table_index")
         }
         guard let direction = args["direction"]?.stringValue else {
@@ -8145,13 +8217,13 @@ actor WordMCPServer {
 
         switch direction.lowercased() {
         case "horizontal":
-            guard let row = args["row"]?.intValue else {
+            guard let row = try optionalInt(args, "row") else {
                 throw WordError.missingParameter("row")
             }
-            guard let col = args["col"]?.intValue else {
+            guard let col = try optionalInt(args, "col") else {
                 throw WordError.missingParameter("col")
             }
-            guard let endCol = args["end_col"]?.intValue else {
+            guard let endCol = try optionalInt(args, "end_col") else {
                 throw WordError.missingParameter("end_col")
             }
             try doc.mergeCellsHorizontal(tableIndex: tableIndex, row: row, startCol: col, endCol: endCol)
@@ -8159,13 +8231,13 @@ actor WordMCPServer {
             return "Merged cells horizontally: row \(row), columns \(col) to \(endCol)"
 
         case "vertical":
-            guard let row = args["row"]?.intValue else {
+            guard let row = try optionalInt(args, "row") else {
                 throw WordError.missingParameter("row")
             }
-            guard let col = args["col"]?.intValue else {
+            guard let col = try optionalInt(args, "col") else {
                 throw WordError.missingParameter("col")
             }
-            guard let endRow = args["end_row"]?.intValue else {
+            guard let endRow = try optionalInt(args, "end_row") else {
                 throw WordError.missingParameter("end_row")
             }
             try doc.mergeCellsVertical(tableIndex: tableIndex, col: col, startRow: row, endRow: endRow)
@@ -8181,7 +8253,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let tableIndex = args["table_index"]?.intValue else {
+        guard let tableIndex = try optionalInt(args, "table_index") else {
             throw WordError.missingParameter("table_index")
         }
         guard var doc = openDocuments[docId] else {
@@ -8193,7 +8265,7 @@ actor WordMCPServer {
         // 設定邊框
         if let borderStyle = args["border_style"]?.stringValue {
             let style = BorderStyle(rawValue: borderStyle) ?? .single
-            let size = args["border_size"]?.intValue ?? 4
+            let size = try optionalInt(args, "border_size") ?? 4
             let color = args["border_color"]?.stringValue ?? "000000"
 
             let border = Border(style: style, size: size, color: color)
@@ -8204,8 +8276,8 @@ actor WordMCPServer {
         }
 
         // 設定儲存格底色
-        if let cellRow = args["cell_row"]?.intValue,
-           let cellCol = args["cell_col"]?.intValue,
+        if let cellRow = try optionalInt(args, "cell_row"),
+           let cellCol = try optionalInt(args, "cell_col"),
            let shadingColor = args["shading_color"]?.stringValue {
             let shading = CellShading(fill: shadingColor)
             try doc.setCellShading(tableIndex: tableIndex, row: cellRow, col: cellCol, shading: shading)
@@ -8275,11 +8347,11 @@ actor WordMCPServer {
         if let alignment = args["alignment"]?.stringValue {
             paraProps.alignment = Alignment(rawValue: alignment)
         }
-        if let spaceBefore = args["space_before"]?.intValue {
+        if let spaceBefore = try optionalInt(args, "space_before") {
             if paraProps.spacing == nil { paraProps.spacing = Spacing() }
             paraProps.spacing?.before = spaceBefore * 20
         }
-        if let spaceAfter = args["space_after"]?.intValue {
+        if let spaceAfter = try optionalInt(args, "space_after") {
             if paraProps.spacing == nil { paraProps.spacing = Spacing() }
             paraProps.spacing?.after = spaceAfter * 20
         }
@@ -8287,15 +8359,15 @@ actor WordMCPServer {
         // 解析 Run 屬性
         var runProps = RunProperties()
         if let fontName = args["font_name"]?.stringValue { runProps.fontName = fontName }
-        if let fontSize = args["font_size"]?.intValue { runProps.fontSize = fontSize * 2 }
-        if let bold = args["bold"]?.boolValue { runProps.bold = bold }
-        if let italic = args["italic"]?.boolValue { runProps.italic = italic }
+        if let fontSize = try optionalInt(args, "font_size") { runProps.fontSize = fontSize * 2 }
+        if let bold = try optionalBool(args, "bold") { runProps.bold = bold }
+        if let italic = try optionalBool(args, "italic") { runProps.italic = italic }
         if let color = args["color"]?.stringValue { runProps.color = color }
 
         // v3.10.0+ (#48): Office.js parity args
-        let qFormat = args["q_format"]?.boolValue ?? true
-        let hidden = args["hidden"]?.boolValue ?? false
-        let semiHidden = args["semi_hidden"]?.boolValue ?? false
+        let qFormat = try optionalBool(args, "q_format") ?? true
+        let hidden = try optionalBool(args, "hidden") ?? false
+        let semiHidden = try optionalBool(args, "semi_hidden") ?? false
         let linkedStyleId = args["linked_style_id"]?.stringValue
         let nextStyleId = args["next_style_id"]?.stringValue ?? args["next_style"]?.stringValue
 
@@ -8343,9 +8415,9 @@ actor WordMCPServer {
            args["bold"] != nil || args["italic"] != nil || args["color"] != nil {
             runProps = RunProperties()
             if let fontName = args["font_name"]?.stringValue { runProps?.fontName = fontName }
-            if let fontSize = args["font_size"]?.intValue { runProps?.fontSize = fontSize * 2 }
-            if let bold = args["bold"]?.boolValue { runProps?.bold = bold }
-            if let italic = args["italic"]?.boolValue { runProps?.italic = italic }
+            if let fontSize = try optionalInt(args, "font_size") { runProps?.fontSize = fontSize * 2 }
+            if let bold = try optionalBool(args, "bold") { runProps?.bold = bold }
+            if let italic = try optionalBool(args, "italic") { runProps?.italic = italic }
             if let color = args["color"]?.stringValue { runProps?.color = color }
         }
 
@@ -8362,9 +8434,9 @@ actor WordMCPServer {
             if let basedOn = args["based_on"]?.stringValue { doc.styles[idx].basedOn = basedOn }
             if let nextId = args["next_style_id"]?.stringValue { doc.styles[idx].nextStyle = nextId }
             if let linked = args["linked_style_id"]?.stringValue { doc.styles[idx].linkedStyleId = linked }
-            if let qFormat = args["q_format"]?.boolValue { doc.styles[idx].isQuickStyle = qFormat }
-            if let hidden = args["hidden"]?.boolValue { doc.styles[idx].hidden = hidden }
-            if let semiHidden = args["semi_hidden"]?.boolValue { doc.styles[idx].semiHidden = semiHidden }
+            if let qFormat = try optionalBool(args, "q_format") { doc.styles[idx].isQuickStyle = qFormat }
+            if let hidden = try optionalBool(args, "hidden") { doc.styles[idx].hidden = hidden }
+            if let semiHidden = try optionalBool(args, "semi_hidden") { doc.styles[idx].semiHidden = semiHidden }
             doc.markPartDirty("word/styles.xml")
         }
 
@@ -8407,7 +8479,7 @@ actor WordMCPServer {
             throw WordError.invalidParameter("items", "Must contain at least one item")
         }
 
-        let index = args["index"]?.intValue
+        let index = try optionalInt(args, "index")
         let numId = doc.insertBulletList(items: items, at: index)
         try await storeDocument(doc, for: docId)
 
@@ -8430,7 +8502,7 @@ actor WordMCPServer {
             throw WordError.invalidParameter("items", "Must contain at least one item")
         }
 
-        let index = args["index"]?.intValue
+        let index = try optionalInt(args, "index")
         let numId = doc.insertNumberedList(items: items, at: index)
         try await storeDocument(doc, for: docId)
 
@@ -8441,10 +8513,10 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
-        guard let level = args["level"]?.intValue else {
+        guard let level = try optionalInt(args, "level") else {
             throw WordError.missingParameter("level")
         }
         guard var doc = openDocuments[docId] else {
@@ -8490,10 +8562,10 @@ actor WordMCPServer {
             try doc.setPageMargins(name: preset)
         } else {
             // 使用自訂值
-            let top = args["top"]?.intValue
-            let right = args["right"]?.intValue
-            let bottom = args["bottom"]?.intValue
-            let left = args["left"]?.intValue
+            let top = try optionalInt(args, "top")
+            let right = try optionalInt(args, "right")
+            let bottom = try optionalInt(args, "bottom")
+            let left = try optionalInt(args, "left")
 
             doc.setPageMargins(top: top, right: right, bottom: bottom, left: left)
         }
@@ -8533,7 +8605,7 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let index = args["at_index"]?.intValue
+        let index = try optionalInt(args, "at_index")
         doc.insertPageBreak(at: index)
         try await storeDocument(doc, for: docId)
 
@@ -8557,7 +8629,7 @@ actor WordMCPServer {
             throw WordError.invalidParameter("type", "Must be 'nextPage', 'continuous', 'evenPage', or 'oddPage'")
         }
 
-        let index = args["at_index"]?.intValue
+        let index = try optionalInt(args, "at_index")
         doc.insertSectionBreak(type: breakType, at: index)
         try await storeDocument(doc, for: docId)
 
@@ -8706,17 +8778,17 @@ actor WordMCPServer {
         guard let fileName = args["file_name"]?.stringValue else {
             throw WordError.missingParameter("file_name")
         }
-        guard let width = args["width"]?.intValue else {
+        guard let width = try optionalInt(args, "width") else {
             throw WordError.missingParameter("width")
         }
-        guard let height = args["height"]?.intValue else {
+        guard let height = try optionalInt(args, "height") else {
             throw WordError.missingParameter("height")
         }
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
 
-        let index = args["index"]?.intValue
+        let index = try optionalInt(args, "index")
         let name = args["name"]?.stringValue ?? "Picture"
         let description = args["description"]?.stringValue ?? ""
 
@@ -8793,8 +8865,8 @@ actor WordMCPServer {
         ])
 
         // Resolve width/height (auto-aspect)
-        let widthArg = args["width"]?.intValue
-        let heightArg = args["height"]?.intValue
+        let widthArg = try optionalInt(args, "width")
+        let heightArg = try optionalInt(args, "height")
         let (width, height) = try resolveImageDimensions(path: path, width: widthArg, height: heightArg)
 
         let name = args["name"]?.stringValue ?? "Picture"
@@ -8802,16 +8874,16 @@ actor WordMCPServer {
 
         // Resolve anchor: priority is into_table_cell > after_image_id > after_text > before_text > index
         let imageId: String
-        let textInstance = args["text_instance"]?.intValue ?? 1
+        let textInstance = try optionalInt(args, "text_instance") ?? 1
         // anchor-dx-consistency (#72): explicit text_instance < 1 rejected.
-        if let explicit = args["text_instance"]?.intValue, explicit < 1 {
+        if let explicit = try optionalInt(args, "text_instance"), explicit < 1 {
             throw ToolRefusal("insert_image_from_path: text_instance must be ≥ 1, got \(explicit).")
         }
         if let cellDict = args["into_table_cell"]?.objectValue {
             // F5 (v3.15.1): malformed partial dict returns structured error instead of silent fallthrough.
-            guard let tableIdx = cellDict["table_index"]?.intValue,
-                  let row = cellDict["row"]?.intValue,
-                  let col = cellDict["col"]?.intValue else {
+            guard let tableIdx = try optionalInt(cellDict, "table_index"),
+                  let row = try optionalInt(cellDict, "row"),
+                  let col = try optionalInt(cellDict, "col") else {
                 throw ToolRefusal("insert_image_from_path: into_table_cell requires all three fields (table_index, row, col); got partial dict")
             }
             do {
@@ -8870,7 +8942,7 @@ actor WordMCPServer {
             }
         } else {
             // body-level: use legacy index-based API
-            let index = args["index"]?.intValue
+            let index = try optionalInt(args, "index")
             imageId = try doc.insertImage(
                 path: path,
                 widthPx: width,
@@ -8928,8 +9000,8 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let width = args["width"]?.intValue
-        let height = args["height"]?.intValue
+        let width = try optionalInt(args, "width")
+        let height = try optionalInt(args, "height")
 
         try doc.updateImage(imageId: imageId, widthPx: width, heightPx: height)
         try await storeDocument(doc, for: docId)
@@ -9050,10 +9122,10 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let hasBorder = args["has_border"]?.boolValue
+        let hasBorder = try optionalBool(args, "has_border")
         let borderColor = args["border_color"]?.stringValue
-        let borderWidth = args["border_width"]?.intValue
-        let hasShadow = args["has_shadow"]?.boolValue
+        let borderWidth = try optionalInt(args, "border_width")
+        let hasShadow = try optionalBool(args, "has_shadow")
 
         try doc.setImageStyle(
             imageId: imageId,
@@ -9126,8 +9198,8 @@ actor WordMCPServer {
 
         // 建立轉換選項（預設 Tier 2：Markdown + 圖片提取）
         let options = ConversionOptions(
-            includeFrontmatter: args["include_frontmatter"]?.boolValue ?? false,
-            hardLineBreaks: args["hard_line_breaks"]?.boolValue ?? false,
+            includeFrontmatter: try optionalBool(args, "include_frontmatter") ?? false,
+            hardLineBreaks: try optionalBool(args, "hard_line_breaks") ?? false,
             fidelity: .markdownWithFigures,
             figuresDirectory: figuresDir
         )
@@ -9160,7 +9232,7 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let paragraphIndex = args["paragraph_index"]?.intValue
+        let paragraphIndex = try optionalInt(args, "paragraph_index")
         let tooltip = args["tooltip"]?.stringValue
 
         let hyperlinkId = doc.insertHyperlink(
@@ -9189,7 +9261,7 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let paragraphIndex = args["paragraph_index"]?.intValue
+        let paragraphIndex = try optionalInt(args, "paragraph_index")
         let tooltip = args["tooltip"]?.stringValue
 
         let hyperlinkId = doc.insertInternalLink(
@@ -9256,7 +9328,7 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let paragraphIndex = args["paragraph_index"]?.intValue
+        let paragraphIndex = try optionalInt(args, "paragraph_index")
 
         let bookmarkId = try doc.insertBookmark(name: name, at: paragraphIndex)
         try await storeDocument(doc, for: docId)
@@ -9293,7 +9365,7 @@ actor WordMCPServer {
         guard let author = args["author"]?.stringValue else {
             throw WordError.missingParameter("author")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard var doc = openDocuments[docId] else {
@@ -9310,7 +9382,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let commentId = args["comment_id"]?.intValue else {
+        guard let commentId = try optionalInt(args, "comment_id") else {
             throw WordError.missingParameter("comment_id")
         }
         guard let text = args["text"]?.stringValue else {
@@ -9330,7 +9402,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let commentId = args["comment_id"]?.intValue else {
+        guard let commentId = try optionalInt(args, "comment_id") else {
             throw WordError.missingParameter("comment_id")
         }
         guard var doc = openDocuments[docId] else {
@@ -9358,8 +9430,8 @@ actor WordMCPServer {
             return "No comments in document"
         }
 
-        let includeContext = args["include_context"]?.boolValue ?? false
-        let contextChars = max(0, args["context_chars"]?.intValue ?? 50)
+        let includeContext = try optionalBool(args, "include_context") ?? false
+        let contextChars = max(0, try optionalInt(args, "context_chars") ?? 50)
 
         if includeContext {
             return commentJSON(comments: comments, in: doc, contextChars: contextChars)
@@ -9378,7 +9450,7 @@ actor WordMCPServer {
 
     private func findUnresolvedComments(args: [String: Value]) async throws -> String {
         let (doc, _) = try await resolveDocument(args: args)
-        let contextChars = max(0, args["context_chars"]?.intValue ?? 50)
+        let contextChars = max(0, try optionalInt(args, "context_chars") ?? 50)
         let unresolved = doc.getCommentsFull().filter { !$0.done && $0.parentId == nil }
         return commentJSON(comments: unresolved, in: doc, contextChars: contextChars)
     }
@@ -9515,14 +9587,14 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let acceptAll = args["all"]?.boolValue ?? false
+        let acceptAll = try optionalBool(args, "all") ?? false
 
         if acceptAll {
             doc.acceptAllRevisions()
             try await storeDocument(doc, for: docId)
             return "Accepted all revisions"
         } else {
-            guard let revisionId = args["revision_id"]?.intValue else {
+            guard let revisionId = try optionalInt(args, "revision_id") else {
                 throw WordError.missingParameter("revision_id")
             }
             try doc.acceptRevision(revisionId: revisionId)
@@ -9539,14 +9611,14 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let rejectAll = args["all"]?.boolValue ?? false
+        let rejectAll = try optionalBool(args, "all") ?? false
 
         if rejectAll {
             doc.rejectAllRevisions()
             try await storeDocument(doc, for: docId)
             return "Rejected all revisions"
         } else {
-            guard let revisionId = args["revision_id"]?.intValue else {
+            guard let revisionId = try optionalInt(args, "revision_id") else {
                 throw WordError.missingParameter("revision_id")
             }
             try doc.rejectRevision(revisionId: revisionId)
@@ -9564,7 +9636,7 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard let text = args["text"]?.stringValue else {
@@ -9583,7 +9655,7 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let footnoteId = args["footnote_id"]?.intValue else {
+        guard let footnoteId = try optionalInt(args, "footnote_id") else {
             throw WordError.missingParameter("footnote_id")
         }
 
@@ -9599,7 +9671,7 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard let text = args["text"]?.stringValue else {
@@ -9618,7 +9690,7 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let endnoteId = args["endnote_id"]?.intValue else {
+        guard let endnoteId = try optionalInt(args, "endnote_id") else {
             throw WordError.missingParameter("endnote_id")
         }
 
@@ -9637,12 +9709,12 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let index = args["index"]?.intValue
+        let index = try optionalInt(args, "index")
         let title = args["title"]?.stringValue
-        let minLevel = args["min_level"]?.intValue ?? 1
-        let maxLevel = args["max_level"]?.intValue ?? 3
-        let includePageNumbers = args["include_page_numbers"]?.boolValue ?? true
-        let useHyperlinks = args["use_hyperlinks"]?.boolValue ?? true
+        let minLevel = try optionalInt(args, "min_level") ?? 1
+        let maxLevel = try optionalInt(args, "max_level") ?? 3
+        let includePageNumbers = try optionalBool(args, "include_page_numbers") ?? true
+        let useHyperlinks = try optionalBool(args, "use_hyperlinks") ?? true
 
         doc.insertTableOfContents(
             at: index,
@@ -9663,7 +9735,7 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard let name = args["name"]?.stringValue else {
@@ -9671,7 +9743,7 @@ actor WordMCPServer {
         }
 
         let defaultValue = args["default_value"]?.stringValue
-        let maxLength = args["max_length"]?.intValue
+        let maxLength = try optionalInt(args, "max_length")
 
         try doc.insertTextField(at: paragraphIndex, name: name, defaultValue: defaultValue, maxLength: maxLength)
         try await storeDocument(doc, for: docId)
@@ -9686,14 +9758,18 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard let name = args["name"]?.stringValue else {
             throw WordError.missingParameter("name")
         }
 
-        let isChecked = args["is_checked"]?.boolValue ?? false
+        // #232: this used to read "is_checked", a key the schema never
+        // declared (it declares "checked") — every caller's checked value,
+        // of any type, was silently ignored and the checkbox always
+        // inserted unchecked.
+        let isChecked = try optionalBool(args, "checked") ?? false
 
         try doc.insertCheckbox(at: paragraphIndex, name: name, isChecked: isChecked)
         try await storeDocument(doc, for: docId)
@@ -9708,7 +9784,7 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard let name = args["name"]?.stringValue else {
@@ -9732,7 +9808,7 @@ actor WordMCPServer {
             throw WordError.missingParameter("options (array of strings)")
         }
 
-        let selectedIndex = args["selected_index"]?.intValue ?? 0
+        let selectedIndex = try optionalInt(args, "selected_index") ?? 0
 
         try doc.insertDropdown(at: paragraphIndex, name: name, options: options, selectedIndex: selectedIndex)
         try await storeDocument(doc, for: docId)
@@ -9801,6 +9877,12 @@ actor WordMCPServer {
             throw ToolRefusal("insert_equation: either 'components' (JSON tree) or 'latex' (LaTeX subset) argument required")
         }
 
+        // Not folded into `optionalBool` (#232): Issue98InsertEquationLibBypassTests
+        // pins an error message that names both "display_mode" and (English)
+        // "boolean" — `optionalBool`'s message is in Chinese, matching this
+        // file's other invalidParameter messages, and changing the pinned
+        // wording is out of scope here. Same "present-but-mistyped errors"
+        // contract either way.
         let displayMode: Bool
         if let displayModeValue = args["display_mode"] {
             guard let bool = displayModeValue.boolValue else {
@@ -9810,14 +9892,14 @@ actor WordMCPServer {
         } else {
             displayMode = true
         }
-        let paragraphIndex = args["paragraph_index"]?.intValue
+        let paragraphIndex = try optionalInt(args, "paragraph_index")
         let afterText = args["after_text"]?.stringValue
         let beforeText = args["before_text"]?.stringValue
         let afterImageId = args["after_image_id"]?.stringValue          // v3.15.1
         let intoTableCellDict = args["into_table_cell"]?.objectValue    // v3.15.1
-        let textInstance = args["text_instance"]?.intValue ?? 1
+        let textInstance = try optionalInt(args, "text_instance") ?? 1
         // anchor-dx-consistency (#72): explicit text_instance < 1 rejected.
-        if let explicit = args["text_instance"]?.intValue, explicit < 1 {
+        if let explicit = try optionalInt(args, "text_instance"), explicit < 1 {
             throw ToolRefusal("insert_equation: text_instance must be ≥ 1, got \(explicit).")
         }
 
@@ -9857,9 +9939,9 @@ actor WordMCPServer {
         let anchorInfo: String
         if displayMode, let cellDict = intoTableCellDict {
             // F5 (v3.15.1): malformed partial dict returns structured error.
-            guard let tableIdx = cellDict["table_index"]?.intValue,
-                  let row = cellDict["row"]?.intValue,
-                  let col = cellDict["col"]?.intValue else {
+            guard let tableIdx = try optionalInt(cellDict, "table_index"),
+                  let row = try optionalInt(cellDict, "row"),
+                  let col = try optionalInt(cellDict, "col") else {
                 throw ToolRefusal("insert_equation: into_table_cell requires all three fields (table_index, row, col); got partial dict")
             }
             location = .intoTableCell(tableIndex: tableIdx, row: row, col: col)
@@ -9974,7 +10056,7 @@ actor WordMCPServer {
     /// Resolve source paragraph from either source_path (Direct mode, read-only)
     /// or source_doc_id (already-open doc). Returns the Paragraph.
     private func resolveSourceParagraph(args: [String: Value]) async throws -> Paragraph {
-        guard let sourceParaIdx = args["source_paragraph_index"]?.intValue else {
+        guard let sourceParaIdx = try optionalInt(args, "source_paragraph_index") else {
             throw WordError.missingParameter("source_paragraph_index")
         }
         let sourceDoc: WordDocument
@@ -10039,7 +10121,7 @@ actor WordMCPServer {
         guard var target = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let targetParaIdx = args["target_paragraph_index"]?.intValue else {
+        guard let targetParaIdx = try optionalInt(args, "target_paragraph_index") else {
             throw WordError.missingParameter("target_paragraph_index")
         }
         guard let positionRaw = args["position"]?.stringValue else {
@@ -10050,7 +10132,7 @@ actor WordMCPServer {
 
         // Build OMathSplicePosition.
         let position: OMathSplicePosition
-        let instance = args["instance"]?.intValue ?? 1
+        let instance = try optionalInt(args, "instance") ?? 1
         if instance < 1 {
             throw ToolRefusal("splice_omath_from_source: instance must be ≥ 1, got \(instance)")
         }
@@ -10073,7 +10155,7 @@ actor WordMCPServer {
             throw ToolRefusal("splice_omath_from_source: position must be one of 'atStart' / 'atEnd' / 'afterText' / 'beforeText', got '\(positionRaw)'")
         }
 
-        let omathIndex = args["omath_index"]?.intValue ?? 0
+        let omathIndex = try optionalInt(args, "omath_index") ?? 0
         let rPrMode = parseRpRMode(args["rpr_mode"]?.stringValue)
         let nsPolicy = parseNamespacePolicy(args["namespace_policy"]?.stringValue)
 
@@ -10100,7 +10182,7 @@ actor WordMCPServer {
         guard var target = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let targetParaIdx = args["target_paragraph_index"]?.intValue else {
+        guard let targetParaIdx = try optionalInt(args, "target_paragraph_index") else {
             throw WordError.missingParameter("target_paragraph_index")
         }
 
@@ -10235,14 +10317,14 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
 
         let typeStr = args["type"]?.stringValue ?? "single"
-        let size = args["size"]?.intValue ?? 4
+        let size = try optionalInt(args, "size") ?? 4
         let color = args["color"]?.stringValue ?? "000000"
-        let space = args["space"]?.intValue ?? 1
+        let space = try optionalInt(args, "space") ?? 1
 
         // 解析邊框類型
         let borderType = ParagraphBorderType(rawValue: typeStr) ?? .single
@@ -10291,7 +10373,7 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard let fill = args["fill"]?.stringValue else {
@@ -10316,13 +10398,13 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
 
-        let spacing = args["spacing"]?.intValue
-        let position = args["position"]?.intValue
-        let kern = args["kern"]?.intValue
+        let spacing = try optionalInt(args, "spacing")
+        let position = try optionalInt(args, "position")
+        let kern = try optionalInt(args, "kern")
 
         try doc.setCharacterSpacing(at: paragraphIndex, spacing: spacing, position: position, kern: kern)
         try await storeDocument(doc, for: docId)
@@ -10342,7 +10424,7 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard let effectType = args["effect"]?.stringValue else {
@@ -10369,14 +10451,14 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let commentId = args["comment_id"]?.intValue ?? args["parent_comment_id"]?.intValue else {
+        guard let commentId = try (optionalInt(args, "comment_id") ?? optionalInt(args, "parent_comment_id")) else {
             throw WordError.missingParameter("comment_id")
         }
         guard let replyText = try resolveCommentReplyText(args: args) else {
             throw WordError.missingParameter("reply_text or text or template")
         }
         let author = args["author"]?.stringValue ?? "User"
-        let shouldResolve = args["resolve"]?.boolValue ?? false
+        let shouldResolve = try optionalBool(args, "resolve") ?? false
 
         // 使用 CommentsCollection.addReply 方法
         guard let reply = doc.comments.addReply(to: commentId, author: author, text: replyText) else {
@@ -10400,10 +10482,10 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let commentId = args["comment_id"]?.intValue else {
+        guard let commentId = try optionalInt(args, "comment_id") else {
             throw WordError.missingParameter("comment_id")
         }
-        let resolved = args["resolved"]?.boolValue ?? true
+        let resolved = try optionalBool(args, "resolved") ?? true
 
         // 使用 CommentsCollection.markAsDone 方法
         doc.comments.markAsDone(commentId, done: resolved)
@@ -10496,14 +10578,14 @@ actor WordMCPServer {
             throw WordError.missingParameter("path")
         }
 
-        let paragraphIndex = args["paragraph_index"]?.intValue ?? 0
-        let widthEmu = args["width"]?.intValue ?? 2000000  // ~2 inches default
-        let heightEmu = args["height"]?.intValue ?? 2000000
-        let horizontalPos = args["horizontal_position"]?.intValue ?? 0
-        let verticalPos = args["vertical_position"]?.intValue ?? 0
+        let paragraphIndex = try optionalInt(args, "paragraph_index") ?? 0
+        let widthEmu = try optionalInt(args, "width") ?? 2000000  // ~2 inches default
+        let heightEmu = try optionalInt(args, "height") ?? 2000000
+        let horizontalPos = try optionalInt(args, "horizontal_position") ?? 0
+        let verticalPos = try optionalInt(args, "vertical_position") ?? 0
         let wrapTypeStr = args["wrap_type"]?.stringValue ?? "square"
         let horizontalRelative = args["horizontal_relative"]?.stringValue ?? "column"
-        let allowOverlap = args["allow_overlap"]?.boolValue ?? true
+        let allowOverlap = try optionalBool(args, "allow_overlap") ?? true
 
         // 讀取圖片數據
         let url = URL(fileURLWithPath: path)
@@ -10579,7 +10661,7 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard let leftOperand = args["left_operand"]?.stringValue else {
@@ -10631,7 +10713,7 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard let expression = args["expression"]?.stringValue else {
@@ -10658,7 +10740,7 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         let format = args["format"]?.stringValue ?? "yyyy-MM-dd"
@@ -10690,7 +10772,7 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         let typeStr = args["type"]?.stringValue ?? "PAGE"
@@ -10723,7 +10805,7 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard let fieldName = args["field_name"]?.stringValue else {
@@ -10751,17 +10833,20 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard let identifier = args["identifier"]?.stringValue else {
             throw WordError.missingParameter("identifier")
         }
-        let resetOnHeading = args["reset_on_heading"]?.intValue
+        // #232: this used to read "reset_on_heading", a key the schema never
+        // declared (it declares "reset_level") — every caller's reset_level
+        // value, of any type, was silently ignored.
+        let resetLevel = try optionalInt(args, "reset_level")
 
         let seqField = SequenceField(
             identifier: identifier,
-            resetLevel: resetOnHeading
+            resetLevel: resetLevel
         )
 
         try doc.insertFieldCode(seqField, at: paragraphIndex)
@@ -10782,7 +10867,7 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard let typeStr = args["type"]?.stringValue else {
@@ -10853,10 +10938,10 @@ actor WordMCPServer {
             throw WordError.missingParameter("tag")
         }
 
-        let index = args["index"]?.intValue ?? 0
+        let index = try optionalInt(args, "index") ?? 0
         let sectionTitle = args["section_title"]?.stringValue
         let itemsArray = args["items"]?.arrayValue ?? []
-        let allowInsertDelete = args["allow_insert_delete_sections"]?.boolValue ?? true
+        let allowInsertDelete = try optionalBool(args, "allow_insert_delete_sections") ?? true
 
         var items: [RepeatingSectionItem] = []
         for item in itemsArray {
@@ -10889,7 +10974,7 @@ actor WordMCPServer {
     /// Phase 5.1: list_content_controls — flat (default) or nested tree.
     private func listContentControls(args: [String: Value]) async throws -> String {
         let doc = try await loadDocumentFromArgs(args)
-        let nested = args["nested"]?.boolValue ?? false
+        let nested = try optionalBool(args, "nested") ?? false
 
         // Walk all paragraphs (including inside tables and block-level SDTs)
         // to collect entries in document order with paragraph indices.
@@ -10998,7 +11083,7 @@ actor WordMCPServer {
     /// Phase 5.2: get_content_control — lookup by id / tag / alias (exactly one).
     private func getContentControl(args: [String: Value]) async throws -> String {
         let doc = try await loadDocumentFromArgs(args)
-        let id = args["id"]?.intValue
+        let id = try optionalInt(args, "id")
         let tag = args["tag"]?.stringValue
         let alias = args["alias"]?.stringValue
 
@@ -11092,7 +11177,7 @@ actor WordMCPServer {
         guard let doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let id = args["id"]?.intValue else {
+        guard let id = try optionalInt(args, "id") else {
             throw WordError.missingParameter("id")
         }
 
@@ -11123,7 +11208,7 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let id = args["id"]?.intValue else {
+        guard let id = try optionalInt(args, "id") else {
             throw WordError.missingParameter("id")
         }
         guard let text = args["text"]?.stringValue else {
@@ -11150,7 +11235,7 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let id = args["id"]?.intValue else {
+        guard let id = try optionalInt(args, "id") else {
             throw WordError.missingParameter("id")
         }
         guard let xml = args["content_xml"]?.stringValue else {
@@ -11177,10 +11262,10 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let id = args["id"]?.intValue else {
+        guard let id = try optionalInt(args, "id") else {
             throw WordError.missingParameter("id")
         }
-        let keepContent = args["keep_content"]?.boolValue ?? true
+        let keepContent = try optionalBool(args, "keep_content") ?? true
 
         do {
             try doc.deleteContentControl(id: id, keepContent: keepContent)
@@ -11202,10 +11287,10 @@ actor WordMCPServer {
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        guard let parentId = args["parent_id"]?.intValue else {
+        guard let parentId = try optionalInt(args, "parent_id") else {
             throw WordError.missingParameter("parent_id")
         }
-        guard let itemIndex = args["item_index"]?.intValue else {
+        guard let itemIndex = try optionalInt(args, "item_index") else {
             throw WordError.missingParameter("item_index")
         }
         guard let text = args["text"]?.stringValue else {
@@ -11393,7 +11478,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard let text = args["text"]?.stringValue else {
@@ -11403,7 +11488,7 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let position = args["position"]?.intValue
+        let position = try optionalInt(args, "position")
 
         // 取得段落並插入文字
         let paragraphs = doc.getParagraphs()
@@ -11438,7 +11523,7 @@ actor WordMCPServer {
         }
         let (doc, _) = try await resolveDocument(args: args)
 
-        let caseSensitive = args["case_sensitive"]?.boolValue ?? false
+        let caseSensitive = try optionalBool(args, "case_sensitive") ?? false
 
         struct SearchResult {
             let location: String
@@ -11511,9 +11596,9 @@ actor WordMCPServer {
         // `i + contextChars` (issue #130). 4096 chars is far more context than
         // any human reads at a glance; min_gap_chars 1024 covers the longest
         // plausible accidental whitespace run (a fully-blanked paragraph).
-        let minGapChars = min(max(1, args["min_gap_chars"]?.intValue ?? 2), 1024)
-        let contextChars = min(max(0, args["context_chars"]?.intValue ?? 30), 4096)
-        let excludeTableCaptions = args["exclude_table_captions"]?.boolValue ?? true
+        let minGapChars = min(max(1, try optionalInt(args, "min_gap_chars") ?? 2), 1024)
+        let contextChars = min(max(0, try optionalInt(args, "context_chars") ?? 30), 4096)
+        let excludeTableCaptions = try optionalBool(args, "exclude_table_captions") ?? true
 
         struct Gap {
             let paragraphIndex: Int
@@ -11766,7 +11851,7 @@ actor WordMCPServer {
         // #178 — same shape as get_paragraphs: unconditional 50-char cut plus
         // an unconditional "..." that claimed an elision which may not have
         // happened.
-        let summarize = args["summarize"]?.boolValue ?? false
+        let summarize = try optionalBool(args, "summarize") ?? false
 
         var output = "Footnotes in document (\(footnotes.count)):\n"
         for footnote in footnotes {
@@ -11785,7 +11870,7 @@ actor WordMCPServer {
         }
 
         // #178 — same shape as get_paragraphs / list_footnotes.
-        let summarize = args["summarize"]?.boolValue ?? false
+        let summarize = try optionalBool(args, "summarize") ?? false
 
         var output = "Endnotes in document (\(endnotes.count)):\n"
         for endnote in endnotes {
@@ -11806,7 +11891,7 @@ actor WordMCPServer {
         }
 
         let (doc, _) = try await resolveDocument(args: args)
-        let summarize = args["summarize"]?.boolValue ?? false
+        let summarize = try optionalBool(args, "summarize") ?? false
 
         let revisions = doc.getRevisions()
         if revisions.isEmpty {
@@ -11927,7 +12012,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard let doc = openDocuments[docId] else {
@@ -11990,7 +12075,7 @@ actor WordMCPServer {
         let paragraphs = doc.getParagraphs()
 
         // 如果指定了段落索引，只處理該段落
-        if let paragraphIndex = args["paragraph_index"]?.intValue {
+        if let paragraphIndex = try optionalInt(args, "paragraph_index") {
             guard paragraphIndex >= 0 && paragraphIndex < paragraphs.count else {
                 throw WordError.invalidIndex(paragraphIndex)
             }
@@ -12077,8 +12162,8 @@ actor WordMCPServer {
 
         // 取得搜尋條件
         let searchColor = args["color"]?.stringValue?.uppercased()
-        let searchBold = args["bold"]?.boolValue
-        let searchItalic = args["italic"]?.boolValue
+        let searchBold = try optionalBool(args, "bold")
+        let searchItalic = try optionalBool(args, "italic")
         let searchHighlight = args["highlight"]?.stringValue
 
         let paragraphs = doc.getParagraphs()
@@ -12160,8 +12245,8 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let caseSensitive = args["case_sensitive"]?.boolValue ?? false
-        let contextChars = args["context_chars"]?.intValue ?? 20
+        let caseSensitive = try optionalBool(args, "case_sensitive") ?? false
+        let contextChars = try optionalInt(args, "context_chars") ?? 20
 
         let paragraphs = doc.getParagraphs()
         var results: [(paraIndex: Int, position: Int, matchedText: String, context: String, formats: [String])] = []
@@ -12244,8 +12329,8 @@ actor WordMCPServer {
         }
 
         let colorFilter = args["color_filter"]?.stringValue?.uppercased()
-        let paragraphStart = args["paragraph_start"]?.intValue ?? 0
-        let paragraphEnd = args["paragraph_end"]?.intValue
+        let paragraphStart = try optionalInt(args, "paragraph_start") ?? 0
+        let paragraphEnd = try optionalInt(args, "paragraph_end")
 
         let paragraphs = doc.getParagraphs()
         let endIndex = paragraphEnd ?? paragraphs.count - 1
@@ -12300,7 +12385,7 @@ actor WordMCPServer {
         // #178 — this one already gated its ellipsis on length, so it never
         // claimed an elision that had not happened. What it violated is the
         // other half of the SHALL: a 60-character ceiling nobody asked for.
-        let summarize = args["summarize"]?.boolValue ?? false
+        let summarize = try optionalBool(args, "summarize") ?? false
 
         var output = "Found \(results.count) \(formatType) text segment(s):\n"
         for result in results {
@@ -12559,7 +12644,7 @@ actor WordMCPServer {
     private func estimateParagraphForPage(args: [String: Value]) async throws -> String {
         let (doc, _) = try await resolveDocument(args: args)
 
-        guard let page = args["page"]?.intValue else {
+        guard let page = try optionalInt(args, "page") else {
             throw WordError.missingParameter("page")
         }
         // Upper-bound guard prevents (page - 1) * charsPerPage and page * charsPerPage
@@ -12571,7 +12656,7 @@ actor WordMCPServer {
 
         let charsPerPage: Int
         let layoutBasis: String
-        if let override = args["chars_per_page"]?.intValue {
+        if let override = try optionalInt(args, "chars_per_page") {
             // Same overflow concern: page * charsPerPage with charsPerPage=Int.max.
             // 200_000 chars/page is far beyond any plausible single-page density.
             guard override > 0 && override <= 200_000 else {
@@ -12584,7 +12669,7 @@ actor WordMCPServer {
             layoutBasis = "section_properties"
         }
 
-        let contextParagraphs = args["context_paragraphs"]?.intValue ?? 2
+        let contextParagraphs = try optionalInt(args, "context_paragraphs") ?? 2
         // Upper bound prevents rawStart - contextParagraphs underflow and
         // rawEnd + contextParagraphs overflow on Int.max input.
         guard contextParagraphs >= 0 && contextParagraphs <= 1024 else {
@@ -13162,9 +13247,9 @@ actor WordMCPServer {
         }
 
         let mode = args["mode"]?.stringValue ?? "text"
-        let contextLines = min(max(args["context_lines"]?.intValue ?? 0, 0), 3)
-        let maxResults = max(args["max_results"]?.intValue ?? 0, 0)
-        let summarize = args["summarize"]?.boolValue ?? false
+        let contextLines = min(max(try optionalInt(args, "context_lines") ?? 0, 0), 3)
+        let maxResults = max(try optionalInt(args, "max_results") ?? 0, 0)
+        let summarize = try optionalBool(args, "summarize") ?? false
 
         // Parse custom heading styles for structure mode
         let customHeadingStyles: [String]? = {
@@ -13228,9 +13313,9 @@ actor WordMCPServer {
             if let id = args["doc_id"]?.stringValue { return id }
             return "document"
         }()
-        let summarize = args["summarize"]?.boolValue ?? false
-        let includeRevisions = args["include_revisions"]?.boolValue ?? true
-        let includeComments = args["include_comments"]?.boolValue ?? true
+        let summarize = try optionalBool(args, "summarize") ?? false
+        let includeRevisions = try optionalBool(args, "include_revisions") ?? true
+        let includeComments = try optionalBool(args, "include_comments") ?? true
         let groupBy: RevisionGroupBy = {
             guard let s = args["group_by"]?.stringValue, let g = RevisionGroupBy(rawValue: s) else { return .author }
             return g
@@ -13270,9 +13355,9 @@ actor WordMCPServer {
         guard documents.count >= 2 else {
             throw WordError.invalidParameter("documents", "at least 2 documents required for a timeline; got \(documents.count)")
         }
-        let includeSummary = args["include_summary_table"]?.boolValue ?? true
-        let includePerPairDiff = args["include_per_pair_diff"]?.boolValue ?? true
-        let summarize = args["summarize"]?.boolValue ?? false
+        let includeSummary = try optionalBool(args, "include_summary_table") ?? true
+        let includePerPairDiff = try optionalBool(args, "include_per_pair_diff") ?? true
+        let summarize = try optionalBool(args, "summarize") ?? false
         let format: DiffFormat = {
             guard let s = args["diff_format"]?.stringValue, let f = DiffFormat(rawValue: s) else { return .narrative }
             return f
@@ -13338,9 +13423,9 @@ actor WordMCPServer {
             )
         }
         let (doc, _) = try await resolveDocument(args: args)
-        let summarize = args["summarize"]?.boolValue ?? false
-        let detect = args["detect_old_pattern"]?.boolValue ?? false
-        let includeResolved = args["include_resolved"]?.boolValue ?? true
+        let summarize = try optionalBool(args, "summarize") ?? false
+        let detect = try optionalBool(args, "detect_old_pattern") ?? false
+        let includeResolved = try optionalBool(args, "include_resolved") ?? true
         let format: CommentThreadFormat = {
             guard let s = args["format"]?.stringValue, let f = CommentThreadFormat(rawValue: s) else { return .table }
             return f
@@ -13374,7 +13459,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let columns = args["columns"]?.intValue else {
+        guard let columns = try optionalInt(args, "columns") else {
             throw WordError.missingParameter("columns")
         }
         guard var doc = openDocuments[docId] else {
@@ -13382,9 +13467,9 @@ actor WordMCPServer {
         }
 
         let numCols = min(max(columns, 1), 4)
-        let space = args["space"]?.intValue ?? 720  // 預設 0.5 inch
-        let _ = args["equal_width"]?.boolValue ?? true  // equalWidth - 保留以備將來擴展
-        let separator = args["separator"]?.boolValue ?? false
+        let space = try optionalInt(args, "space") ?? 720  // 預設 0.5 inch
+        let _ = try optionalBool(args, "equal_width") ?? true  // equalWidth - 保留以備將來擴展
+        let separator = try optionalBool(args, "separator") ?? false
 
         // 更新文件的 sectionProperties
         doc.sectionProperties.columns = numCols
@@ -13410,7 +13495,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard var doc = openDocuments[docId] else {
@@ -13443,17 +13528,17 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let enable = args["enable"]?.boolValue else {
+        guard let enable = try optionalBool(args, "enable") else {
             throw WordError.missingParameter("enable")
         }
         guard openDocuments[docId] != nil else {
             throw WordError.documentNotFound(docId)
         }
 
-        let start = args["start"]?.intValue ?? 1
-        let countBy = args["count_by"]?.intValue ?? 1
+        let start = try optionalInt(args, "start") ?? 1
+        let countBy = try optionalInt(args, "count_by") ?? 1
         let restart = args["restart"]?.stringValue ?? "continuous"
-        let distance = args["distance"]?.intValue ?? 360  // 預設 0.25 inch
+        let distance = try optionalInt(args, "distance") ?? 360  // 預設 0.25 inch
 
         // 行號需要在 sectPr 中設定 <w:lnNumType>
         // 目前 OOXMLSwift 的 SectionProperties 沒有直接支援
@@ -13480,12 +13565,12 @@ actor WordMCPServer {
         }
 
         let color = args["color"]?.stringValue ?? "000000"
-        let size = args["size"]?.intValue ?? 4
+        let size = try optionalInt(args, "size") ?? 4
         let offsetFrom = args["offset_from"]?.stringValue ?? "text"
-        let showTop = args["top"]?.boolValue ?? true
-        let showBottom = args["bottom"]?.boolValue ?? true
-        let showLeft = args["left"]?.boolValue ?? true
-        let showRight = args["right"]?.boolValue ?? true
+        let showTop = try optionalBool(args, "top") ?? true
+        let showBottom = try optionalBool(args, "bottom") ?? true
+        let showLeft = try optionalBool(args, "left") ?? true
+        let showRight = try optionalBool(args, "right") ?? true
 
         // 驗證樣式
         let validStyles = ["single", "double", "dotted", "dashed", "thick", "none"]
@@ -13514,7 +13599,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard let charCode = args["char"]?.stringValue else {
@@ -13586,7 +13671,7 @@ actor WordMCPServer {
             throw ToolRefusal("Invalid text direction. Valid options: lrTb (left-to-right, top-to-bottom), tbRl (vertical, right-to-left), btLr (bottom-to-top, left-to-right)")
         }
 
-        let paragraphIndex = args["paragraph_index"]?.intValue
+        let paragraphIndex = try optionalInt(args, "paragraph_index")
 
         // 文字方向需要在段落或節屬性中設定 <w:textDirection>
         // 目前 OOXMLSwift 沒有直接支援
@@ -13603,7 +13688,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard var doc = openDocuments[docId] else {
@@ -13611,8 +13696,8 @@ actor WordMCPServer {
         }
 
         let dropCapType = args["type"]?.stringValue ?? "drop"
-        let lines = min(max(args["lines"]?.intValue ?? 3, 2), 10)
-        let distance = args["distance"]?.intValue ?? 0
+        let lines = min(max(try optionalInt(args, "lines") ?? 3, 2), 10)
+        let distance = try optionalInt(args, "distance") ?? 0
         let font = args["font"]?.stringValue
 
         let validTypes = ["drop", "margin", "none"]
@@ -13663,7 +13748,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard var doc = openDocuments[docId] else {
@@ -13672,7 +13757,7 @@ actor WordMCPServer {
 
         let style = args["style"]?.stringValue ?? "single"
         let color = args["color"]?.stringValue ?? "000000"
-        let size = args["size"]?.intValue ?? 12  // 1.5pt
+        let size = try optionalInt(args, "size") ?? 12  // 1.5pt
 
         let validStyles = ["single", "double", "dotted", "dashed", "thick"]
         guard validStyles.contains(style) else {
@@ -13720,8 +13805,8 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let enable = args["enable"]?.boolValue ?? true
-        let paragraphIndex = args["paragraph_index"]?.intValue
+        let enable = try optionalBool(args, "enable") ?? true
+        let paragraphIndex = try optionalInt(args, "paragraph_index")
 
         // 避頭尾在 OOXML 中是 <w:widowControl/>
         // 這通常在段落或文件設定中
@@ -13770,14 +13855,14 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
 
-        let enable = args["enable"]?.boolValue ?? true
+        let enable = try optionalBool(args, "enable") ?? true
 
         // 取得段落索引
         let paragraphIndices = doc.body.children.enumerated().compactMap { (i, child) -> Int? in
@@ -13943,10 +14028,10 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let startParagraph = args["start_paragraph"]?.intValue else {
+        guard let startParagraph = try optionalInt(args, "start_paragraph") else {
             throw WordError.missingParameter("start_paragraph")
         }
-        guard let endParagraph = args["end_paragraph"]?.intValue else {
+        guard let endParagraph = try optionalInt(args, "end_paragraph") else {
             throw WordError.missingParameter("end_paragraph")
         }
         guard let doc = openDocuments[docId] else {
@@ -14007,7 +14092,7 @@ actor WordMCPServer {
         }
 
         let captionText = args["caption_text"]?.stringValue ?? ""
-        let includeChapterNumber = args["include_chapter_number"]?.boolValue ?? false
+        let includeChapterNumber = try optionalBool(args, "include_chapter_number") ?? false
         let position = args["position"]?.stringValue ?? "below"
 
         // anchor-dx-consistency (#71): unified conflict + zero-anchor detection.
@@ -14023,14 +14108,14 @@ actor WordMCPServer {
             throw ToolRefusal("insert_caption: at least one anchor required (paragraph_index / after_image_id / after_table_index / after_text / before_text). Specify exactly one.")
         }
 
-        let paragraphIndexArg = args["paragraph_index"]?.intValue
+        let paragraphIndexArg = try optionalInt(args, "paragraph_index")
         let afterImageIdArg = args["after_image_id"]?.stringValue
-        let afterTableIndexArg = args["after_table_index"]?.intValue
+        let afterTableIndexArg = try optionalInt(args, "after_table_index")
         let afterTextArg = args["after_text"]?.stringValue
         let beforeTextArg = args["before_text"]?.stringValue
-        let textInstance = args["text_instance"]?.intValue ?? 1
+        let textInstance = try optionalInt(args, "text_instance") ?? 1
         // anchor-dx-consistency (#72): explicit text_instance < 1 rejected.
-        if let explicit = args["text_instance"]?.intValue, explicit < 1 {
+        if let explicit = try optionalInt(args, "text_instance"), explicit < 1 {
             throw ToolRefusal("insert_caption: text_instance must be ≥ 1, got \(explicit).")
         }
 
@@ -14151,7 +14236,7 @@ actor WordMCPServer {
         }
 
         // 5. Bookmark invariant — checked here AND in lib for defense in depth.
-        let insertBookmark = args["insert_bookmark"]?.boolValue ?? false
+        let insertBookmark = try optionalBool(args, "insert_bookmark") ?? false
         let bookmarkTemplate = args["bookmark_template"]?.stringValue
         if insertBookmark {
             guard let template = bookmarkTemplate, !template.isEmpty else {
@@ -14210,7 +14295,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard let referenceType = args["reference_type"]?.stringValue else {
@@ -14224,7 +14309,7 @@ actor WordMCPServer {
         }
 
         let format = args["format"]?.stringValue ?? "full"
-        let includeHyperlink = args["include_hyperlink"]?.boolValue ?? true
+        let includeHyperlink = try optionalBool(args, "include_hyperlink") ?? true
 
         let validTypes = ["bookmark", "heading", "figure", "table", "equation"]
         guard validTypes.contains(referenceType) else {
@@ -14246,7 +14331,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard let captionLabel = args["caption_label"]?.stringValue else {
@@ -14256,8 +14341,8 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let includePageNumbers = args["include_page_numbers"]?.boolValue ?? true
-        let rightAlignPageNumbers = args["right_align_page_numbers"]?.boolValue ?? true
+        let includePageNumbers = try optionalBool(args, "include_page_numbers") ?? true
+        let rightAlignPageNumbers = try optionalBool(args, "right_align_page_numbers") ?? true
         let tabLeader = args["tab_leader"]?.stringValue ?? "dot"
 
         let validLabels = ["Figure", "Table", "Equation"]
@@ -14292,7 +14377,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard let mainEntry = args["main_entry"]?.stringValue else {
@@ -14304,8 +14389,8 @@ actor WordMCPServer {
 
         let subEntry = args["sub_entry"]?.stringValue
         let crossReference = args["cross_reference"]?.stringValue
-        let bold = args["bold"]?.boolValue ?? false
-        let italic = args["italic"]?.boolValue ?? false
+        let bold = try optionalBool(args, "bold") ?? false
+        let italic = try optionalBool(args, "italic") ?? false
 
         let paragraphs = doc.getParagraphs()
         guard paragraphIndex >= 0 && paragraphIndex < paragraphs.count else {
@@ -14336,17 +14421,17 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
 
-        let columns = min(max(args["columns"]?.intValue ?? 2, 1), 4)
-        let rightAlignPageNumbers = args["right_align_page_numbers"]?.boolValue ?? true
+        let columns = min(max(try optionalInt(args, "columns") ?? 2, 1), 4)
+        let rightAlignPageNumbers = try optionalBool(args, "right_align_page_numbers") ?? true
         let tabLeader = args["tab_leader"]?.stringValue ?? "dot"
-        let runIn = args["run_in"]?.boolValue ?? false
+        let runIn = try optionalBool(args, "run_in") ?? false
 
         let paragraphs = doc.getParagraphs()
         guard paragraphIndex >= 0 && paragraphIndex <= paragraphs.count else {
@@ -14388,8 +14473,8 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let paragraphIndex = args["paragraph_index"]?.intValue
-        let noProofing = args["no_proofing"]?.boolValue ?? false
+        let paragraphIndex = try optionalInt(args, "paragraph_index")
+        let noProofing = try optionalBool(args, "no_proofing") ?? false
 
         // 語言設定需要在 RunProperties 中加入 <w:lang> 元素
         // 目前 OOXMLSwift 的 RunProperties 沒有支援 language 屬性
@@ -14415,14 +14500,14 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
 
-        let enable = args["enable"]?.boolValue ?? true
+        let enable = try optionalBool(args, "enable") ?? true
 
         let paragraphIndices = doc.body.children.enumerated().compactMap { (i, child) -> Int? in
             if case .paragraph = child { return i }
@@ -14449,10 +14534,10 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
-        guard let position = args["position"]?.intValue else {
+        guard let position = try optionalInt(args, "position") else {
             throw WordError.missingParameter("position")
         }
         guard let doc = openDocuments[docId] else {
@@ -14481,7 +14566,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard let doc = openDocuments[docId] else {
@@ -14501,14 +14586,14 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
 
-        let enable = args["enable"]?.boolValue ?? true
+        let enable = try optionalBool(args, "enable") ?? true
 
         let paragraphIndices = doc.body.children.enumerated().compactMap { (i, child) -> Int? in
             if case .paragraph = child { return i }
@@ -14535,10 +14620,10 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
-        guard let level = args["level"]?.intValue else {
+        guard let level = try optionalInt(args, "level") else {
             throw WordError.missingParameter("level")
         }
         guard let doc = openDocuments[docId] else {
@@ -14564,7 +14649,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let paragraphIndex = args["paragraph_index"]?.intValue else {
+        guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
         guard var doc = openDocuments[docId] else {
@@ -14620,7 +14705,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let tableIndex = args["table_index"]?.intValue else {
+        guard let tableIndex = try optionalInt(args, "table_index") else {
             throw WordError.missingParameter("table_index")
         }
         guard var doc = openDocuments[docId] else {
@@ -14628,7 +14713,7 @@ actor WordMCPServer {
         }
 
         let position = args["position"]?.stringValue ?? "end"
-        let rowIndex = args["row_index"]?.intValue
+        let rowIndex = try optionalInt(args, "row_index")
         let data = args["data"]?.arrayValue?.compactMap { $0.stringValue } ?? []
 
         let tables = doc.getTables()
@@ -14684,7 +14769,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let tableIndex = args["table_index"]?.intValue else {
+        guard let tableIndex = try optionalInt(args, "table_index") else {
             throw WordError.missingParameter("table_index")
         }
         guard var doc = openDocuments[docId] else {
@@ -14692,7 +14777,7 @@ actor WordMCPServer {
         }
 
         let position = args["position"]?.stringValue ?? "end"
-        let colIndex = args["col_index"]?.intValue
+        let colIndex = try optionalInt(args, "col_index")
         let data = args["data"]?.arrayValue?.compactMap { $0.stringValue } ?? []
 
         let tableIndices = doc.body.children.enumerated().compactMap { (i, child) -> Int? in
@@ -14736,10 +14821,10 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let tableIndex = args["table_index"]?.intValue else {
+        guard let tableIndex = try optionalInt(args, "table_index") else {
             throw WordError.missingParameter("table_index")
         }
-        guard let rowIndex = args["row_index"]?.intValue else {
+        guard let rowIndex = try optionalInt(args, "row_index") else {
             throw WordError.missingParameter("row_index")
         }
         guard var doc = openDocuments[docId] else {
@@ -14775,10 +14860,10 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let tableIndex = args["table_index"]?.intValue else {
+        guard let tableIndex = try optionalInt(args, "table_index") else {
             throw WordError.missingParameter("table_index")
         }
-        guard let colIndex = args["col_index"]?.intValue else {
+        guard let colIndex = try optionalInt(args, "col_index") else {
             throw WordError.missingParameter("col_index")
         }
         guard var doc = openDocuments[docId] else {
@@ -14815,16 +14900,16 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let tableIndex = args["table_index"]?.intValue else {
+        guard let tableIndex = try optionalInt(args, "table_index") else {
             throw WordError.missingParameter("table_index")
         }
-        guard let row = args["row"]?.intValue else {
+        guard let row = try optionalInt(args, "row") else {
             throw WordError.missingParameter("row")
         }
-        guard let col = args["col"]?.intValue else {
+        guard let col = try optionalInt(args, "col") else {
             throw WordError.missingParameter("col")
         }
-        guard let width = args["width"]?.intValue else {
+        guard let width = try optionalInt(args, "width") else {
             throw WordError.missingParameter("width")
         }
         guard let doc = openDocuments[docId] else {
@@ -14855,13 +14940,13 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let tableIndex = args["table_index"]?.intValue else {
+        guard let tableIndex = try optionalInt(args, "table_index") else {
             throw WordError.missingParameter("table_index")
         }
-        guard let rowIndex = args["row_index"]?.intValue else {
+        guard let rowIndex = try optionalInt(args, "row_index") else {
             throw WordError.missingParameter("row_index")
         }
-        guard let height = args["height"]?.intValue else {
+        guard let height = try optionalInt(args, "height") else {
             throw WordError.missingParameter("height")
         }
         guard let doc = openDocuments[docId] else {
@@ -14889,7 +14974,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let tableIndex = args["table_index"]?.intValue else {
+        guard let tableIndex = try optionalInt(args, "table_index") else {
             throw WordError.missingParameter("table_index")
         }
         guard let alignment = args["alignment"]?.stringValue else {
@@ -14918,13 +15003,13 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let tableIndex = args["table_index"]?.intValue else {
+        guard let tableIndex = try optionalInt(args, "table_index") else {
             throw WordError.missingParameter("table_index")
         }
-        guard let row = args["row"]?.intValue else {
+        guard let row = try optionalInt(args, "row") else {
             throw WordError.missingParameter("row")
         }
-        guard let col = args["col"]?.intValue else {
+        guard let col = try optionalInt(args, "col") else {
             throw WordError.missingParameter("col")
         }
         guard let alignment = args["alignment"]?.stringValue else {
@@ -15554,7 +15639,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let rootIdValue = args["root_comment_id"]?.intValue else {
+        guard let rootIdValue = try optionalInt(args, "root_comment_id") else {
             throw WordError.missingParameter("root_comment_id")
         }
         guard let doc = openDocuments[docId] else {
@@ -15853,7 +15938,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let id = args["endnote_id"]?.intValue else {
+        guard let id = try optionalInt(args, "endnote_id") else {
             throw WordError.missingParameter("endnote_id")
         }
         return try getNoteImpl(docId: docId, kind: "endnote", noteId: id)
@@ -15863,7 +15948,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let id = args["endnote_id"]?.intValue else {
+        guard let id = try optionalInt(args, "endnote_id") else {
             throw WordError.missingParameter("endnote_id")
         }
         guard let text = args["text"]?.stringValue else {
@@ -15876,7 +15961,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let id = args["footnote_id"]?.intValue else {
+        guard let id = try optionalInt(args, "footnote_id") else {
             throw WordError.missingParameter("footnote_id")
         }
         return try getNoteImpl(docId: docId, kind: "footnote", noteId: id)
@@ -15886,7 +15971,7 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let id = args["footnote_id"]?.intValue else {
+        guard let id = try optionalInt(args, "footnote_id") else {
             throw WordError.missingParameter("footnote_id")
         }
         guard let text = args["text"]?.stringValue else {
@@ -15953,13 +16038,13 @@ actor WordMCPServer {
             throw WordError.missingParameter("doc_id")
         }
         var xml = readArchivePart(docId: docId, partPath: "word/webSettings.xml") ?? defaultWebSettingsXML()
-        if let v = args["rely_on_vml"]?.boolValue {
+        if let v = try optionalBool(args, "rely_on_vml") {
             xml = setWebSettingFlag(xml, name: "relyOnVML", value: v)
         }
-        if let v = args["optimize_for_browser"]?.boolValue {
+        if let v = try optionalBool(args, "optimize_for_browser") {
             xml = setWebSettingFlag(xml, name: "optimizeForBrowser", value: v)
         }
-        if let v = args["allow_png"]?.boolValue {
+        if let v = try optionalBool(args, "allow_png") {
             xml = setWebSettingFlag(xml, name: "allowPNG", value: v)
         }
         try writeArchivePart(docId: docId, partPath: "word/webSettings.xml", content: xml)
@@ -16027,10 +16112,10 @@ actor WordMCPServer {
             guard let obj = item.objectValue, let name = obj["name"]?.stringValue else { continue }
             entries.append(LatentStyle(
                 name: name,
-                uiPriority: obj["ui_priority"]?.intValue,
-                semiHidden: obj["semi_hidden"]?.boolValue ?? false,
-                unhideWhenUsed: obj["unhide_when_used"]?.boolValue ?? false,
-                qFormat: obj["q_format"]?.boolValue ?? false
+                uiPriority: try optionalInt(obj, "ui_priority"),
+                semiHidden: try optionalBool(obj, "semi_hidden") ?? false,
+                unhideWhenUsed: try optionalBool(obj, "unhide_when_used") ?? false,
+                qFormat: try optionalBool(obj, "q_format") ?? false
             ))
         }
         doc.setLatentStyles(entries)
@@ -16063,7 +16148,7 @@ actor WordMCPServer {
 
     private func getNumberingDefinition(args: [String: Value]) async throws -> String {
         let doc = try await loadDocumentFromArgs(args)
-        guard let numId = args["num_id"]?.intValue else { throw WordError.missingParameter("num_id") }
+        guard let numId = try optionalInt(args, "num_id") else { throw WordError.missingParameter("num_id") }
         guard doc.numbering.nums.contains(where: { $0.numId == numId }) else {
             return "{ \"error\": \"not_found\", \"num_id\": \(numId) }"
         }
@@ -16078,12 +16163,12 @@ actor WordMCPServer {
         var levels: [Level] = []
         for item in levelsArr {
             guard let obj = item.objectValue,
-                  let ilvl = obj["ilvl"]?.intValue,
+                  let ilvl = try optionalInt(obj, "ilvl"),
                   let fmtStr = obj["num_format"]?.stringValue,
                   let lvlText = obj["lvl_text"]?.stringValue
             else { continue }
             let fmt = NumberFormat(rawValue: fmtStr) ?? .decimal
-            let start = obj["start"]?.intValue ?? 1
+            let start = try optionalInt(obj, "start") ?? 1
             levels.append(Level(ilvl: ilvl, start: start, numFmt: fmt, lvlText: lvlText, indent: 720 * (ilvl + 1)))
         }
         do {
@@ -16098,9 +16183,9 @@ actor WordMCPServer {
     private func overrideNumberingLevel(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
-        guard let numId = args["num_id"]?.intValue else { throw WordError.missingParameter("num_id") }
-        guard let ilvl = args["ilvl"]?.intValue else { throw WordError.missingParameter("ilvl") }
-        guard let startValue = args["start_value"]?.intValue else { throw WordError.missingParameter("start_value") }
+        guard let numId = try optionalInt(args, "num_id") else { throw WordError.missingParameter("num_id") }
+        guard let ilvl = try optionalInt(args, "ilvl") else { throw WordError.missingParameter("ilvl") }
+        guard let startValue = try optionalInt(args, "start_value") else { throw WordError.missingParameter("start_value") }
 
         do {
             try doc.overrideNumberingLevel(numId: numId, level: ilvl, startValue: startValue)
@@ -16114,9 +16199,9 @@ actor WordMCPServer {
     private func assignNumberingToParagraph(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
-        guard let paraIndex = args["paragraph_index"]?.intValue else { throw WordError.missingParameter("paragraph_index") }
-        guard let numId = args["num_id"]?.intValue else { throw WordError.missingParameter("num_id") }
-        guard let level = args["level"]?.intValue else { throw WordError.missingParameter("level") }
+        guard let paraIndex = try optionalInt(args, "paragraph_index") else { throw WordError.missingParameter("paragraph_index") }
+        guard let numId = try optionalInt(args, "num_id") else { throw WordError.missingParameter("num_id") }
+        guard let level = try optionalInt(args, "level") else { throw WordError.missingParameter("level") }
 
         do {
             try doc.assignNumberingToParagraph(paragraphIndex: paraIndex, numId: numId, level: level)
@@ -16132,8 +16217,8 @@ actor WordMCPServer {
     private func continueListTool(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
-        guard let paraIndex = args["paragraph_index"]?.intValue else { throw WordError.missingParameter("paragraph_index") }
-        guard let prevNum = args["previous_list_num_id"]?.intValue else { throw WordError.missingParameter("previous_list_num_id") }
+        guard let paraIndex = try optionalInt(args, "paragraph_index") else { throw WordError.missingParameter("paragraph_index") }
+        guard let prevNum = try optionalInt(args, "previous_list_num_id") else { throw WordError.missingParameter("previous_list_num_id") }
 
         do {
             try doc.continueList(paragraphIndex: paraIndex, previousListNumId: prevNum)
@@ -16149,8 +16234,8 @@ actor WordMCPServer {
     private func startNewListTool(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
-        guard let paraIndex = args["paragraph_index"]?.intValue else { throw WordError.missingParameter("paragraph_index") }
-        guard let absId = args["abstract_num_id"]?.intValue else { throw WordError.missingParameter("abstract_num_id") }
+        guard let paraIndex = try optionalInt(args, "paragraph_index") else { throw WordError.missingParameter("paragraph_index") }
+        guard let absId = try optionalInt(args, "abstract_num_id") else { throw WordError.missingParameter("abstract_num_id") }
 
         do {
             let newNumId = try doc.startNewList(paragraphIndex: paraIndex, abstractNumId: absId)
@@ -16192,9 +16277,9 @@ actor WordMCPServer {
     private func setLineNumbersForSection(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
-        guard let sectionIndex = args["section_index"]?.intValue else { throw WordError.missingParameter("section_index") }
-        guard let countBy = args["count_by"]?.intValue else { throw WordError.missingParameter("count_by") }
-        let start = args["start"]?.intValue
+        guard let sectionIndex = try optionalInt(args, "section_index") else { throw WordError.missingParameter("section_index") }
+        guard let countBy = try optionalInt(args, "count_by") else { throw WordError.missingParameter("count_by") }
+        let start = try optionalInt(args, "start")
         let restartStr = args["restart"]?.stringValue ?? "continuous"
         let restart = LineNumberRestart(rawValue: restartStr) ?? .continuous
 
@@ -16210,7 +16295,7 @@ actor WordMCPServer {
     private func setSectionVerticalAlignment(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
-        guard let sectionIndex = args["section_index"]?.intValue else { throw WordError.missingParameter("section_index") }
+        guard let sectionIndex = try optionalInt(args, "section_index") else { throw WordError.missingParameter("section_index") }
         guard let alignmentStr = args["alignment"]?.stringValue,
               let alignment = SectionVerticalAlignment(rawValue: alignmentStr)
         else {
@@ -16228,13 +16313,13 @@ actor WordMCPServer {
     private func setPageNumberFormat(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
-        guard let sectionIndex = args["section_index"]?.intValue else { throw WordError.missingParameter("section_index") }
+        guard let sectionIndex = try optionalInt(args, "section_index") else { throw WordError.missingParameter("section_index") }
         guard let formatStr = args["format"]?.stringValue,
               let format = SectionPageNumberFormat(rawValue: formatStr)
         else {
             throw WordError.invalidParameter("format", "Must be one of: decimal / lowerRoman / upperRoman / lowerLetter / upperLetter")
         }
-        let start = args["start"]?.intValue
+        let start = try optionalInt(args, "start")
         do {
             try doc.setSectionPageNumberFormat(sectionIndex: sectionIndex, start: start, format: format)
         } catch WordError.invalidIndex(let i) {
@@ -16247,7 +16332,7 @@ actor WordMCPServer {
     private func setSectionBreakType(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
-        guard let sectionIndex = args["section_index"]?.intValue else { throw WordError.missingParameter("section_index") }
+        guard let sectionIndex = try optionalInt(args, "section_index") else { throw WordError.missingParameter("section_index") }
         guard let typeStr = args["type"]?.stringValue,
               let type = SectionBreakType(rawValue: typeStr)
         else {
@@ -16265,8 +16350,8 @@ actor WordMCPServer {
     private func setTitlePageDistinct(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
-        guard let sectionIndex = args["section_index"]?.intValue else { throw WordError.missingParameter("section_index") }
-        guard let enabled = args["enabled"]?.boolValue else { throw WordError.missingParameter("enabled") }
+        guard let sectionIndex = try optionalInt(args, "section_index") else { throw WordError.missingParameter("section_index") }
+        guard let enabled = try optionalBool(args, "enabled") else { throw WordError.missingParameter("enabled") }
         do {
             try doc.setTitlePageDistinct(sectionIndex: sectionIndex, enabled: enabled)
         } catch WordError.invalidIndex(let i) {
@@ -16279,7 +16364,7 @@ actor WordMCPServer {
     private func setSectionHeaderFooterReferences(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
-        guard let sectionIndex = args["section_index"]?.intValue else { throw WordError.missingParameter("section_index") }
+        guard let sectionIndex = try optionalInt(args, "section_index") else { throw WordError.missingParameter("section_index") }
         guard let refs = args["references"]?.objectValue else { throw WordError.missingParameter("references") }
 
         do {
@@ -16333,7 +16418,7 @@ actor WordMCPServer {
     private func setTableConditionalStyleTool(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
-        guard let tableIndex = args["table_index"]?.intValue else { throw WordError.missingParameter("table_index") }
+        guard let tableIndex = try optionalInt(args, "table_index") else { throw WordError.missingParameter("table_index") }
         guard let typeStr = args["type"]?.stringValue,
               let type = TableConditionalStyleType(rawValue: typeStr)
         else {
@@ -16341,11 +16426,11 @@ actor WordMCPServer {
         }
         guard let propsObj = args["properties"]?.objectValue else { throw WordError.missingParameter("properties") }
         let props = TableConditionalStyleProperties(
-            bold: propsObj["bold"]?.boolValue,
-            italic: propsObj["italic"]?.boolValue,
+            bold: try optionalBool(propsObj, "bold"),
+            italic: try optionalBool(propsObj, "italic"),
             color: propsObj["color"]?.stringValue,
             backgroundColor: propsObj["background_color"]?.stringValue,
-            fontSize: propsObj["font_size"]?.intValue
+            fontSize: try optionalInt(propsObj, "font_size")
         )
         do {
             try doc.setTableConditionalStyle(tableIndex: tableIndex, type: type, properties: props)
@@ -16359,11 +16444,11 @@ actor WordMCPServer {
     private func insertNestedTableTool(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
-        guard let parentIndex = args["parent_table_index"]?.intValue else { throw WordError.missingParameter("parent_table_index") }
-        guard let rowIndex = args["row_index"]?.intValue else { throw WordError.missingParameter("row_index") }
-        guard let colIndex = args["col_index"]?.intValue else { throw WordError.missingParameter("col_index") }
-        guard let rows = args["rows"]?.intValue else { throw WordError.missingParameter("rows") }
-        guard let cols = args["cols"]?.intValue else { throw WordError.missingParameter("cols") }
+        guard let parentIndex = try optionalInt(args, "parent_table_index") else { throw WordError.missingParameter("parent_table_index") }
+        guard let rowIndex = try optionalInt(args, "row_index") else { throw WordError.missingParameter("row_index") }
+        guard let colIndex = try optionalInt(args, "col_index") else { throw WordError.missingParameter("col_index") }
+        guard let rows = try optionalInt(args, "rows") else { throw WordError.missingParameter("rows") }
+        guard let cols = try optionalInt(args, "cols") else { throw WordError.missingParameter("cols") }
 
         do {
             try doc.insertNestedTable(parentTableIndex: parentIndex, rowIndex: rowIndex, colIndex: colIndex, rows: rows, cols: cols)
@@ -16379,7 +16464,7 @@ actor WordMCPServer {
     private func setTableLayoutTool(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
-        guard let tableIndex = args["table_index"]?.intValue else { throw WordError.missingParameter("table_index") }
+        guard let tableIndex = try optionalInt(args, "table_index") else { throw WordError.missingParameter("table_index") }
         guard let typeStr = args["type"]?.stringValue, let type = TableLayout(rawValue: typeStr) else {
             throw WordError.invalidParameter("type", "Must be one of: fixed / autofit")
         }
@@ -16396,18 +16481,15 @@ actor WordMCPServer {
     /// row_index 標記單一 row 為表頭（向下相容既有行為，未提供任一參數時預設 row_index=0）；
     /// row_count 標記從第一列起的前 N 列為表頭。兩者同時提供視為參數錯誤，不可默默挑一個生效。
     ///
-    /// 已知限制（#230 review 記錄，非本次範圍）：`row_index`／`row_count` 沿用整個檔案既有的
-    /// `args["x"]?.intValue` 慣例——型別不符的值（例如字串 `"2"`）與缺漏視為相同（皆為 nil），
-    /// 不會被單獨攔下報錯。這與檔案裡其餘所有整數參數的行為一致，不是本次合併新引入的落差；
-    /// 若要修，屬於跨全檔案（表格／超連結／章節等上百個整數參數）的嚴格型別檢查，應另開 issue
-    /// 處理（可參考 che-pptx-mcp #5 的先例），不在 #230 的「消除重複註冊」範圍內。
+    /// `row_index`／`row_count` 已改走 `optionalInt`（#232）：型別不符的值（例如字串 `"2"`）
+    /// 現在會回 `WordError.invalidParameter` 而不是被當成缺漏、默默套用 `row_index=0`。
     private func setHeaderRowTool(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
-        guard let tableIndex = args["table_index"]?.intValue else { throw WordError.missingParameter("table_index") }
+        guard let tableIndex = try optionalInt(args, "table_index") else { throw WordError.missingParameter("table_index") }
 
-        let rowIndexArg = args["row_index"]?.intValue
-        let rowCountArg = args["row_count"]?.intValue
+        let rowIndexArg = try optionalInt(args, "row_index")
+        let rowCountArg = try optionalInt(args, "row_count")
         if rowIndexArg != nil && rowCountArg != nil {
             throw WordError.invalidParameter("row_index/row_count", "row_index 與 row_count 擇一，不可同時提供")
         }
@@ -16441,8 +16523,8 @@ actor WordMCPServer {
     private func setTableIndentTool(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
-        guard let tableIndex = args["table_index"]?.intValue else { throw WordError.missingParameter("table_index") }
-        guard let value = args["value"]?.intValue else { throw WordError.missingParameter("value") }
+        guard let tableIndex = try optionalInt(args, "table_index") else { throw WordError.missingParameter("table_index") }
+        guard let value = try optionalInt(args, "value") else { throw WordError.missingParameter("value") }
         do {
             try doc.setTableIndent(tableIndex: tableIndex, value: value)
         } catch WordError.invalidIndex(let i) {
@@ -16497,13 +16579,13 @@ actor WordMCPServer {
     private func insertUrlHyperlinkTool(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
-        guard let paraIndex = args["paragraph_index"]?.intValue else { throw WordError.missingParameter("paragraph_index") }
+        guard let paraIndex = try optionalInt(args, "paragraph_index") else { throw WordError.missingParameter("paragraph_index") }
         guard let url = args["url"]?.stringValue else { throw WordError.missingParameter("url") }
         guard let text = args["text"]?.stringValue else { throw WordError.missingParameter("text") }
 
         ensureHyperlinkStyle(&doc)
         let tooltip = args["tooltip"]?.stringValue
-        let history = args["history"]?.boolValue ?? true
+        let history = try optionalBool(args, "history") ?? true
         let rId = "rId\(Int.random(in: 100...999))"
         let hlId = "hl-\(UUID().uuidString.prefix(8))"
         // Track relationship for downstream writer.
@@ -16518,7 +16600,7 @@ actor WordMCPServer {
     private func insertBookmarkHyperlinkTool(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
-        guard let paraIndex = args["paragraph_index"]?.intValue else { throw WordError.missingParameter("paragraph_index") }
+        guard let paraIndex = try optionalInt(args, "paragraph_index") else { throw WordError.missingParameter("paragraph_index") }
         guard let anchor = args["anchor"]?.stringValue else { throw WordError.missingParameter("anchor") }
         guard let text = args["text"]?.stringValue else { throw WordError.missingParameter("text") }
 
@@ -16534,7 +16616,7 @@ actor WordMCPServer {
     private func insertEmailHyperlinkTool(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
-        guard let paraIndex = args["paragraph_index"]?.intValue else { throw WordError.missingParameter("paragraph_index") }
+        guard let paraIndex = try optionalInt(args, "paragraph_index") else { throw WordError.missingParameter("paragraph_index") }
         guard let email = args["email"]?.stringValue else { throw WordError.missingParameter("email") }
         guard let text = args["text"]?.stringValue else { throw WordError.missingParameter("text") }
 
@@ -16559,7 +16641,7 @@ actor WordMCPServer {
     private func enableEvenOddHeadersTool(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
-        guard let enabled = args["enabled"]?.boolValue else { throw WordError.missingParameter("enabled") }
+        guard let enabled = try optionalBool(args, "enabled") else { throw WordError.missingParameter("enabled") }
         doc.setEvenAndOddHeaders(enabled)
         try await storeDocument(doc, for: docId)
         return "Set even_and_odd_headers=\(enabled)"
@@ -16568,7 +16650,7 @@ actor WordMCPServer {
     private func linkSectionHeaderToPreviousTool(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
-        guard let sectionIndex = args["section_index"]?.intValue else { throw WordError.missingParameter("section_index") }
+        guard let sectionIndex = try optionalInt(args, "section_index") else { throw WordError.missingParameter("section_index") }
         guard let typeStr = args["type"]?.stringValue, let type = HeaderFooterType(rawValue: typeStr) else {
             throw WordError.invalidParameter("type", "Must be one of: default / first / even")
         }
@@ -16585,7 +16667,7 @@ actor WordMCPServer {
     private func unlinkSectionHeaderFromPreviousTool(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
-        guard let sectionIndex = args["section_index"]?.intValue else { throw WordError.missingParameter("section_index") }
+        guard let sectionIndex = try optionalInt(args, "section_index") else { throw WordError.missingParameter("section_index") }
         guard let typeStr = args["type"]?.stringValue, let type = HeaderFooterType(rawValue: typeStr) else {
             throw WordError.invalidParameter("type", "Must be one of: default / first / even")
         }
