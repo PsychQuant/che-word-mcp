@@ -2,8 +2,107 @@ import XCTest
 import MCP
 import OOXMLSwift
 @testable import CheWordMCP
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
+/// #232 R4 root cause (`testOpenOfficialAutosave*FailureRollsBackSessionAndAllowsRetry`
+/// flaked under `swift test --parallel`): ooxml-swift's `ZipHelper` extracts
+/// and stages EVERY `.docx` this process reads or writes — via
+/// `DocxReader.read`, `DocxWriter.writeData`, and
+/// `DocxWriter.materializeTypedTrees` alike — into a single hardcoded,
+/// process/user-wide namespace: `NSTemporaryDirectory()/che-word-mcp/<uuid>`
+/// (`ZipHelper.readerNamespace`). `NSTemporaryDirectory()` explicitly
+/// ignores `TMPDIR` (documented at its call site in ooxml-swift, to defeat
+/// a same-uid namespace-planting attack — see `ZipHelper.swift`'s R8
+/// comment), so this directory cannot be redirected per-test-process from
+/// che-word-mcp's side; the namespace name is a `public static let`
+/// constant, not configurable.
+///
+/// The two rollback tests snapshot that shared directory's listing before
+/// and after a failing `open_document` call and assert no NEW entry
+/// survived. That comparison is unconditionally racy against ANY other
+/// process concurrently touching a real `.docx` at that moment — including
+/// a SIBLING method of this very class: `swift test --parallel` schedules
+/// individual XCTest methods into separate worker PROCESSES, confirmed
+/// empirically (`swift test --parallel --filter DocumentProfileToolsTests`
+/// alone reproduces the flake; the full 459-test suite shows the identical
+/// two failures and no others). An in-process lock (`NSLock`,
+/// `DispatchSemaphore`) cannot serialize across those separate processes;
+/// only a real OS-level advisory file lock (`flock`) does, so that is what
+/// `setUp`/`tearDown` below use — not a retry, not a loosened assertion:
+/// every test in this file now genuinely cannot run concurrently with
+/// another test in this file, which is what the two snapshot-diff
+/// assertions actually require to be meaningful. This deliberately gives up
+/// this ONE file's cross-worker parallelism for correctness; it does not
+/// touch how `swift test --parallel` schedules any OTHER test file.
 final class DocumentProfileToolsTests: XCTestCase {
+    /// Held for the duration of every test in this class (see the type's
+    /// doc comment). A fixed path under the system temp directory, shared
+    /// by every worker process `swift test --parallel` spawns for this
+    /// class's methods.
+    private static let archiveNamespaceLockPath = FileManager.default.temporaryDirectory
+        .appendingPathComponent("che-word-mcp-test-archive-namespace.lock").path
+    private var archiveNamespaceLockFD: Int32 = -1
+
+    override func setUp() async throws {
+        try await super.setUp()
+        let fd = open(Self.archiveNamespaceLockPath, O_CREAT | O_RDWR, 0o600)
+        precondition(fd >= 0, "could not open the archive-namespace test lock file at \(Self.archiveNamespaceLockPath)")
+        // Blocks (does not spin or poll) until any other process's hold on
+        // this same lock file releases — i.e., until the previously
+        // running test in this class finishes its tearDown.
+        flock(fd, LOCK_EX)
+        archiveNamespaceLockFD = fd
+    }
+
+    override func tearDown() async throws {
+        if archiveNamespaceLockFD >= 0 {
+            flock(archiveNamespaceLockFD, LOCK_UN)
+            close(archiveNamespaceLockFD)
+            archiveNamespaceLockFD = -1
+        }
+        try await super.tearDown()
+    }
+
+    /// Deterministic, in-process demonstration of the root cause above —
+    /// not timing-dependent like the empirical `--parallel` reproduction
+    /// (see #232 R4 report for those runs' output). Shows that a
+    /// before/after diff of the shared archive namespace can be non-empty
+    /// purely because of an entry NO che-word-mcp code created, proving the
+    /// snapshot-diff technique itself needs the exclusion the lock above
+    /// now provides — this test does not take the lock, is independent of
+    /// the fix, and always passes; it documents *why* the fix is needed.
+    func testSharedArchiveNamespaceSnapshotDiffIsFooledByAnUnrelatedConcurrentEntry() throws {
+        let namespace = FileManager.default.temporaryDirectory.appendingPathComponent(ZipHelper.readerNamespace)
+        try FileManager.default.createDirectory(at: namespace, withIntermediateDirectories: true)
+        let before = Set(try FileManager.default.contentsOfDirectory(atPath: namespace.path))
+
+        // Stands in for a sibling test's transient archive tempDir — in a
+        // real race it would be created and gone within another test's own
+        // operation; held here just long enough to land in the "after"
+        // snapshot, which is what makes the demonstration deterministic
+        // instead of dependent on real inter-process timing.
+        let unrelated = namespace.appendingPathComponent("unrelated-sibling-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: unrelated, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: unrelated) }
+
+        let after = Set(try FileManager.default.contentsOfDirectory(atPath: namespace.path))
+        let apparentLeak = after.subtracting(before)
+
+        // `contains`, not exact equality: this class's own setUp/tearDown
+        // lock only serializes THIS file's methods against each other, not
+        // against every other test file in the suite that also touches a
+        // real .docx — so under `swift test --parallel` across the WHOLE
+        // suite, `apparentLeak` may legitimately contain MORE than just
+        // `unrelated` too. Either way proves the same point: a bare diff of
+        // this shared namespace cannot attribute an entry to any one test.
+        XCTAssertTrue(apparentLeak.contains(unrelated.lastPathComponent),
+                       "an entry this test did not create, and che-word-mcp never touched, shows up as an apparent leak in a bare before/after diff of the shared namespace: \(apparentLeak)")
+    }
+
     private func directory() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("profile-mcp-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -284,7 +383,13 @@ final class DocumentProfileToolsTests: XCTestCase {
         try FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
         let original = try source(in: documents), before = try Data(contentsOf: original)
         try DocumentProfileStore(configURL: config).importOfficial(from: template(in: dir))
-        let server = await WordMCPServer(documentConfigURL: config)
+        // #232 R4: forceDebugLogging so the "retry" open's specific archive
+        // path can be read back from debugEventLogForTesting() below — a
+        // deterministic, single-path existence check replacing the old
+        // "diff ooxml-swift's shared che-word-mcp temp namespace" technique,
+        // which was racy against any other concurrently-running process
+        // touching a real .docx (see this file's top-level doc comment).
+        let server = await WordMCPServer(forceDebugLogging: true, documentConfigURL: config)
         addTeardownBlock {
             for id in ["kept", "retry"] {
                 _ = await server.invokeToolForTesting(name: "close_document", arguments: ["doc_id": .string(id), "discard_changes": .bool(true)])
@@ -299,8 +404,6 @@ final class DocumentProfileToolsTests: XCTestCase {
         XCTAssertFalse(modified.isError == true, text(modified))
         let keptDocument = await server.openDocuments["kept"]
         let keptArchive = try XCTUnwrap(keptDocument?.archiveTempDir)
-        let archiveNamespace = keptArchive.deletingLastPathComponent()
-        let archiveNamesBefore = Set(try FileManager.default.contentsOfDirectory(atPath: archiveNamespace.path))
         let lock = WordLock.lockFileURL(for: original)
         if useWordLock {
             try Data("Word lock".utf8).write(to: lock)
@@ -320,8 +423,17 @@ final class DocumentProfileToolsTests: XCTestCase {
         let failedDirty = await server.isDocumentDirtyForTesting("retry")
         XCTAssertFalse(failedDirty)
         XCTAssertEqual(try Data(contentsOf: original), before)
-        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: archiveNamespace.path)).subtracting(archiveNamesBefore), [],
-                       "a failed open must release its extracted archive")
+
+        // The failed "retry" open's own archive, and only that one path —
+        // not a diff of the whole shared namespace — must be gone.
+        let retryArchiveEvents = await server.debugEventLogForTesting().filter {
+            $0.event == "openDocument.archiveExtracted" && $0.keyValues.contains { $0.0 == "doc_id" && $0.1 == "retry" }
+        }
+        XCTAssertEqual(retryArchiveEvents.count, 1, "expected exactly one archive-extracted event for the failed retry open")
+        let retryArchivePath = try XCTUnwrap(retryArchiveEvents.first?.keyValues.first { $0.0 == "archive_temp_dir" }?.1)
+        XCTAssertNotEqual(retryArchivePath, "nil", "the retry open must have successfully extracted an archive before the later failure")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: retryArchivePath),
+                        "a failed open must release its own extracted archive")
         XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: documents.path).contains { $0.contains(".tmp.") || $0.contains(".autosave.") })
 
         // A duplicate-id refusal must not dispose of the pre-existing session.
