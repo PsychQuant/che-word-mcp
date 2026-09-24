@@ -102,7 +102,7 @@ extension WordMCPServer {
 
     func getCaptionHandler(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
-        guard let index = args["index"]?.intValue else { throw WordError.missingParameter("index") }
+        guard let index = try optionalInt(args, "index") else { throw WordError.missingParameter("index") }
         guard let doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
 
         let captions = enumerateCaptions(doc)
@@ -123,7 +123,7 @@ extension WordMCPServer {
 
     func updateCaptionHandler(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
-        guard let index = args["index"]?.intValue else { throw WordError.missingParameter("index") }
+        guard let index = try optionalInt(args, "index") else { throw WordError.missingParameter("index") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
 
         let newCaptionText = args["new_caption_text"]?.stringValue
@@ -172,7 +172,7 @@ extension WordMCPServer {
 
     func deleteCaptionHandler(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
-        guard let index = args["index"]?.intValue else { throw WordError.missingParameter("index") }
+        guard let index = try optionalInt(args, "index") else { throw WordError.missingParameter("index") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
 
         let captions = enumerateCaptions(doc)
@@ -193,7 +193,7 @@ extension WordMCPServer {
         // preserves prior global-counter-sharing behavior. When true, each
         // container family (body / each header / each footer / footnotes /
         // endnotes) gets independent SEQ counter dicts.
-        let isolatePerContainer = args["isolate_per_container"]?.boolValue ?? false
+        let isolatePerContainer = try optionalBool(args, "isolate_per_container") ?? false
 
         let result = doc.updateAllFields(isolatePerContainer: isolatePerContainer)
         try await storeDocument(doc, for: docId)
@@ -258,7 +258,7 @@ extension WordMCPServer {
 
     func getEquationHandler(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
-        guard let index = args["index"]?.intValue else { throw WordError.missingParameter("index") }
+        guard let index = try optionalInt(args, "index") else { throw WordError.missingParameter("index") }
         guard let doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
 
         let equations = enumerateEquations(doc)
@@ -277,7 +277,7 @@ extension WordMCPServer {
 
     func updateEquationHandler(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
-        guard let index = args["index"]?.intValue else { throw WordError.missingParameter("index") }
+        guard let index = try optionalInt(args, "index") else { throw WordError.missingParameter("index") }
         guard args["components"] != nil else { throw WordError.missingParameter("components") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
 
@@ -293,7 +293,7 @@ extension WordMCPServer {
             throw ToolRefusal("expected paragraph at \(eq.paragraphIndex)")
         }
         // Parse components (minimal — full JSON→MathComponent deferred)
-        let explicitDisplayMode = args["display_mode"]?.boolValue
+        let explicitDisplayMode = try optionalBool(args, "display_mode")
         let displayMode = explicitDisplayMode ?? eq.displayMode
         let newXML = buildOMMLFromComponentArg(args["components"]!, displayMode: displayMode)
         para.runs[eq.runIndex].rawXML = newXML
@@ -304,7 +304,7 @@ extension WordMCPServer {
 
     func deleteEquationHandler(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else { throw WordError.missingParameter("doc_id") }
-        guard let index = args["index"]?.intValue else { throw WordError.missingParameter("index") }
+        guard let index = try optionalInt(args, "index") else { throw WordError.missingParameter("index") }
         guard var doc = openDocuments[docId] else { throw WordError.documentNotFound(docId) }
 
         let equations = enumerateEquations(doc)
