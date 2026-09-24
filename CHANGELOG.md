@@ -18,7 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   無損轉換的整數值 double，如 `3.0`；`0.5`、`NaN`、`±Infinity`、超出 `Int` 範圍一律拒絕）／JSON
   `true`／`false`；字串、陣列、物件、其他數字型別一律回 `WordError.invalidParameter` 並指名參數；
   `null` 與缺漏仍視同未提供（維持既有的必填／選填判斷不變）。這是行為變更：呼叫端如果曾經依賴
-  「型別不符時默默套用預設值」，現在會改成收到參數錯誤。
+  「型別不符時默默套用預設值」，現在會改成收到參數錯誤——但僅限於「該次呼叫實際會執行到的讀取」：
+  少數參數只在同伴參數（如 `border_style`、`as_revision`）也給定、或走到特定分支（如 `all: true`）
+  時才會被讀取，這類條件式讀取不是本次全面稽核的對象（下方會標出已修正與未修正的具體案例），本條
+  目的「一律回參數錯誤」不代表對每個工具的每個整數／布林參數在任何呼叫組合下都成立。
   範圍：`Server.swift`／`ReadbackTools.swift` 全部 372 個直接 `["x"]?.intValue`／`["x"]?.boolValue`
   呼叫點（268 個 `.intValue`：Server.swift 262 + ReadbackTools.swift 6；104 個 `.boolValue`：
   Server.swift 102 + ReadbackTools.swift 2）；順手修正兩個既有的 schema／實作對不上的 bug
@@ -45,6 +48,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   「多參數合成一個可選功能、群組內較早的可選繫結短路掉較晚繫結的型別檢查」這一類問題的其中兩個
   具體案例，檔案裡還有約 31 處 `if let ... = try optionalInt/optionalBool(...)` 的組合繫結，
   這次沒有逐一稽核；如有人擔心其餘案例，屬於另一個 issue 的範圍。
+  R3 審查另外具名指出同一大類、但不是「組合繫結」形狀的條件式讀取（同樣沒有修正，理由同上）：
+  `format_text` 的 `run_index` 只在 `as_revision: true` 時才被讀取；分頁邊界設定的自訂整數只在
+  非預設樣式分支才被讀取；`accept_all_revisions`／`reject_all_revisions` 的 `all: true` 分支
+  不會讀取 `revision_id`；`replyToComment` 的 `try (optionalInt(args, "comment_id") ??
+  optionalInt(args, "parent_comment_id"))`——`comment_id` 非 nil 時，`parent_comment_id` 型別
+  不符也不會被求值到（`??` 短路）。這些都是「參數在某些呼叫組合下對該次呼叫本來就無效，所以沒被
+  讀取」的既有設計，不是本次遷移新引入的落差；是否要求「即使無效也要先驗證型別」是比 #232 更廣的
+  規範問題，同樣留給後續 issue。
   `replace_text_batch`／`search_text_batch` 的 per-item `regex`／`match_case`／`case_sensitive`
   型別檢查也在 R1 修正：原本被機械遷移放在該 item 的 `do`／`catch` 範圍**之外**，型別不符會直接
   拋出整個函式，不只中止該批次其餘項目，還會讓前面已經套用（但尚未 persist）的項目一併遺失——
