@@ -738,6 +738,130 @@ final class ScriptPipelineParityTests: XCTestCase {
                        "MCP aggregate must equal the live CLI aggregate")
     }
 
+    // MARK: - Layer 2b: gated paragraphs-only cross-check (#227)
+
+    /// Runs the macdoc binary with stdout / stderr captured to files, so a
+    /// large output can never fill a pipe and deadlock (verify R2 #6).
+    private func runMacdoc(_ cliPath: String, _ arguments: [String], in dir: URL) throws
+        -> (status: Int32, stdout: String, stderr: String)
+    {
+        let tag = UUID().uuidString
+        let outURL = dir.appendingPathComponent("cli-\(tag).out")
+        let errURL = dir.appendingPathComponent("cli-\(tag).err")
+        FileManager.default.createFile(atPath: outURL.path, contents: nil)
+        FileManager.default.createFile(atPath: errURL.path, contents: nil)
+        let outHandle = try FileHandle(forWritingTo: outURL)
+        let errHandle = try FileHandle(forWritingTo: errURL)
+        defer {
+            try? outHandle.close()
+            try? errHandle.close()
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cliPath)
+        process.arguments = arguments
+        process.standardOutput = outHandle
+        process.standardError = errHandle
+        try process.run()
+        process.waitUntilExit()
+        return (process.terminationStatus,
+                try String(contentsOf: outURL, encoding: .utf8),
+                try String(contentsOf: errURL, encoding: .utf8))
+    }
+
+    /// #227: export_script(paragraphs_only: true) and `macdoc word reverse
+    /// --paragraphs-only` export byte-identical scripts, with and without a
+    /// slot, and agree on the root cause that makes this path relevant.
+    ///
+    /// What is byte-identical here is the two faces' SCRIPTS. The rebuild a
+    /// paragraphs-only script produces is not byte-equal to its source
+    /// (pinned in Issue227ScriptCoverageReasonsTests). The MCP side is a port
+    /// of the CLI's reverse loop, not a shared library call, so this test is
+    /// the only thing guarding the two copies against drift.
+    ///
+    /// Needs MACDOC_CLI_PATH; MACDOC_TEMPLATE_DIR adds the JPA template.
+    func testParagraphsOnlyCLICrossCheckAgainstMacdocBinary() async throws {
+        guard let cliPath = ProcessInfo.processInfo.environment["MACDOC_CLI_PATH"] else {
+            throw XCTSkip("set MACDOC_CLI_PATH — paragraphs-only cross-check needs the macdoc binary")
+        }
+        let dir = try makeScratch()
+        let noParaId = dir.appendingPathComponent("no-paraid.docx")
+        try ScriptPipelineFixtures.writeParagraphsWithoutParaId(to: noParaId)
+        let fiveLayer = dir.appendingPathComponent("five-layer.docx")
+        try makeFiveLayerDocx(at: fiveLayer)
+        // (input, slot target or nil). "p1" is a synthesized id; "P1" a real one.
+        var inputs: [(url: URL, slotTarget: String?)] = [(noParaId, "p1"), (fiveLayer, "P1")]
+        if let templateDir = ProcessInfo.processInfo.environment["MACDOC_TEMPLATE_DIR"] {
+            let template = URL(fileURLWithPath: templateDir)
+                .appendingPathComponent("90_template_ja.docx")
+            if FileManager.default.fileExists(atPath: template.path) {
+                inputs.append((template, nil))
+            }
+        }
+
+        let server = await WordMCPServer()
+        var compared = 0
+        for (index, input) in inputs.enumerated() {
+            let name = input.url.lastPathComponent
+            var slotTargets: [String?] = [nil]
+            if let target = input.slotTarget { slotTargets.append(target) }
+            for (variant, target) in slotTargets.enumerated() {
+                let cliScript = dir.appendingPathComponent("cli-\(index)-\(variant).mdocx.swift")
+                let mcpScript = dir.appendingPathComponent("mcp-\(index)-\(variant).mdocx.swift")
+                var cliArgs = ["word", "reverse", input.url.path,
+                               "--to-mdocx", cliScript.path, "--paragraphs-only"]
+                var mcpArgs: [String: Value] = [
+                    "source_path": .string(input.url.path),
+                    "output_path": .string(mcpScript.path),
+                    "paragraphs_only": .bool(true),
+                ]
+                if let target {
+                    cliArgs += ["--slot", "s0=\(target)"]
+                    mcpArgs["slots"] = .array([.object([
+                        "name": .string("s0"), "para_id": .string(target),
+                    ])])
+                }
+
+                let cli = try runMacdoc(cliPath, cliArgs, in: dir)
+                XCTAssertEqual(cli.status, 0, "\(name): CLI export failed: \(cli.stderr)")
+                let mcp = await server.invokeToolForTesting(name: "export_script", arguments: mcpArgs)
+                XCTAssertNotEqual(mcp.isError, true, "\(name): \(resultText(mcp))")
+
+                XCTAssertEqual(try Data(contentsOf: cliScript), try Data(contentsOf: mcpScript),
+                               "\(name) slot=\(target ?? "-"): paragraphs-only scripts must be byte-identical")
+                compared += 1
+
+                // The omitted-block report agrees with the CLI's stderr warning.
+                let json = try XCTUnwrap(try JSONSerialization.jsonObject(
+                    with: Data(resultText(mcp).utf8)) as? [String: Any])
+                let omitted = try XCTUnwrap(json["omitted_body_blocks"] as? [String])
+                XCTAssertEqual(omitted.isEmpty, !cli.stderr.contains("已略過"),
+                               "\(name): omission must be reported on both faces; CLI: \(cli.stderr)")
+                for kind in Set(omitted) {
+                    XCTAssertTrue(cli.stderr.contains(kind),
+                                  "\(name): CLI warning must name \(kind); got: \(cli.stderr)")
+                }
+            }
+        }
+        XCTAssertGreaterThanOrEqual(compared, 4, "every synthetic variant must be compared")
+
+        // Root cause: the CLI coverage report names paragraph-no-paraId
+        // exactly when MCP's document.xml row carries that raw_reason.
+        for source in [noParaId, fiveLayer] {
+            let cli = try runMacdoc(cliPath, ["word", "reverse", source.path, "--coverage"], in: dir)
+            XCTAssertEqual(cli.status, 0, cli.stderr)
+            let coverage = await server.invokeToolForTesting(name: "get_script_coverage", arguments: [
+                "source_path": .string(source.path),
+            ])
+            let json = try XCTUnwrap(try JSONSerialization.jsonObject(
+                with: Data(resultText(coverage).utf8)) as? [String: Any])
+            let parts = try XCTUnwrap(json["parts"] as? [[String: Any]])
+            let docRow = try XCTUnwrap(parts.first { $0["part_path"] as? String == "word/document.xml" })
+            XCTAssertEqual(docRow["raw_reason"] as? String == "paragraph-no-paraId",
+                           cli.stdout.contains("paragraph-no-paraId"),
+                           "\(source.lastPathComponent): root cause must agree; CLI: \(cli.stdout)")
+        }
+    }
+
     /// Without verify_byte_equal_against the verdict is absent (nil), not a
     /// silent false/true.
     func testExecuteWithoutVerificationReportsNoVerdict() throws {
