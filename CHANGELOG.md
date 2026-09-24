@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.3.0] - 2026-09-24
+
+> 新增一個選填欄位與一個選填參數，屬於向下相容的新功能，bump minor。
+
 ### Added
 
 - **`get_script_coverage` 的每個 raw part 帶上 `raw_reason`**（#227，PsychQuant/macdoc#193）。值是
