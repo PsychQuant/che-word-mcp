@@ -7664,7 +7664,15 @@ actor WordMCPServer {
                     continue
                 }
                 queryStr = q
-                caseSensitive = try optionalBool(obj, "case_sensitive") ?? false
+                // #232 R1: a per-item type error must fail that item, not
+                // the whole batch — same "malformed entry" soft-fail shape
+                // as the guards above, not a thrown error escaping the loop.
+                do {
+                    caseSensitive = try optionalBool(obj, "case_sensitive") ?? false
+                } catch {
+                    output += "\n=== [\(idx)] FAIL: \(error) ===\n"
+                    continue
+                }
             default:
                 output += "\n=== [\(idx)] FAIL: query must be string or object ===\n"
                 continue
@@ -7733,8 +7741,19 @@ actor WordMCPServer {
             // per-item options, fall back to no-op defaults
             let scopeString = item["scope"]?.stringValue ?? "body"
             let scope: ReplaceScope = (scopeString == "all") ? .all : .bodyAndTables
-            let regex = try optionalBool(item, "regex") ?? false
-            let matchCase = try optionalBool(item, "match_case") ?? true
+            // #232 R1: a per-item type error must fail that item, not the
+            // whole batch — same "malformed entry" soft-fail shape as the
+            // guards above, not a thrown error escaping the loop.
+            let regex: Bool
+            let matchCase: Bool
+            do {
+                regex = try optionalBool(item, "regex") ?? false
+                matchCase = try optionalBool(item, "match_case") ?? true
+            } catch {
+                results.append(["index": idx, "find": find, "error": "\(error)"])
+                failed += 1
+                if stopOnFirstFailure { break } else { continue }
+            }
             let options = ReplaceOptions(scope: scope, regex: regex, matchCase: matchCase)
 
             do {
@@ -9425,13 +9444,18 @@ actor WordMCPServer {
     private func listComments(args: [String: Value]) async throws -> String {
         let (doc, _) = try await resolveDocument(args: args)
 
+        // #232 R1: parse before the empty-comments early return, not after —
+        // a document with no comments used to make a present-but-mistyped
+        // include_context/context_chars succeed silently (nothing was ever
+        // read from them), the same "mistyped == absent" shape #232 exists
+        // to close, just reached via a different code path.
+        let includeContext = try optionalBool(args, "include_context") ?? false
+        let contextChars = max(0, try optionalInt(args, "context_chars") ?? 50)
+
         let comments = doc.getCommentsFull()
         if comments.isEmpty {
             return "No comments in document"
         }
-
-        let includeContext = try optionalBool(args, "include_context") ?? false
-        let contextChars = max(0, try optionalInt(args, "context_chars") ?? 50)
 
         if includeContext {
             return commentJSON(comments: comments, in: doc, contextChars: contextChars)
@@ -9884,12 +9908,15 @@ actor WordMCPServer {
         // wording is out of scope here. Same "present-but-mistyped errors"
         // contract either way.
         let displayMode: Bool
-        if let displayModeValue = args["display_mode"] {
+        if let displayModeValue = args["display_mode"], displayModeValue != .null {
             guard let bool = displayModeValue.boolValue else {
                 throw ToolRefusal("insert_equation: display_mode must be a boolean true/false, not a string or other JSON type")
             }
             displayMode = bool
         } else {
+            // #232 R1: explicit JSON null now counts as absent here too,
+            // matching optionalBool's contract everywhere else in this file
+            // — it used to fall into the guard above and throw.
             displayMode = true
         }
         let paragraphIndex = try optionalInt(args, "paragraph_index")

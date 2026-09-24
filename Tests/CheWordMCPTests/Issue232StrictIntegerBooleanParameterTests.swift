@@ -213,6 +213,13 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
     /// distinguish "wrong type" from "absent") must not exist anywhere in
     /// Sources/CheWordMCP any more. Catches a regression regardless of which
     /// tool or parameter name it lands on.
+    ///
+    /// Known limitation (Codex R1): this is a textual/regex lint, not a
+    /// Swift parser — same tradeoff `RefusalIsErrorSweepTests.swift`'s
+    /// source sweep already accepts in this file. It cannot see an
+    /// equivalent unsafe read spelled differently (e.g. `let v = args["k"];
+    /// v?.intValue ?? 0` split across two statements), only the exact
+    /// single-line subscript-chain shape #232's migration actually used.
     func testNoDirectIntOrBoolValueSubscriptChainRemainsInSources() throws {
         let unsafeInt = try NSRegularExpression(pattern: #"\b\w+\["[^"]+"\]\?\.intValue\b"#)
         let unsafeBool = try NSRegularExpression(pattern: #"\b\w+\["[^"]+"\]\?\.boolValue\b"#)
@@ -228,10 +235,27 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
     }
 
     /// (B.2) — every `"type": "integer"` / `"type": "boolean"` schema
-    /// property (besides the two documented exceptions) has a matching
+    /// property (besides the documented exceptions) has a matching
     /// `optionalInt(..., "key")` / `optionalBool(..., "key")` call site.
     /// This is what fails when a new integer/boolean parameter is added but
-    /// never actually gets the strict-typing treatment.
+    /// never actually gets the strict-typing treatment. It caught two real,
+    /// pre-existing bugs this way: `insert_sequence_field` read
+    /// `reset_on_heading` while its schema declared `reset_level`, and
+    /// `insert_checkbox` read `is_checked` while its schema declared
+    /// `checked` — both fixed alongside this test (see (C) below for the
+    /// end-to-end regression tests for each).
+    ///
+    /// Known limitation (Codex R1): `hasCall` matches a key name against
+    /// EVERY `optionalInt`/`optionalBool` call site in the file, not just
+    /// the specific tool's own handler — it does not parse the `switch` in
+    /// `executeToolTask` to scope the search per tool. In principle a new
+    /// tool that declares an integer/boolean parameter sharing a key name
+    /// already read by some unrelated tool (e.g. a hypothetical new
+    /// `"index"` parameter that is never actually read) could pass this
+    /// sweep. It did catch both real bugs above because neither
+    /// `reset_level` nor `checked` was read by any handler before the fix —
+    /// building a dispatch-table-aware, handler-scoped version would close
+    /// this gap but is a larger, separate undertaking.
     func testEveryIntegerAndBooleanSchemaParameterHasAStrictReader() async throws {
         let server = await WordMCPServer()
         let tools = await server.toolsForTesting()
@@ -341,17 +365,25 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
     /// #230/#232 motivating example: a present-but-mistyped `row_count`
     /// must be rejected, not silently treated as absent and fall back to
     /// `row_index=0`.
+    /// #232 R1 (Codex finding 6): `get_document_text` cannot observe a
+    /// `<w:tblHeader/>` change at all — it is a table row PROPERTY, not
+    /// text — so comparing text before/after would pass even if the
+    /// rejected call *had* silently applied `row_index=0` (the exact #230
+    /// regression this issue exists to close). Read the row flags
+    /// (`TablesHyperlinksHeadersToolsTests.swift`'s own verification seam)
+    /// directly off the in-memory document instead.
+    private func headerFlags(_ server: WordMCPServer, id: String, tableIndex: Int = 0) async -> [Bool] {
+        let doc = await server.openDocuments[id]
+        let tables = doc?.getTables() ?? []
+        guard tableIndex < tables.count else { return [] }
+        return tables[tableIndex].rows.map(\.properties.isHeader)
+    }
+
     func testSetHeaderRowRejectsStringRowCountNamingTheParameter() async throws {
         let server = await WordMCPServer()
         let id = "s232-header-row"
         try await openFixtureDocument(server, id: id)
-        let dirtyAfterSetup = await server.isDocumentDirtyForTesting(id)
-        XCTAssertEqual(dirtyAfterSetup, true, "insert_table should have dirtied the doc")
-
-        // Reset the dirty flag's baseline via a snapshot of the paragraph
-        // count instead — dirty is expected true from setup; what matters is
-        // that the rejected call does not change document CONTENT.
-        let beforeText = await server.invokeToolForTesting(name: "get_document_text", arguments: ["doc_id": .string(id)])
+        let beforeFlags = await headerFlags(server, id: id)
 
         let result = await server.invokeToolForTesting(
             name: "set_header_row",
@@ -360,8 +392,9 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         XCTAssertEqual(result.isError, true)
         XCTAssertTrue(resultText(result).contains("row_count"), resultText(result))
 
-        let afterText = await server.invokeToolForTesting(name: "get_document_text", arguments: ["doc_id": .string(id)])
-        XCTAssertEqual(resultText(beforeText), resultText(afterText), "a rejected set_header_row must not change document content")
+        let afterFlags = await headerFlags(server, id: id)
+        XCTAssertEqual(beforeFlags, afterFlags, "a rejected set_header_row must not mark any row as header")
+        XCTAssertEqual(afterFlags, [false, false], "row_count=\"3\" must not silently fall back to row_index=0 (#230's motivating regression)")
     }
 
     func testSetHeaderRowAcceptsWholeValuedDoubleRowCount() async throws {
@@ -373,6 +406,8 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
             arguments: ["doc_id": .string(id), "table_index": .int(0), "row_count": .double(1.0)]
         )
         XCTAssertNotEqual(result.isError, true, resultText(result))
+        let flags = await headerFlags(server, id: id)
+        XCTAssertEqual(flags, [true, false], "row_count=1.0 must mark exactly the first row as header")
     }
 
     func testInsertTableRejectsStringRowsNamingTheParameter() async throws {
@@ -400,6 +435,43 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         )
         XCTAssertEqual(result.isError, true)
         XCTAssertTrue(resultText(result).contains("row"), resultText(result))
+    }
+
+    /// #232 R1 (Codex finding 5): `insert_checkbox` used to read `is_checked`,
+    /// a key the schema never declared (it declares `checked`) — the fix
+    /// renamed the read. Confirms the schema's actual key now flows through
+    /// end-to-end, not just that *some* key is read.
+    func testInsertCheckboxHonoursSchemaCheckedKey() async throws {
+        let server = await WordMCPServer()
+        let id = "s232-checkbox-checked"
+        try await openFixtureDocument(server, id: id)
+        let result = await server.invokeToolForTesting(
+            name: "insert_checkbox",
+            arguments: ["doc_id": .string(id), "paragraph_index": .int(0), "name": .string("cb1"), "checked": .bool(true)]
+        )
+        XCTAssertNotEqual(result.isError, true, resultText(result))
+        XCTAssertTrue(resultText(result).contains("checked: true"), resultText(result))
+    }
+
+    /// #232 R1 (Codex finding 5): `insert_sequence_field` used to read
+    /// `reset_on_heading`, a key the schema never declared (it declares
+    /// `reset_level`) — every value, of any type, was silently ignored. A
+    /// wrong-type `reset_level` naming the parameter proves the schema's
+    /// actual key is now being read, not just that the tool errors for some
+    /// unrelated reason.
+    func testInsertSequenceFieldRejectsStringResetLevelNamingTheParameter() async throws {
+        let server = await WordMCPServer()
+        let id = "s232-seqfield-reset-level"
+        try await openFixtureDocument(server, id: id)
+        let result = await server.invokeToolForTesting(
+            name: "insert_sequence_field",
+            arguments: [
+                "doc_id": .string(id), "paragraph_index": .int(0), "identifier": .string("Figure"),
+                "reset_level": .string("1"),
+            ]
+        )
+        XCTAssertEqual(result.isError, true)
+        XCTAssertTrue(resultText(result).contains("reset_level"), resultText(result))
     }
 
     func testGetCaptionRejectsStringIndexNamingTheParameter() async throws {
@@ -472,6 +544,26 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         XCTAssertTrue(resultText(result).contains("include_context"), resultText(result))
     }
 
+    /// #232 R1 (Codex finding 3): `list_comments` returns an early,
+    /// non-error "No comments in document" before it used to reach
+    /// `context_chars`/`include_context` at all — a mistyped value on a
+    /// comment-free document silently succeeded, the same "mistyped ==
+    /// absent" shape #232 closes elsewhere, reached via a different code
+    /// path. The fixture here deliberately has NO comments (unlike the two
+    /// tests above), so this only passes because parsing now happens before
+    /// the early return.
+    func testListCommentsRejectsStringContextCharsEvenWithNoComments() async throws {
+        let server = await WordMCPServer()
+        let id = "s232-list-comments-empty"
+        try await openFixtureDocument(server, id: id)
+        let result = await server.invokeToolForTesting(
+            name: "list_comments",
+            arguments: ["doc_id": .string(id), "context_chars": .string("50")]
+        )
+        XCTAssertEqual(result.isError, true)
+        XCTAssertTrue(resultText(result).contains("context_chars"), resultText(result))
+    }
+
     /// `create_document`'s `autosave` is an optional boolean with a default
     /// — exercises the top-level (non-nested) `args["x"]` shape once more,
     /// on a tool that needs no fixture document.
@@ -505,5 +597,69 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         )
         XCTAssertEqual(result.isError, true)
         XCTAssertTrue(resultText(result).contains("table_index"), resultText(result))
+    }
+
+    /// #232 R1 (Codex finding "batch worth testing more"): `replace_text_batch`
+    /// documents itself as "Non-atomic per-item: individual failures ...
+    /// reported but don't rollback prior successes." The mechanical
+    /// migration first put `try optionalBool(item, "regex")` OUTSIDE that
+    /// item's `do { ... } catch { per-item failure } ` block — a mistyped
+    /// `regex` on item N would throw straight out of the whole function,
+    /// aborting the call AND silently discarding item N-1's already-applied
+    /// (but not yet persisted) replacement. Fixed by moving the parse
+    /// inside an equivalent per-item catch. This proves both halves: the
+    /// earlier item is actually applied, and the later item fails by name
+    /// without taking the whole call down with it.
+    func testReplaceTextBatchIsolatesAPerItemBoolTypeErrorFromOtherItems() async throws {
+        let server = await WordMCPServer()
+        let id = "s232-replace-batch"
+        try await openFixtureDocument(server, id: id)
+
+        let result = await server.invokeToolForTesting(
+            name: "replace_text_batch",
+            arguments: [
+                "doc_id": .string(id),
+                "replacements": .array([
+                    .object(["find": .string("Anchor"), "replace": .string("Anchored")]),
+                    .object(["find": .string("Anchored"), "replace": .string("x"), "regex": .string("no")]),
+                ]),
+            ]
+        )
+        XCTAssertNotEqual(result.isError, true, "a per-item type error must not fail the whole batch call: \(resultText(result))")
+        let text = resultText(result)
+        XCTAssertTrue(text.contains("1 applied, 1 failed"), text)
+        XCTAssertTrue(text.contains("regex"), "the failed item's message should name the parameter: \(text)")
+
+        let search = await server.invokeToolForTesting(
+            name: "search_text", arguments: ["doc_id": .string(id), "query": .string("Anchored")]
+        )
+        XCTAssertNotEqual(search.isError, true, resultText(search))
+        XCTAssertTrue(
+            resultText(search).hasPrefix("Found"),
+            "item 0's valid replacement must still have been applied: \(resultText(search))"
+        )
+    }
+
+    /// Same shape as the replace_text_batch fix, for `search_text_batch`'s
+    /// per-query `case_sensitive`.
+    func testSearchTextBatchIsolatesAPerItemBoolTypeErrorFromOtherItems() async throws {
+        let server = await WordMCPServer()
+        let id = "s232-search-batch"
+        try await openFixtureDocument(server, id: id)
+
+        let result = await server.invokeToolForTesting(
+            name: "search_text_batch",
+            arguments: [
+                "doc_id": .string(id),
+                "queries": .array([
+                    .string("Anchor"),
+                    .object(["query": .string("Anchor"), "case_sensitive": .string("no")]),
+                ]),
+            ]
+        )
+        XCTAssertNotEqual(result.isError, true, "a per-item type error must not fail the whole batch call: \(resultText(result))")
+        let text = resultText(result)
+        XCTAssertTrue(text.contains("[0] query='Anchor' ==="), "the first (valid) query must still have run: \(text)")
+        XCTAssertTrue(text.contains("[1] FAIL:") && text.contains("case_sensitive"), text)
     }
 }
