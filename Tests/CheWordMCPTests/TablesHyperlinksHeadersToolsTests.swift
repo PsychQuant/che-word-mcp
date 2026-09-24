@@ -287,12 +287,19 @@ final class TablesHyperlinksHeadersToolsTests: XCTestCase {
     /// row_count = 0 and negative row_count are both outside 1...rows.count
     /// and must error, matching the dead schema's own documented bound
     /// ("Row count must be between 1 and N") rather than being treated as
-    /// "no rows" or silently clamped.
+    /// "no rows" or silently clamped. Both rejections must also be true
+    /// no-ops (Codex round 2: the changelog claims this, so the test must
+    /// actually check it, not just `isError`).
     func testSetHeaderRowRowCountZeroOrNegativeReturnsError() async throws {
         let server = await WordMCPServer()
         let docId = "shr-230-zero-\(UUID().uuidString)"
+        let output = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shr-230-zero-\(UUID().uuidString).docx")
+        defer {
+            Task { await discardDocument(server, id: docId) }
+            try? FileManager.default.removeItem(at: output)
+        }
         await openFreshDocument(server, id: docId)
-        defer { Task { await discardDocument(server, id: docId) } }
         await insertTable(server, docId: docId, rows: 2, cols: 2)
 
         let zero = await server.invokeToolForTesting(name: "set_header_row", arguments: [
@@ -308,6 +315,16 @@ final class TablesHyperlinksHeadersToolsTests: XCTestCase {
             "row_count": .int(-1)
         ])
         XCTAssertEqual(negative.isError, true, "row_count=-1 must error: \(resultText(negative))")
+
+        _ = await server.invokeToolForTesting(name: "save_document", arguments: [
+            "doc_id": .string(docId),
+            "path": .string(output.path)
+        ])
+        var reopened = try DocxReader.read(from: output)
+        defer { reopened.close() }
+        let table = try XCTUnwrap(reopened.getTables().first)
+        XCTAssertEqual(table.rows.map(\.properties.isHeader), [false, false],
+                        "both rejected calls (row_count=0 and row_count=-1) must not mutate the document")
     }
 
     func testSetTableIndent720TwipsAfterTask63() async throws {
