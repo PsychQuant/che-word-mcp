@@ -106,6 +106,39 @@ final class Issue227ScriptCoverageReasonsTests: XCTestCase {
         XCTAssertEqual(Set(rawRow.keys), legacyKeys.union(["raw_reason"]))
     }
 
+    /// Backward compatibility, values: the pre-#227 fields and the aggregate
+    /// still equal the shared part-level report the CLI --coverage prints.
+    func testCoverageLegacyFieldsStillMatchSharedReport() async throws {
+        let dir = try makeScratch()
+        let noParaId = dir.appendingPathComponent("no-paraid.docx")
+        try ScriptPipelineFixtures.writeParagraphsWithoutParaId(to: noParaId)
+        let authored = dir.appendingPathComponent("authored.docx")
+        try ScriptPipelineFixtures.writeAuthoredParagraphs(to: authored)
+
+        let server = await WordMCPServer()
+        for source in [noParaId, authored] {
+            let parts = try RawPartChannel.readAllParts(from: source)
+            let reversed = try ReverseExtractor.reverse(parts: parts)
+            let report = RawPartChannel.partLevelCoverage(parts: parts, dslParts: reversed.dslParts)
+
+            let result = await server.invokeToolForTesting(name: "get_script_coverage", arguments: [
+                "source_path": .string(source.path),
+            ])
+            let json = try jsonObject(result)
+            let rows = try XCTUnwrap(json["parts"] as? [[String: Any]])
+            XCTAssertEqual(rows.compactMap { $0["part_path"] as? String },
+                           report.parts.map(\.partPath).sorted(),
+                           "\(source.lastPathComponent): same parts, same order")
+            for expected in report.parts {
+                let row = try XCTUnwrap(rows.first { $0["part_path"] as? String == expected.partPath })
+                XCTAssertEqual(row["channel"] as? String, expected.dslBytes > 0 ? "dsl" : "raw")
+                XCTAssertEqual(row["bytes"] as? Int, expected.dslBytes + expected.rawBytes)
+                XCTAssertEqual(row["dsl_ratio"] as? Double, expected.coverageRatio)
+            }
+            XCTAssertEqual(json["aggregate_ratio"] as? Double, report.aggregateRatio)
+        }
+    }
+
     // MARK: - Tool definitions carry the boundary
 
     /// The issue's hard requirement: the not-byte-equal boundary is written
@@ -180,8 +213,10 @@ final class Issue227ScriptCoverageReasonsTests: XCTestCase {
     }
 
     /// Executing a paragraphs-only script reproduces the paragraphs (text +
-    /// styleId, in order) and nothing else; the rebuild is NOT byte-equal to
-    /// the source, and execute_script's verification says so.
+    /// styleId, in order) and nothing else. For this fixture — which has a
+    /// table and paraId-less paragraphs — the rebuild is not byte-equal to
+    /// the source, and execute_script's verification says so. (The path makes
+    /// no byte-equal promise either way; this pins one case where it fails.)
     func testParagraphsOnlyRebuildIsParagraphEquivalentButNotByteEqual() async throws {
         let dir = try makeScratch()
         let source = dir.appendingPathComponent("no-paraid.docx")
@@ -359,16 +394,26 @@ final class Issue227ScriptCoverageReasonsTests: XCTestCase {
             XCTAssertNotEqual(b.isError, true, resultText(b))
             XCTAssertEqual(try Data(contentsOf: omitted), try Data(contentsOf: explicitFalse),
                            "\(name): explicit false must equal the default script")
-            XCTAssertEqual(Set(try jsonObject(b).keys),
-                           ["dsl_parts", "form_gaps_empty", "slot_count", "output_path"],
+            // Responses: identical once the (necessarily different) output
+            // path is set aside, with exactly the pre-#227 keys and values.
+            var jsonA = try jsonObject(a)
+            var jsonB = try jsonObject(b)
+            XCTAssertEqual(jsonA.removeValue(forKey: "output_path") as? String, omitted.path)
+            XCTAssertEqual(jsonB.removeValue(forKey: "output_path") as? String, explicitFalse.path)
+            XCTAssertEqual(NSDictionary(dictionary: jsonA), NSDictionary(dictionary: jsonB),
+                           "\(name): explicit false must return what the default returns")
+            XCTAssertEqual(Set(jsonB.keys), ["dsl_parts", "form_gaps_empty", "slot_count"],
                            "\(name): the default response keeps its pre-#227 shape")
 
-            // And the bytes are the full-fidelity script the shared entry
-            // points produce — the same thing export_script always wrote.
-            let log = try ReverseExtractor.reverse(
-                parts: RawPartChannel.readAllParts(from: source)).log
+            // And the values are what the shared entry points compute — the
+            // same thing export_script always wrote and reported.
+            let reversed = try ReverseExtractor.reverse(
+                parts: RawPartChannel.readAllParts(from: source))
+            XCTAssertEqual(jsonB["dsl_parts"] as? [String], reversed.dslParts.sorted())
+            XCTAssertEqual(jsonB["form_gaps_empty"] as? Bool, reversed.formGaps.isEmpty)
+            XCTAssertEqual(jsonB["slot_count"] as? Int, 0)
             XCTAssertEqual(try String(contentsOf: omitted, encoding: .utf8),
-                           try ScriptExporter.exportSwift(log: log, slots: []))
+                           try ScriptExporter.exportSwift(log: reversed.log, slots: []))
         }
     }
 }
