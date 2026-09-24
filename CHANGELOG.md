@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`get_script_coverage` 的每個 raw part 帶上 `raw_reason`**（#227，PsychQuant/macdoc#193）。值是
+  `ReverseExtractor` 算出的根因，原樣透傳（例如 `sibling-part`、`table`、`paragraph-no-paraId`、`byte-mismatch`）。
+  DSL part 沒有根因，不帶這個欄位，回傳形狀與先前相同；既有欄位都沒有改變。
+  過去只有 macdoc CLI 的 `--coverage` 講得出根因，純走 MCP 的呼叫端看不到 `document.xml` 為什麼落 raw。
+- **`export_script` 的可選參數 `paragraphs_only`**（boolean，預設 `false`；#227）。對應 macdoc CLI 的
+  `word reverse --paragraphs-only`：只匯出段落文字與 styleId，缺 `w14:paraId` 的段落依序合成 `p1`、`p2`…
+  （`slots` 可指定這些 id）。
+  - **不保證 byte-equal。** 表格等非段落 body 內容、run／段落格式、節設定、頁首頁尾、樣式定義與其他 parts
+    都不在腳本裡；重播只還原段落文字與 styleId，拿去 `execute_script` 做 `verify_byte_equal_against` 會失敗。
+  - 回傳 JSON 另成一形：`paragraphs_only`、`byte_equal: false`、`omitted_body_blocks`（被略過的 body 區塊，
+    依出現順序）、`slot_count`、`output_path`。不含 `dsl_parts` 與 `form_gaps_empty`：這條路徑沒有任何 part 經過
+    byte-equal 證明，也沒有量 form gap。
+  - 來源檔旁有 oplog sidecar 時拒絕執行、不寫檔。CLI 在這種情況會改匯出 sidecar、忽略 `--paragraphs-only`，
+    而 `export_script` 不讀 sidecar，產不出同一份腳本。
+  - 預設路徑（不帶參數或 `false`）的腳本與回傳都和先前完全相同。
+  - 段落反向的迴圈目前住在 macdoc CLI、不在 ooxml-swift，所以 MCP 端是照抄的一份。兩邊的腳本是否逐位元組相同，
+    由 `ScriptPipelineParityTests.testParagraphsOnlyCLICrossCheckAgainstMacdocBinary` 對真的 macdoc binary 檢查
+    （需 `MACDOC_CLI_PATH`；有 `MACDOC_TEMPLATE_DIR` 時連 JPA 範本一起比）。這項檢查只比兩個入口產出的腳本，
+    不代表腳本重播後與原檔 byte-equal。
+
 ## [4.2.0] - 2026-09-24
 
 > 新增兩個工具，屬於向下相容的新功能，bump minor。
