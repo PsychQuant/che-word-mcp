@@ -44,6 +44,12 @@ EOF
 cat > "$FAKE_PATH/swift" <<'EOF'
 #!/bin/bash
 if [ "${1:-}" = "test" ]; then exit 0; fi
+for arg in "$@"; do
+    if [ "$arg" = "--show-bin-path" ]; then
+        echo "$PWD/.build/apple/Products/Release"
+        exit 0
+    fi
+done
 echo swift-build >> "$EVENT_LOG"
 case "${MUTATION_MODE:-none}" in
     file) echo changed-during-build >> source.txt ;;
