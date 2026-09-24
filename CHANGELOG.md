@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.2.0] - 2026-09-24
+
+> 新增兩個工具，屬於向下相容的新功能，bump minor。
+
 ### Added
 
 - **表格儲存格的段落級定址：`get_cell_paragraphs`、`update_cell_paragraph`**（#194，PsychQuant/macdoc#156）。
