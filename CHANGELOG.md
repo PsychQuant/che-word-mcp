@@ -38,7 +38,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   範圍比對；同一鍵名若被另一個工具正確讀取，理論上可以讓一個「宣告了但完全沒讀」的新工具矇混過關。
   對已知的重名／忽略案例（本次找到的兩個）此測試確實能抓到，因為當時沒有任何 handler 用該鍵名呼叫
   helper；但這不是逐工具证明，之後如有人擔心這個落差，可另開 issue 做 dispatch-table-aware 的
-  handler-scoped 版本。
+  handler-scoped 版本。R2 另外修正 `set_table_style`：`border_size` 過去只在 `border_style` 一併
+  提供時才被解析，`cell_col` 過去只在 `cell_row` 也提供時才被解析（`if let a = ..., let b = ...`
+  短路求值，`b` 那句根本不會被求值）——單獨提供型別不符的 `border_size`／`cell_col` 會被完全略過、
+  不報錯。現在兩者一律先解析（驗證型別），只有是否「生效」仍依賴同伴參數是否存在。已知限制：這是
+  「多參數合成一個可選功能、群組內較早的可選繫結短路掉較晚繫結的型別檢查」這一類問題的其中兩個
+  具體案例，檔案裡還有約 31 處 `if let ... = try optionalInt/optionalBool(...)` 的組合繫結，
+  這次沒有逐一稽核；如有人擔心其餘案例，屬於另一個 issue 的範圍。
+  `replace_text_batch`／`search_text_batch` 的 per-item `regex`／`match_case`／`case_sensitive`
+  型別檢查也在 R1 修正：原本被機械遷移放在該 item 的 `do`／`catch` 範圍**之外**，型別不符會直接
+  拋出整個函式，不只中止該批次其餘項目，還會讓前面已經套用（但尚未 persist）的項目一併遺失——
+  違反這兩個工具自己文件寫明的「non-atomic per-item：個別失敗會回報，但不會回滾先前成功」contract。
+  現在型別檢查移回各自 item 的 `do`／`catch` 內，型別不符只讓該筆項目失敗，回報方式與同一個迴圈裡
+  其他既有的驗證失敗（如缺 `find`／`replace` 欄位）一致。
 
 ### Fixed
 
