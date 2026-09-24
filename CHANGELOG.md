@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`set_header_row` 只保留一個註冊，`tools/list` 不再有兩份互相矛盾的 schema**（#230）。原本
+  `Server.swift` 註冊了兩次：`switch` on tool name 的 dispatch 只執行第一個符合的 `case`（已用最小
+  重現腳本驗證），所以第二份 schema（`row_count`，標記前 N 列）發布給 client 卻從未真的執行——實際
+  永遠是第一份（`row_index`，標記單一列）在跑；帶第二份參數呼叫時 `row_count` 被靜默忽略。
+  現在合併成一份 schema：`row_index` 標記單一列（未提供任一參數時預設 0，與先前唯一會執行的行為
+  完全相同）；`row_count` 現在真的實作了「標記前 N 列」語意；兩者同時提供回傳參數錯誤，不再有任何
+  參數被靜默忽略。加了 `tools/list` 名稱不得重複的一般性測試，以及兩種語意各自對照實際
+  `<w:tblHeader/>` 輸出的行為測試。
+
 ## [4.3.0] - 2026-09-24
 
 > 新增一個選填欄位與一個選填參數，屬於向下相容的新功能，bump minor。
