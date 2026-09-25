@@ -265,6 +265,37 @@ final class Issue234R9ReviewTests: XCTestCase {
         XCTAssertFalse(resultText(result).contains("Invalid parameter 'width'"), resultText(result))
     }
 
+    /// R9 review (rev232c L9-3): the `max(1, …)` floor on a derived side was
+    /// the one mutation that survived. A 1×1000 image asked for at height 1
+    /// derives a width of 0.001 px, which rounds to 0; it must come out as 1.
+    func testImageFromPathDerivedSideIsAtLeastOnePixel() async throws {
+        let server = await WordMCPServer()
+        let id = "r9-aspect-floor"
+        try await newDocument(server, id: id)
+        let tall = try tempPNGPath(width: 1, height: 1_000)
+        defer { try? FileManager.default.removeItem(atPath: tall) }
+        let result = await server.invokeToolForTesting(name: "insert_image_from_path", arguments: [
+            "doc_id": .string(id), "path": .string(tall), "height": .int(1),
+        ])
+        XCTAssertNotEqual(result.isError, true, resultText(result))
+        let xml = try await savedDocumentXML(server, docId: id)
+        XCTAssertTrue(xml.contains("cx=\"9525\" cy=\"9525\""), "1×1 px expected: \(xml.prefix(3000))")
+    }
+
+    /// R9 review (rev232c LOW): a numeric string on the offset is a type
+    /// error, not a misplaced alignment keyword.
+    func testFloatingImageNumericStringOffsetIsNotPointedAtAlign() async throws {
+        let server = await WordMCPServer()
+        let id = "r9-pos-numeric-string"
+        try await newDocument(server, id: id)
+        let result = await server.invokeToolForTesting(name: "insert_floating_image", arguments: [
+            "doc_id": .string(id), "path": .string(try floatingImageFixture()), "horizontal_position": .string("457200"),
+        ])
+        XCTAssertEqual(result.isError, true, resultText(result))
+        XCTAssertTrue(resultText(result).contains("horizontal_position"), resultText(result))
+        XCTAssertFalse(resultText(result).contains("horizontal_align"), resultText(result))
+    }
+
     // MARK: - LOW-1: insert_toc names the parameter that is actually wrong
 
     func testInsertTocNamesTheOutOfRangeParameter() async throws {
