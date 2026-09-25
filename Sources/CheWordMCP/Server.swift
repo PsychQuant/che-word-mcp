@@ -381,6 +381,11 @@ actor WordMCPServer {
         // the range check so the bound still reflects the value actually
         // written.
         let scaled = (lineSpacing * 240).rounded()
+        // R9 (review `rev232c` LOW-6): below 1/480 the value rounds to 0 and
+        // would be written as `w:line="0"`, which is not a line height.
+        guard scaled >= 1 else {
+            throw WordError.invalidParameter("line_spacing", "換算後小於 1 twip（至少 1/240 倍行距）")
+        }
         guard scaled.isFinite, scaled >= Double(Int32.min), scaled <= Double(Int32.max) else {
             throw WordError.invalidParameter(
                 "line_spacing",
@@ -488,6 +493,28 @@ actor WordMCPServer {
     /// making a `<= Double(Int.max)` comparison silently accept one value
     /// too many — the trap above happens precisely because the ORIGINAL
     /// code effectively relied on that rounding).
+    /// R9 (review `rev232c` M-4): the side derived from the aspect ratio.
+    /// - Rounded, not truncated: `aspectRatio` carries floating-point error,
+    ///   so a mathematically whole result can land just below the integer
+    ///   (`49 × (1/49) = 0.9999999999999999`) — the same bug `twipsLine`
+    ///   had. Truncation turned a 1×49 image asked for at its native height
+    ///   into 0 pixels wide, which the pixel-range check then rejected while
+    ///   blaming `width`, a parameter the caller never gave.
+    /// - At least 1 pixel: an extreme aspect ratio can round a derived side
+    ///   to 0, and a 0-pixel side is never valid.
+    /// - Out of range: the error names the parameter the caller supplied,
+    ///   because that is the one they can change.
+    static func derivedImageDimension(_ value: Double, derived: String, suppliedKey: String) throws -> Int {
+        let pixels = max(1, try safeInt(fromArithmeticResult: value.rounded(), key: suppliedKey))
+        guard imagePixelDimensionRange.contains(pixels) else {
+            throw WordError.invalidParameter(
+                suppliedKey,
+                "依圖片長寬比換算出的\(derived)為 \(pixels) 像素，超出上限 \(imagePixelDimensionRange.upperBound)；請改用較小的 \(suppliedKey)，或同時提供寬與高"
+            )
+        }
+        return pixels
+    }
+
     static func safeInt(fromArithmeticResult value: Double, key: String) throws -> Int {
         guard value.isFinite, value >= -0x1p63, value < 0x1p63 else {
             throw WordError.invalidParameter(key, "換算後的數值超出可表示範圍或不是有限值")
@@ -558,15 +585,49 @@ actor WordMCPServer {
     /// for table rows at all; independent sources agree rows are
     /// "essentially unlimited," bounded only by available memory. Absent a
     /// citable Word-documented number, this ceiling is instead an explicit,
-    /// honestly-labeled memory-safety bound (NOT a Word specification):
-    /// 65,536 rows × 63 columns (the worst case this range permits) was
-    /// timed against the real binary during this issue's own verification
-    /// and completes in well under a second with no unusual memory growth
-    /// — many orders of magnitude beyond any table a human would construct
-    /// by hand, while keeping every call's cost bounded regardless of the
-    /// paired column count.
+    /// honestly-labeled memory-safety bound (NOT a Word specification).
+    ///
+    /// R9 (independent review `rev232c` H-1): R8 bounded rows and columns
+    /// independently (1...65,536 × 1...63) and claimed 65,536 × 63 "completes
+    /// in well under a second with no unusual memory growth". Measured on
+    /// the real release binary that is false: an empty cell costs about
+    /// 2.2 KB resident, so 65,536 × 63 = 4.1 M cells took 9.0 GB after
+    /// `insert_table` and peaked at 14.2 GB during `save_document` (33 s);
+    /// two such calls reached 18 GB. That is the very failure this bound
+    /// exists to prevent — one parameter taking the host down, by memory
+    /// instead of a trap. (Only 65,536 × 1 took under a second.)
+    ///
+    /// The budget is therefore on the TOTAL cell count, `rows × cols ≤
+    /// tableCellCountLimit` (65,536 cells ≈ 140 MB resident; a save of that
+    /// size takes about half a second), with the per-axis ranges kept as
+    /// the column rule (Word's 63) and a row range no larger than the cell
+    /// budget. 65,536 cells is still e.g. 6,553 rows × 10 columns or
+    /// 1,040 rows × 63 columns. The per-cell cost itself is an ooxml-swift
+    /// matter, tracked separately.
     static let tableColumnCountRange: ClosedRange<Int> = 1...63
-    static let tableRowCountRange: ClosedRange<Int> = 1...65536
+    static let tableCellCountLimit = 65_536
+    static let tableRowCountRange: ClosedRange<Int> = 1...tableCellCountLimit
+
+    /// Validates a new table's dimensions (`insert_table`,
+    /// `insert_nested_table`); see `tableCellCountLimit`. Both axes are
+    /// bounded first, so `rows * cols` cannot overflow.
+    static func validateTableDimensions(rows: Int, cols: Int) throws {
+        guard tableRowCountRange.contains(rows) else {
+            throw WordError.invalidParameter(
+                "rows", "必須介於 \(tableRowCountRange.lowerBound) 到 \(tableRowCountRange.upperBound) 之間"
+            )
+        }
+        guard tableColumnCountRange.contains(cols) else {
+            throw WordError.invalidParameter(
+                "cols", "必須介於 \(tableColumnCountRange.lowerBound) 到 \(tableColumnCountRange.upperBound) 之間"
+            )
+        }
+        guard rows * cols <= tableCellCountLimit else {
+            throw WordError.invalidParameter(
+                "rows", "rows × cols 不可超過 \(tableCellCountLimit) 格（目前 \(rows) × \(cols) = \(rows * cols)）"
+            )
+        }
+    }
 
     /// R8 (`rev232b` review of #234, "上限值的依據" §3): the negative lower
     /// bound above is correct for `top`/`bottom` but NOT for `left`/
@@ -8495,16 +8556,7 @@ actor WordMCPServer {
         // R8: see `tableRowCountRange`/`tableColumnCountRange`'s doc
         // comment — `Table(rowCount:columnCount:)` traps or exhausts
         // memory unguarded.
-        guard Self.tableRowCountRange.contains(rows) else {
-            throw WordError.invalidParameter(
-                "rows", "必須介於 \(Self.tableRowCountRange.lowerBound) 到 \(Self.tableRowCountRange.upperBound) 之間"
-            )
-        }
-        guard Self.tableColumnCountRange.contains(cols) else {
-            throw WordError.invalidParameter(
-                "cols", "必須介於 \(Self.tableColumnCountRange.lowerBound) 到 \(Self.tableColumnCountRange.upperBound) 之間"
-            )
-        }
+        try Self.validateTableDimensions(rows: rows, cols: cols)
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
@@ -9595,11 +9647,11 @@ actor WordMCPServer {
             // naming "width" here since that's the parameter the caller
             // actually supplied and would need to change.
             let h = native.aspectRatio > 0
-                ? try Self.safeInt(fromArithmeticResult: Double(w) / native.aspectRatio, key: "width")
+                ? try Self.derivedImageDimension(Double(w) / native.aspectRatio, derived: "高度", suppliedKey: "width")
                 : native.heightPx
             return (w, h)
         case let (nil, .some(h)):
-            let w = try Self.safeInt(fromArithmeticResult: Double(h) * native.aspectRatio, key: "height")
+            let w = try Self.derivedImageDimension(Double(h) * native.aspectRatio, derived: "寬度", suppliedKey: "height")
             return (w, h)
         default:
             return (native.widthPx, native.heightPx)
@@ -10353,8 +10405,10 @@ actor WordMCPServer {
 
         let index = try optionalInt(args, "index")
         let title = args["title"]?.stringValue
-        let minLevel = try optionalInt(args, "min_level") ?? 1
-        let maxLevel = try optionalInt(args, "max_level") ?? 3
+        let minLevelArg = try optionalInt(args, "min_level")
+        let maxLevelArg = try optionalInt(args, "max_level")
+        let minLevel = minLevelArg ?? 1
+        let maxLevel = maxLevelArg ?? 3
         // R8 (independent fuzzer, `rev232b` M-234-5): `minLevel...maxLevel`
         // traps (`Range requires lowerBound <= upperBound`) whenever
         // `min_level > max_level`. Word supports exactly 9 built-in heading
@@ -10363,11 +10417,20 @@ actor WordMCPServer {
         // enforced by rejecting `minLevel > maxLevel` outright rather than
         // silently swapping the two, since a caller that got the order
         // backwards likely made a mistake worth surfacing.
-        guard (1...9).contains(minLevel), (1...9).contains(maxLevel) else {
-            throw WordError.invalidParameter("min_level", "min_level 與 max_level 必須介於 1 到 9 之間")
+        // R9 (review `rev232c` LOW-1): name the parameter that is actually
+        // out of range, and say where a defaulted value came from.
+        guard (1...9).contains(minLevel) else {
+            throw WordError.invalidParameter("min_level", "必須介於 1 到 9 之間")
+        }
+        guard (1...9).contains(maxLevel) else {
+            throw WordError.invalidParameter("max_level", "必須介於 1 到 9 之間")
         }
         guard minLevel <= maxLevel else {
-            throw WordError.invalidParameter("min_level", "min_level 不可大於 max_level")
+            let minNote = minLevelArg == nil ? "（未提供，預設 1）" : ""
+            let maxNote = maxLevelArg == nil ? "（未提供，預設 3）" : ""
+            throw WordError.invalidParameter(
+                "min_level", "min_level \(minLevel)\(minNote) 不可大於 max_level \(maxLevel)\(maxNote)"
+            )
         }
         let includePageNumbers = try optionalBool(args, "include_page_numbers") ?? true
         let useHyperlinks = try optionalBool(args, "use_hyperlinks") ?? true
@@ -11281,6 +11344,41 @@ actor WordMCPServer {
     /// shape did. Providing BOTH the offset and the alignment for the same
     /// axis is rejected as conflicting (`ToolRefusal`), not silently
     /// resolved by picking one.
+    /// R9 (review `rev232c` M-2): a string parameter that is present but not
+    /// a string (or `null`) is an error naming the parameter, not "absent".
+    /// `?.stringValue` would silently drop `5`/`true`/`["top"]`, which is the
+    /// exact #232 failure shape. Deliberately applied only to the two
+    /// alignment parameters R8 introduced, not retrofitted to the ~500
+    /// existing string reads.
+    static func optionalStrictString(_ args: [String: Value], _ key: String) throws -> String? {
+        guard let value = args[key] else { return nil }
+        switch value {
+        case .string(let s): return s
+        case .null: return nil
+        default: throw WordError.invalidParameter(key, "必須是字串")
+        }
+    }
+
+    /// R9 (review `rev232c` LOW-4, LOW-6): the floating-image offset.
+    /// - A string here is almost certainly a v4.3.x caller following the old
+    ///   schema (`"center"`); say where alignment keywords live now.
+    /// - `wp:posOffset` is `ST_PositionOffset` = `xsd:int`, so the value must
+    ///   fit a 32-bit signed integer or the written file is invalid.
+    func floatingImageOffset(_ args: [String: Value], _ key: String, alignKey: String) throws -> Int? {
+        if case .string = args[key] {
+            throw WordError.invalidParameter(
+                key, "必須是整數（EMU 偏移）；對齊關鍵字（例如 \"center\"）請改用 \(alignKey)"
+            )
+        }
+        guard let offset = try optionalInt(args, key) else { return nil }
+        guard offset >= Int(Int32.min), offset <= Int(Int32.max) else {
+            throw WordError.invalidParameter(
+                key, "必須介於 \(Int32.min) 到 \(Int32.max) 之間（EMU；wp:posOffset 是 xsd:int）"
+            )
+        }
+        return offset
+    }
+
     private func insertFloatingImage(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -11298,9 +11396,9 @@ actor WordMCPServer {
         // R8: see this function's doc comment above for why
         // horizontal_position/vertical_position are plain integer EMU
         // offsets again, paired with separate string alignment parameters.
-        let horizontalOffset = try optionalInt(args, "horizontal_position")
+        let horizontalOffset = try floatingImageOffset(args, "horizontal_position", alignKey: "horizontal_align")
         var horizontalAlign: HorizontalAlignment? = nil
-        if let raw = args["horizontal_align"]?.stringValue {
+        if let raw = try Self.optionalStrictString(args, "horizontal_align") {
             guard let a = HorizontalAlignment(rawValue: raw) else {
                 throw WordError.invalidParameter(
                     "horizontal_align", "必須是合法的對齊關鍵字 left/center/right/inside/outside，不接受 '\(raw)'"
@@ -11311,9 +11409,9 @@ actor WordMCPServer {
         if horizontalOffset != nil, horizontalAlign != nil {
             throw ToolRefusal("insert_floating_image: horizontal_position 與 horizontal_align 不可同時提供，請擇一")
         }
-        let verticalOffset = try optionalInt(args, "vertical_position")
+        let verticalOffset = try floatingImageOffset(args, "vertical_position", alignKey: "vertical_align")
         var verticalAlign: VerticalAlignment? = nil
-        if let raw = args["vertical_align"]?.stringValue {
+        if let raw = try Self.optionalStrictString(args, "vertical_align") {
             guard let a = VerticalAlignment(rawValue: raw) else {
                 throw WordError.invalidParameter(
                     "vertical_align", "必須是合法的對齊關鍵字 top/center/bottom/inside/outside，不接受 '\(raw)'"
@@ -12258,20 +12356,34 @@ actor WordMCPServer {
         let insertPosition = position ?? currentText.count
 
         let startIndex = currentText.startIndex
-        // R8 (independent fuzzer, `rev232b` H-234-4): only the upper bound
-        // was clamped; `position: -1` passed `min(...)` unchanged and
-        // trapped `index(_:offsetBy:)` (negative offset before
-        // `startIndex`). Clamping the lower bound too — rather than
-        // rejecting — matches this line's own existing "silently clamp,
-        // don't error" policy for the upper bound.
-        let clampedPosition = max(0, min(insertPosition, currentText.count))
-        let insertIndex = currentText.index(startIndex, offsetBy: clampedPosition)
+        // R8 (independent fuzzer, `rev232b` H-234-4): `position: -1` trapped
+        // `index(_:offsetBy:)`. R9 (review `rev232c` M-3): a negative position
+        // is rejected, not clamped to 0. There was no contract to preserve
+        // (negative values always crashed), the same-named `position` of
+        // `insert_text_as_revision` already rejects it, and `-1` commonly
+        // means "from the end" — clamping it to the START wrote the text in
+        // the opposite place while reporting success. A position past the
+        // end still lands at the end: that matches the schema's documented
+        // default ("不指定則插入到段落末尾") and is the existing behavior.
+        guard insertPosition >= 0 else {
+            throw WordError.invalidParameter("position", "必須 ≥ 0（字元位置，從 0 起算）")
+        }
+        let actualPosition = min(insertPosition, currentText.count)
+        let insertIndex = currentText.index(startIndex, offsetBy: actualPosition)
         let newText = String(currentText[..<insertIndex]) + text + String(currentText[insertIndex...])
 
         try doc.updateParagraph(at: paragraphIndex, text: newText)
         try await storeDocument(doc, for: docId)
 
-        return "Inserted text at paragraph \(paragraphIndex)\(position.map { ", position \($0)" } ?? " (at end)")"
+        // R9 (review `rev232c` LOW-2): report where the text actually went,
+        // not the requested value.
+        if position == nil {
+            return "Inserted text at paragraph \(paragraphIndex), position \(actualPosition) (at end)"
+        }
+        if actualPosition != insertPosition {
+            return "Inserted text at paragraph \(paragraphIndex), position \(actualPosition) (requested \(insertPosition) is past the end; inserted at the end)"
+        }
+        return "Inserted text at paragraph \(paragraphIndex), position \(actualPosition)"
     }
 
     // 9.2 get_document_text - get_text 的別名
@@ -17286,16 +17398,7 @@ actor WordMCPServer {
         guard let cols = try optionalInt(args, "cols") else { throw WordError.missingParameter("cols") }
         // R8: same `Table(rowCount:columnCount:)` construction as
         // `insert_table` — see `tableRowCountRange`/`tableColumnCountRange`.
-        guard Self.tableRowCountRange.contains(rows) else {
-            throw WordError.invalidParameter(
-                "rows", "必須介於 \(Self.tableRowCountRange.lowerBound) 到 \(Self.tableRowCountRange.upperBound) 之間"
-            )
-        }
-        guard Self.tableColumnCountRange.contains(cols) else {
-            throw WordError.invalidParameter(
-                "cols", "必須介於 \(Self.tableColumnCountRange.lowerBound) 到 \(Self.tableColumnCountRange.upperBound) 之間"
-            )
-        }
+        try Self.validateTableDimensions(rows: rows, cols: cols)
 
         do {
             try doc.insertNestedTable(parentTableIndex: parentIndex, rowIndex: rowIndex, colIndex: colIndex, rows: rows, cols: cols)
