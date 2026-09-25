@@ -56,6 +56,20 @@ import OOXMLSwift
 /// to its own follow-up issue.
 final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
 
+    /// #232 R6 (review LOW-6): `R5FixtureFile.existingFilePath` writes a
+    /// throwaway `.bin` file under `NSTemporaryDirectory()` the first time
+    /// any test in this class touches it, and — being a lazily-initialized
+    /// `static let` — never had anywhere natural to delete it again, so
+    /// every test run left one more `s232r5-fixture-*.bin` behind. Class-level
+    /// `tearDown()` runs once after every test in this class has finished
+    /// (unlike instance `tearDown()`, which runs per-test and would fire
+    /// before later tests still needed the fixture), so it's the right place
+    /// to remove it exactly once.
+    override class func tearDown() {
+        R5FixtureFile.cleanUp()
+        super.tearDown()
+    }
+
     // MARK: - (A) optionalInt / optionalBool unit tests
 
     private func resultText(_ result: CallTool.Result) -> String {
@@ -212,6 +226,67 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         }
     }
 
+    // MARK: - (A.2) optionalDouble unit tests
+    //
+    // #232 R6 (review "範圍外" item): `optionalDouble` is the `"type":
+    // "number"`-schema counterpart to `optionalInt`/`optionalBool`, added to
+    // fix `set_paragraph_format`'s `line_spacing`, which used to read
+    // `args["line_spacing"]?.doubleValue` directly — a call that only
+    // matches the `.double` JSON case, so a whole-valued `line_spacing`
+    // (JSON `2`, which decodes to `.int` on this platform, exactly like
+    // every other whole-valued JSON number here — see the `optionalInt` doc
+    // comment above) fell through to `nil` and was silently dropped, not
+    // even applied with a default. That is a worse failure mode than #232's
+    // original "wrong type silently defaults": a *correctly-typed,
+    // in-range, documented* value was thrown away with no error at all.
+
+    func testOptionalDoubleAcceptsJSONDouble() async throws {
+        let server = await WordMCPServer()
+        let value = try await server.optionalDouble(["k": .double(1.5)], "k")
+        XCTAssertEqual(value, 1.5)
+    }
+
+    /// The exact `line_spacing` motivating bug: a whole-valued number must
+    /// be accepted, not silently dropped because it happens to decode as
+    /// `.int` rather than `.double`.
+    func testOptionalDoubleAcceptsJSONInteger() async throws {
+        let server = await WordMCPServer()
+        let value = try await server.optionalDouble(["k": .int(2)], "k")
+        XCTAssertEqual(value, 2.0)
+    }
+
+    func testOptionalDoubleTreatsAbsentKeyAsNil() async throws {
+        let server = await WordMCPServer()
+        let value = try await server.optionalDouble([:], "k")
+        XCTAssertNil(value)
+    }
+
+    func testOptionalDoubleTreatsJSONNullAsNil() async throws {
+        let server = await WordMCPServer()
+        let value = try await server.optionalDouble(["k": .null], "k")
+        XCTAssertNil(value)
+    }
+
+    func testOptionalDoubleRejectsStringNamingTheKey() async throws {
+        let server = await WordMCPServer()
+        do {
+            _ = try await server.optionalDouble(["line_spacing": .string("1.5")], "line_spacing")
+            XCTFail("expected invalidParameter")
+        } catch WordError.invalidParameter(let key, _) {
+            XCTAssertEqual(key, "line_spacing")
+        }
+    }
+
+    func testOptionalDoubleRejectsBoolArrayAndObject() async throws {
+        let server = await WordMCPServer()
+        for bad: Value in [.bool(true), .array([.double(1.0)]), .object([:])] {
+            do {
+                _ = try await server.optionalDouble(["k": bad], "k")
+                XCTFail("expected invalidParameter for \(bad)")
+            } catch is WordError { /* expected */ }
+        }
+    }
+
     // MARK: - (B) schema-driven source sweep
 
     private static var sourcesDir: URL {
@@ -248,11 +323,19 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         return lines
     }
 
-    /// (B.1) — the exact unsafe pattern `optionalInt`/`optionalBool` replace
-    /// (`ident["key"]?.intValue` / `ident["key"]?.boolValue`, which cannot
-    /// distinguish "wrong type" from "absent") must not exist anywhere in
-    /// Sources/CheWordMCP any more. Catches a regression regardless of which
-    /// tool or parameter name it lands on.
+    /// (B.1) — the exact unsafe pattern `optionalInt`/`optionalBool`/
+    /// `optionalDouble` replace (`ident["key"]?.intValue` /
+    /// `ident["key"]?.boolValue` / `ident["key"]?.doubleValue`, none of
+    /// which can distinguish "wrong type" from "absent") must not exist
+    /// anywhere in Sources/CheWordMCP any more. Catches a regression
+    /// regardless of which tool or parameter name it lands on.
+    ///
+    /// #232 R6 (review "範圍外" item): added the `.doubleValue` regex
+    /// alongside the pre-existing `.intValue`/`.boolValue` ones — this is
+    /// the same unsafe shape that let `set_paragraph_format`'s
+    /// `line_spacing` silently drop whole-valued input (see the
+    /// `optionalDouble` unit tests above), just for the `number`-typed
+    /// schema case instead of `integer`/`boolean`.
     ///
     /// Known limitation (Codex R1): this is a textual/regex lint, not a
     /// Swift parser — same tradeoff `RefusalIsErrorSweepTests.swift`'s
@@ -263,27 +346,38 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
     func testNoDirectIntOrBoolValueSubscriptChainRemainsInSources() throws {
         let unsafeInt = try NSRegularExpression(pattern: #"\b\w+\["[^"]+"\]\?\.intValue\b"#)
         let unsafeBool = try NSRegularExpression(pattern: #"\b\w+\["[^"]+"\]\?\.boolValue\b"#)
+        let unsafeDouble = try NSRegularExpression(pattern: #"\b\w+\["[^"]+"\]\?\.doubleValue\b"#)
         var offenders: [String] = []
         for line in try Self.allSourceLines() {
             let range = NSRange(line.trimmed.startIndex..., in: line.trimmed)
             if unsafeInt.firstMatch(in: line.trimmed, range: range) != nil
-                || unsafeBool.firstMatch(in: line.trimmed, range: range) != nil {
+                || unsafeBool.firstMatch(in: line.trimmed, range: range) != nil
+                || unsafeDouble.firstMatch(in: line.trimmed, range: range) != nil {
                 offenders.append("\(line.file):\(line.lineNumber)  \(line.trimmed)")
             }
         }
-        XCTAssertTrue(offenders.isEmpty, "unsafe direct .intValue/.boolValue subscript chain found:\n\(offenders.joined(separator: "\n"))")
+        XCTAssertTrue(offenders.isEmpty, "unsafe direct .intValue/.boolValue/.doubleValue subscript chain found:\n\(offenders.joined(separator: "\n"))")
     }
 
-    /// (B.2) — every TOP-LEVEL `"type": "integer"` / `"type": "boolean"`
-    /// schema property (besides the documented exceptions) has a matching
-    /// `optionalInt(..., "key")` / `optionalBool(..., "key")` call site.
-    /// This is what fails when a new integer/boolean parameter is added but
-    /// never actually gets the strict-typing treatment. It caught two real,
-    /// pre-existing bugs this way: `insert_sequence_field` read
+    /// (B.2) — every TOP-LEVEL `"type": "integer"` / `"type": "boolean"` /
+    /// `"type": "number"` schema property (besides the documented
+    /// exceptions) has a matching `optionalInt(..., "key")` /
+    /// `optionalBool(..., "key")` / `optionalDouble(..., "key")` call site.
+    /// This is what fails when a new integer/boolean/number parameter is
+    /// added but never actually gets the strict-typing treatment. It caught
+    /// two real, pre-existing bugs this way: `insert_sequence_field` read
     /// `reset_on_heading` while its schema declared `reset_level`, and
     /// `insert_checkbox` read `is_checked` while its schema declared
     /// `checked` — both fixed alongside this test (see (C) below for the
     /// end-to-end regression tests for each).
+    ///
+    /// #232 R6 (review "範圍外" item): added the `"number"`/`optionalDouble`
+    /// leg. At the time of writing there is exactly one `"type": "number"`
+    /// schema parameter in this file (`set_paragraph_format.line_spacing`),
+    /// so this leg currently only re-confirms that one call site — but it
+    /// means the NEXT number-typed parameter anyone adds is swept
+    /// automatically instead of silently repeating the `line_spacing` bug
+    /// (a `.doubleValue` read that drops whole-valued input).
     ///
     /// Known limitations, neither closed by this test (Codex R1/R3):
     ///  - `hasCall` matches a key name against EVERY `optionalInt`/
@@ -354,8 +448,17 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
             lines.contains { $0.trimmed.contains("\(fn)(") && $0.trimmed.contains("\"\(key)\")") }
         }
 
+        // No number exceptions today — line_spacing has a real optionalDouble
+        // call site (see below), and there is no #201-style permanent stub,
+        // pinned-message tool, or predating hand-rolled reader among
+        // number-typed parameters yet. Kept as an empty set (rather than
+        // omitting the mechanism) so a future exception has an obvious place
+        // to be documented, matching intExceptions/boolExceptions above.
+        let numberExceptions: Set<String> = []
+
         var missingInt: [String] = []
         var missingBool: [String] = []
+        var missingNumber: [String] = []
         for tool in tools {
             guard case .object(let schema) = tool.inputSchema,
                   case .object(let properties)? = schema["properties"] else { continue }
@@ -369,6 +472,9 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
                 case "boolean":
                     if boolExceptions.contains(pairName) { continue }
                     if !hasCall("optionalBool", key: key) { missingBool.append(pairName) }
+                case "number":
+                    if numberExceptions.contains(pairName) { continue }
+                    if !hasCall("optionalDouble", key: key) { missingNumber.append(pairName) }
                 default:
                     continue
                 }
@@ -376,6 +482,7 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         }
         XCTAssertTrue(missingInt.isEmpty, "integer schema params with no optionalInt(...) call site: \(missingInt.sorted())")
         XCTAssertTrue(missingBool.isEmpty, "boolean schema params with no optionalBool(...) call site: \(missingBool.sorted())")
+        XCTAssertTrue(missingNumber.isEmpty, "number schema params with no optionalDouble(...) call site: \(missingNumber.sorted())")
     }
 
     // MARK: - (C) representative end-to-end calls
@@ -568,6 +675,51 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         )
         XCTAssertEqual(result.isError, true)
         XCTAssertTrue(resultText(result).contains("font_size"), resultText(result))
+    }
+
+    /// `set_paragraph_format`'s `line_spacing` is the file's one
+    /// `"type": "number"` schema parameter — #232 R6's motivating bug for
+    /// `optionalDouble`. A present-but-mistyped value must be rejected and
+    /// named, same contract as an integer/boolean parameter.
+    func testSetParagraphFormatRejectsStringLineSpacingNamingTheParameter() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r6-line-spacing-reject"
+        try await openFixtureDocument(server, id: id)
+        let result = await server.invokeToolForTesting(
+            name: "set_paragraph_format",
+            arguments: ["doc_id": .string(id), "paragraph_index": .int(0), "line_spacing": .string("2")]
+        )
+        XCTAssertEqual(result.isError, true, resultText(result))
+        XCTAssertTrue(resultText(result).contains("line_spacing"), resultText(result))
+    }
+
+    /// The exact `line_spacing` motivating bug, end to end: before the R6
+    /// fix, `args["line_spacing"]?.doubleValue` only matched the `.double`
+    /// JSON case, so a whole-valued `line_spacing` (JSON `2`, which decodes
+    /// to `.int` on this platform) fell through to `nil` and the call
+    /// silently applied NO spacing at all — not even a rejection, just a
+    /// documented, correctly-typed, in-range value thrown away. Reads the
+    /// applied `Spacing.line` back off the in-memory document (same
+    /// "observe the actual document state" style as this file's
+    /// `headerFlags` helper) rather than trusting the tool's own success
+    /// string, since the pre-fix bug's whole point was that the call
+    /// reported success while doing nothing.
+    func testSetParagraphFormatAppliesWholeValuedIntLineSpacing() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r6-line-spacing-apply"
+        try await openFixtureDocument(server, id: id)
+        let result = await server.invokeToolForTesting(
+            name: "set_paragraph_format",
+            arguments: ["doc_id": .string(id), "paragraph_index": .int(0), "line_spacing": .int(2)]
+        )
+        XCTAssertNotEqual(result.isError, true, resultText(result))
+        let doc = await server.openDocuments[id]
+        let paragraphs = doc?.getParagraphs() ?? []
+        XCTAssertFalse(paragraphs.isEmpty)
+        // 2 (whole-valued) * 240 (1/240-point units) = 480 — see the
+        // `Int(lineSpacing * 240)` conversion at the `set_paragraph_format`
+        // call site.
+        XCTAssertEqual(paragraphs.first?.properties.spacing?.line, 480)
     }
 
     /// `list_comments`' `context_chars` is an optional integer WITH a
@@ -887,6 +1039,55 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         XCTAssertTrue(resultText(result).contains("row"), resultText(result))
     }
 
+    /// #232 R6 (review LOW-2, `update_style`): `q_format`/`hidden`/
+    /// `semi_hidden` are now parsed BEFORE `doc.updateStyle()` is called
+    /// (not only afterward, inside the `firstIndex(where:)` gate). Before
+    /// this fix, calling with a nonexistent `style_id` AND a mistyped
+    /// `q_format` on the same call reported only "style not found" — the
+    /// caller would fix the id, resubmit, and only then discover the
+    /// (already-present) type error. This isn't a silent-success bug (the
+    /// call was always going to fail), but the error now names the actual
+    /// problem instead of masking it behind an unrelated one.
+    func testUpdateStyleNamesQFormatTypeErrorEvenWhenStyleIdDoesNotExist() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r6-update-style-precision"
+        try await openFixtureDocument(server, id: id)
+        let result = await server.invokeToolForTesting(
+            name: "update_style",
+            arguments: [
+                "doc_id": .string(id), "style_id": .string("NoSuchStyle"),
+                "q_format": .string("true"),
+            ]
+        )
+        XCTAssertEqual(result.isError, true, resultText(result))
+        XCTAssertTrue(resultText(result).contains("q_format"), resultText(result))
+    }
+
+    /// #232 R6 (review LOW-2, `insert_caption`): `paragraph_index`/
+    /// `after_table_index` are now parsed BEFORE the anchor-presence check
+    /// below. `detectPresentAnchors` treats a wrong-typed anchor as simply
+    /// "not present" (it has to — it also tolerates anchors the caller
+    /// didn't intend to use), so a call whose ONLY anchor is a mistyped
+    /// `paragraph_index` used to be preempted by the generic "at least one
+    /// anchor required" refusal — again, not silent success (the call was
+    /// always going to fail), but a confusing message when the caller DID
+    /// supply an anchor, just with the wrong JSON type.
+    func testInsertCaptionNamesParagraphIndexTypeErrorEvenAsTheOnlyAnchor() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r6-insert-caption-precision"
+        try await openFixtureDocument(server, id: id)
+        let result = await server.invokeToolForTesting(
+            name: "insert_caption",
+            arguments: [
+                "doc_id": .string(id), "label": .string("Figure"),
+                "paragraph_index": .string("0"),
+            ]
+        )
+        XCTAssertEqual(result.isError, true, resultText(result))
+        XCTAssertTrue(resultText(result).contains("paragraph_index"), resultText(result))
+        XCTAssertFalse(resultText(result).contains("at least one anchor required"), resultText(result))
+    }
+
     // MARK: - R5 (team lead directive): "一律驗證" — table-driven sweep
     //
     // Every integer/boolean parameter that appears in `args` must be
@@ -934,6 +1135,22 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
             args: ["latent_styles": .array([.object(["semi_hidden": .string("true")])])],
             expectedNamedKey: "semi_hidden"
         ),
+        // #232 R6 (review LOW-3): set_latent_styles has four gated fields,
+        // not two — R5 only added rows for ui_priority/semi_hidden. These
+        // two close the gap for unhide_when_used/q_format, which are parsed
+        // (and were fixed) at the exact same call site.
+        GatedParameterProbe(
+            description: "set_latent_styles item's unhide_when_used gated by that same item's missing 'name'",
+            tool: "set_latent_styles",
+            args: ["latent_styles": .array([.object(["unhide_when_used": .string("true")])])],
+            expectedNamedKey: "unhide_when_used"
+        ),
+        GatedParameterProbe(
+            description: "set_latent_styles item's q_format gated by that same item's missing 'name'",
+            tool: "set_latent_styles",
+            args: ["latent_styles": .array([.object(["q_format": .string("true")])])],
+            expectedNamedKey: "q_format"
+        ),
         GatedParameterProbe(
             description: "replace_text_batch item's regex gated by that same item's missing 'find'/'replace'",
             tool: "replace_text_batch",
@@ -946,7 +1163,38 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
             args: ["queries": .array([.object(["case_sensitive": .string("no")])])],
             expectedNamedKey: "case_sensitive"
         ),
+        // #232 R6 (review LOW-3): replace_text_batch reads TWO gated fields
+        // (regex AND match_case) at that call site — R5 only added a row for
+        // regex, leaving match_case itself unswept.
+        GatedParameterProbe(
+            description: "replace_text_batch item's match_case gated by that same item's missing 'find'/'replace'",
+            tool: "replace_text_batch",
+            args: ["replacements": .array([.object(["match_case": .string("no")])])],
+            expectedNamedKey: "match_case"
+        ),
     ]
+
+    /// #232 R6 (review LOW-3): a plain `text.contains(probe.expectedNamedKey)`
+    /// is too loose — for `expectedNamedKey == "index"` it would ALSO match
+    /// inside an unrelated message like `insert_paragraph: received
+    /// conflicting anchors: after_text + index`, which names an anchor list,
+    /// not the parameter that failed to type-check. A sweep row using such a
+    /// check could pass even after a regression silently reverted the fix
+    /// (as long as SOME other message happens to contain the same substring).
+    /// This mirrors the two literal shapes error text can actually take:
+    /// - single-call tools route the throw through `WordError.errorDescription`
+    ///   (`Invalid parameter 'key': reason`, via `invokeToolForTesting`'s
+    ///   `error.localizedDescription` catch) — see `WordError.invalidParameter`.
+    /// - the two batch tools catch the per-item error and interpolate the
+    ///   raw `Error` value directly (`"\(error)"`, NOT `localizedDescription`),
+    ///   which prints Swift's default enum-with-payload form:
+    ///   `invalidParameter("key", "reason")`.
+    /// Both forms name the key in a structurally distinct position (quoted,
+    /// immediately adjacent to `Invalid parameter ` / `invalidParameter(`),
+    /// so matching either pattern — but not a bare substring — is precise.
+    private static func namesParameter(_ text: String, _ key: String) -> Bool {
+        text.contains("Invalid parameter '\(key)'") || text.contains("invalidParameter(\"\(key)\"")
+    }
 
     func testGatedParametersAreValidatedRegardlessOfWhetherTheCallWouldUseThem() async throws {
         let server = await WordMCPServer()
@@ -966,18 +1214,30 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
             let reportedAsFailure = result.isError == true || text.contains("FAIL")
             XCTAssertTrue(reportedAsFailure, "\(probe.description): \(text)")
             XCTAssertTrue(
-                text.contains(probe.expectedNamedKey),
+                Self.namesParameter(text, probe.expectedNamedKey),
                 "\(probe.description): expected error to name '\(probe.expectedNamedKey)', got: \(text)"
             )
         }
     }
 
     /// `replace_text_batch`/`search_text_batch` report per-item failures in
-    /// the result STRING (batch tools never set `isError` for a per-item
-    /// problem — see the R1 per-item-isolation tests above), so the sweep's
-    /// `isError == true` assertion doesn't fit them directly. This confirms
-    /// their two rows above still catch a real regression: probing with the
-    /// CORRECT type instead must NOT report that item as failed.
+    /// the result STRING, not via `isError` (batch tools never set `isError`
+    /// for a per-item problem — see the R1 per-item-isolation tests above),
+    /// so the sweep's `result.isError == true || text.contains("FAIL")`
+    /// fallback is the only failure signal available for their rows.
+    ///
+    /// #232 R6 (review LOW-4): this is a control, not a regression replay —
+    /// it does NOT re-run the sweep rows against a reverted fix, so it
+    /// cannot by itself prove those rows would catch a future regression
+    /// (the original comment overclaimed that). What it DOES establish is
+    /// narrower but still necessary: that `reportedAsFailure`'s two
+    /// conditions are not vacuously true. If `isError` were somehow always
+    /// unset for these tools, or if `text` always contained the substring
+    /// "FAIL" regardless of outcome, every sweep row for `replace_text_batch`
+    /// / `search_text_batch` would "pass" without the assertion having
+    /// tested anything. Probing with the CORRECT type for every field the
+    /// sweep rows above exercise (`regex`, `match_case`, `case_sensitive`)
+    /// and asserting success text — not "FAIL" — rules that out.
     func testGatedParameterSweepRowsForBatchToolsActuallyDistinguishRightFromWrongType() async throws {
         let server = await WordMCPServer()
         let id = "s232r5-gated-sweep-batch-control"
@@ -986,7 +1246,10 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         let replaceResult = await server.invokeToolForTesting(
             name: "replace_text_batch",
             arguments: ["doc_id": .string(id), "replacements": .array([
-                .object(["find": .string("Anchor"), "replace": .string("Anchored"), "regex": .bool(false)]),
+                .object([
+                    "find": .string("Anchor"), "replace": .string("Anchored"),
+                    "regex": .bool(false), "match_case": .bool(true),
+                ]),
             ])]
         )
         XCTAssertTrue(resultText(replaceResult).contains("1 applied, 0 failed"), resultText(replaceResult))
@@ -1005,10 +1268,27 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
     /// `continue`-skipped and the call as a whole still reported success. The
     /// R5 fix means a malformed item now makes the WHOLE call fail, not just
     /// that one entry: this is a real behavior-mode change (documented in
-    /// CHANGELOG.md), not merely a message-precision improvement like the
-    /// other R5 fixes. This test pins that specific consequence: one valid
-    /// item plus one item with a mistyped `ui_priority` must reject the
-    /// entire call, not silently apply only the valid one.
+    /// CHANGELOG.md).
+    ///
+    /// #232 R6 (review MEDIUM): the previous version of this comment
+    /// described this as unlike "the other R5 fixes", implying
+    /// `insert_paragraph`/`insert_image_from_path`'s `index` fix was merely
+    /// a message-precision improvement — it is NOT. Before the fix, a call
+    /// like `insert_paragraph(after_text: "Anchor", index: "0")` succeeded
+    /// and actually inserted the paragraph (the mistyped `index` was simply
+    /// never read, since `after_text` took priority); after the fix the same
+    /// call fails outright. That is the identical "success → failure"
+    /// severity class as this test pins for `set_latent_styles`, just
+    /// without an array/per-item dimension to it (a single-call tool either
+    /// succeeds or fails as a whole; there's no "reject the whole call vs.
+    /// only the bad item" distinction to draw). Only `replace_text_batch`'s
+    /// `regex`/`match_case` and `search_text_batch`'s `case_sensitive` are
+    /// genuinely message-precision-only among the R5 fixes: that per-item
+    /// call was already going to fail either way (missing `find`/`replace`
+    /// or `query`), the fix only changes WHY it's reported as having failed.
+    /// This test pins that specific consequence: one valid item plus one
+    /// item with a mistyped `ui_priority` must reject the entire call, not
+    /// silently apply only the valid one.
     func testSetLatentStylesRejectsTheWholeCallWhenAnyItemHasAMistypedField() async throws {
         let server = await WordMCPServer()
         let id = "s232r5-latent-styles-atomic"
@@ -1033,9 +1313,22 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
 /// with explicit `width`/`height` never actually decodes it as an image
 /// (`resolveImageDimensions` short-circuits), so its content doesn't matter.
 private enum R5FixtureFile {
+    private static var createdURL: URL?
+
     static let existingFilePath: String = {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("s232r5-fixture-\(UUID().uuidString).bin")
         try? Data("not actually an image".utf8).write(to: url)
+        createdURL = url
         return url.path
     }()
+
+    /// #232 R6 (review LOW-6): called from the test class's `class func
+    /// tearDown()` once all tests in the class have run. `createdURL` is nil
+    /// until `existingFilePath` has actually been accessed at least once, so
+    /// this is a no-op (not an error) for any test target configuration that
+    /// filters out every test touching the fixture.
+    static func cleanUp() {
+        guard let url = createdURL else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
 }
