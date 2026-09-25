@@ -7516,6 +7516,13 @@ actor WordMCPServer {
         if let explicit = try optionalInt(args, "text_instance"), explicit < 1 {
             throw ToolRefusal("insert_paragraph: text_instance must be ≥ 1, got \(explicit).")
         }
+        // #232 R5: parsed here, unconditionally, rather than inside the last
+        // `else if` of the anchor-priority dispatch below — a mistyped
+        // `index` supplied alongside a HIGHER-priority anchor (e.g.
+        // `after_text`) used to never be reached at all, since the dispatch
+        // takes the earlier branch and the last `else if let index = ...`
+        // is simply never evaluated.
+        let indexArg = try optionalInt(args, "index")
         let resultMessage: String
 
         if let cellDict = args["into_table_cell"]?.objectValue {
@@ -7561,7 +7568,7 @@ actor WordMCPServer {
             } catch let InsertLocationError.textNotFound(searchText, instance) {
                 throw ToolRefusal("insert_paragraph: text '\(searchText)' not found (instance \(instance))")
             }
-        } else if let index = try optionalInt(args, "index") {
+        } else if let index = indexArg {
             doc.insertParagraph(para, at: index)
             resultMessage = "Inserted paragraph at index \(index)"
         } else {
@@ -7684,20 +7691,24 @@ actor WordMCPServer {
                 queryStr = s
                 caseSensitive = false
             case .object(let obj):
-                guard let q = obj["query"]?.stringValue else {
-                    output += "\n=== [\(idx)] FAIL: missing 'query' field ===\n"
-                    continue
-                }
-                queryStr = q
-                // #232 R1: a per-item type error must fail that item, not
+                // #232 R1/R5: a per-item type error must fail that item, not
                 // the whole batch — same "malformed entry" soft-fail shape
-                // as the guards above, not a thrown error escaping the loop.
+                // as the guard below, not a thrown error escaping the loop.
+                // Parsed BEFORE the `query` guard (not after) so a mistyped
+                // case_sensitive is always caught even on an item that is
+                // ALSO missing `query` — independent fields of the same
+                // object, not gated on each other.
                 do {
                     caseSensitive = try optionalBool(obj, "case_sensitive") ?? false
                 } catch {
                     output += "\n=== [\(idx)] FAIL: \(error) ===\n"
                     continue
                 }
+                guard let q = obj["query"]?.stringValue else {
+                    output += "\n=== [\(idx)] FAIL: missing 'query' field ===\n"
+                    continue
+                }
+                queryStr = q
             default:
                 output += "\n=== [\(idx)] FAIL: query must be string or object ===\n"
                 continue
@@ -7752,6 +7763,23 @@ actor WordMCPServer {
                 failed += 1
                 if stopOnFirstFailure { break } else { continue }
             }
+            // #232 R1/R5: a per-item type error must fail that item, not the
+            // whole batch — same "malformed entry" soft-fail shape as the
+            // guards below, not a thrown error escaping the loop. Parsed
+            // BEFORE the find/replace guards (not after) so a mistyped
+            // regex/match_case is always caught even on an item that is ALSO
+            // missing find/replace — those are independent fields of the
+            // same object, not gated on each other.
+            let regex: Bool
+            let matchCase: Bool
+            do {
+                regex = try optionalBool(item, "regex") ?? false
+                matchCase = try optionalBool(item, "match_case") ?? true
+            } catch {
+                results.append(["index": idx, "error": "\(error)"])
+                failed += 1
+                if stopOnFirstFailure { break } else { continue }
+            }
             guard let find = item["find"]?.stringValue else {
                 results.append(["index": idx, "error": "missing 'find' field"])
                 failed += 1
@@ -7766,19 +7794,6 @@ actor WordMCPServer {
             // per-item options, fall back to no-op defaults
             let scopeString = item["scope"]?.stringValue ?? "body"
             let scope: ReplaceScope = (scopeString == "all") ? .all : .bodyAndTables
-            // #232 R1: a per-item type error must fail that item, not the
-            // whole batch — same "malformed entry" soft-fail shape as the
-            // guards above, not a thrown error escaping the loop.
-            let regex: Bool
-            let matchCase: Bool
-            do {
-                regex = try optionalBool(item, "regex") ?? false
-                matchCase = try optionalBool(item, "match_case") ?? true
-            } catch {
-                results.append(["index": idx, "find": find, "error": "\(error)"])
-                failed += 1
-                if stopOnFirstFailure { break } else { continue }
-            }
             let options = ReplaceOptions(scope: scope, regex: regex, matchCase: matchCase)
 
             do {
@@ -8956,6 +8971,11 @@ actor WordMCPServer {
         if let explicit = try optionalInt(args, "text_instance"), explicit < 1 {
             throw ToolRefusal("insert_image_from_path: text_instance must be ≥ 1, got \(explicit).")
         }
+        // #232 R5: parsed here, unconditionally, rather than inside the last
+        // `else` of the anchor-priority dispatch below — a mistyped `index`
+        // supplied alongside a HIGHER-priority anchor (e.g. `after_text`)
+        // used to never be reached at all.
+        let indexArg = try optionalInt(args, "index")
         if let cellDict = args["into_table_cell"]?.objectValue {
             // F5 (v3.15.1): malformed partial dict returns structured error instead of silent fallthrough.
             // #232 R4: each field parsed independently (not chained in one
@@ -9025,7 +9045,7 @@ actor WordMCPServer {
             }
         } else {
             // body-level: use legacy index-based API
-            let index = try optionalInt(args, "index")
+            let index = indexArg
             imageId = try doc.insertImage(
                 path: path,
                 widthPx: width,
@@ -16217,13 +16237,24 @@ actor WordMCPServer {
 
         var entries: [LatentStyle] = []
         for item in arr {
-            guard let obj = item.objectValue, let name = obj["name"]?.stringValue else { continue }
+            // #232 R5: the four fields below are parsed BEFORE the `name`
+            // guard, not after — a malformed item missing `name` (which is
+            // legitimately skipped: LatentStyle requires it) used to also
+            // let a present-but-mistyped `ui_priority`/etc. on that same
+            // item silently pass, because `continue` fired first and none
+            // of the four calls below were ever reached.
+            guard let obj = item.objectValue else { continue }
+            let uiPriorityArg = try optionalInt(obj, "ui_priority")
+            let semiHiddenArg = try optionalBool(obj, "semi_hidden")
+            let unhideWhenUsedArg = try optionalBool(obj, "unhide_when_used")
+            let qFormatArg = try optionalBool(obj, "q_format")
+            guard let name = obj["name"]?.stringValue else { continue }
             entries.append(LatentStyle(
                 name: name,
-                uiPriority: try optionalInt(obj, "ui_priority"),
-                semiHidden: try optionalBool(obj, "semi_hidden") ?? false,
-                unhideWhenUsed: try optionalBool(obj, "unhide_when_used") ?? false,
-                qFormat: try optionalBool(obj, "q_format") ?? false
+                uiPriority: uiPriorityArg,
+                semiHidden: semiHiddenArg ?? false,
+                unhideWhenUsed: unhideWhenUsedArg ?? false,
+                qFormat: qFormatArg ?? false
             ))
         }
         doc.setLatentStyles(entries)

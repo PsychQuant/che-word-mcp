@@ -886,4 +886,129 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         XCTAssertEqual(result.isError, true)
         XCTAssertTrue(resultText(result).contains("row"), resultText(result))
     }
+
+    // MARK: - R5 (team lead directive): "一律驗證" — table-driven sweep
+    //
+    // Every integer/boolean parameter that appears in `args` must be
+    // type-checked regardless of whether THIS call would end up using it.
+    // R2/R4 fixed the first batch of conditional/gated reads found by
+    // manual audit and each got its own named, hand-written test (still
+    // present above — they document each site's specific shape in prose).
+    // R5 closed the remaining sites found via a second, more systematic
+    // sweep (chained multi-binding guards, `if`/`else`/`switch`-gated
+    // blocks, sibling-field-gated array items) — instead of one more
+    // hand-written test per site, this table exists so a FUTURE regression
+    // on any of these specific gates is caught mechanically: add a row here
+    // instead of a whole new test function next time.
+
+    private struct GatedParameterProbe {
+        let description: String
+        let tool: String
+        let args: [String: Value]
+        let expectedNamedKey: String
+    }
+
+    private static let gatedParameterProbes: [GatedParameterProbe] = [
+        GatedParameterProbe(
+            description: "insert_paragraph.index gated by anchor-priority dispatch (a higher-priority anchor took the branch that never reads index)",
+            tool: "insert_paragraph",
+            args: ["text": .string("x"), "after_text": .string("Anchor"), "index": .string("0")],
+            expectedNamedKey: "index"
+        ),
+        GatedParameterProbe(
+            description: "insert_image_from_path.index gated the same way",
+            tool: "insert_image_from_path",
+            args: ["path": .string(R5FixtureFile.existingFilePath), "after_text": .string("Anchor"),
+                   "width": .int(10), "height": .int(10), "index": .string("0")],
+            expectedNamedKey: "index"
+        ),
+        GatedParameterProbe(
+            description: "set_latent_styles item's ui_priority gated by that same item's missing 'name'",
+            tool: "set_latent_styles",
+            args: ["latent_styles": .array([.object(["ui_priority": .string("1")])])],
+            expectedNamedKey: "ui_priority"
+        ),
+        GatedParameterProbe(
+            description: "set_latent_styles item's semi_hidden gated by that same item's missing 'name'",
+            tool: "set_latent_styles",
+            args: ["latent_styles": .array([.object(["semi_hidden": .string("true")])])],
+            expectedNamedKey: "semi_hidden"
+        ),
+        GatedParameterProbe(
+            description: "replace_text_batch item's regex gated by that same item's missing 'find'/'replace'",
+            tool: "replace_text_batch",
+            args: ["replacements": .array([.object(["regex": .string("no")])])],
+            expectedNamedKey: "regex"
+        ),
+        GatedParameterProbe(
+            description: "search_text_batch item's case_sensitive gated by that same item's missing 'query'",
+            tool: "search_text_batch",
+            args: ["queries": .array([.object(["case_sensitive": .string("no")])])],
+            expectedNamedKey: "case_sensitive"
+        ),
+    ]
+
+    func testGatedParametersAreValidatedRegardlessOfWhetherTheCallWouldUseThem() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r5-gated-sweep"
+        try await openFixtureDocument(server, id: id)
+
+        for probe in Self.gatedParameterProbes {
+            var args = probe.args
+            args["doc_id"] = .string(id)
+            let result = await server.invokeToolForTesting(name: probe.tool, arguments: args)
+            let text = resultText(result)
+            // `replace_text_batch`/`search_text_batch` never set `isError`
+            // for a per-item problem — they report the batch call itself as
+            // successful and embed the per-item failure in the result text
+            // (see the R1 per-item-isolation tests above and the control
+            // test below) — accept either shape as "reported as a failure".
+            let reportedAsFailure = result.isError == true || text.contains("FAIL")
+            XCTAssertTrue(reportedAsFailure, "\(probe.description): \(text)")
+            XCTAssertTrue(
+                text.contains(probe.expectedNamedKey),
+                "\(probe.description): expected error to name '\(probe.expectedNamedKey)', got: \(text)"
+            )
+        }
+    }
+
+    /// `replace_text_batch`/`search_text_batch` report per-item failures in
+    /// the result STRING (batch tools never set `isError` for a per-item
+    /// problem — see the R1 per-item-isolation tests above), so the sweep's
+    /// `isError == true` assertion doesn't fit them directly. This confirms
+    /// their two rows above still catch a real regression: probing with the
+    /// CORRECT type instead must NOT report that item as failed.
+    func testGatedParameterSweepRowsForBatchToolsActuallyDistinguishRightFromWrongType() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r5-gated-sweep-batch-control"
+        try await openFixtureDocument(server, id: id)
+
+        let replaceResult = await server.invokeToolForTesting(
+            name: "replace_text_batch",
+            arguments: ["doc_id": .string(id), "replacements": .array([
+                .object(["find": .string("Anchor"), "replace": .string("Anchored"), "regex": .bool(false)]),
+            ])]
+        )
+        XCTAssertTrue(resultText(replaceResult).contains("1 applied, 0 failed"), resultText(replaceResult))
+
+        let searchResult = await server.invokeToolForTesting(
+            name: "search_text_batch",
+            arguments: ["doc_id": .string(id), "queries": .array([
+                .object(["query": .string("Anchored"), "case_sensitive": .bool(false)]),
+            ])]
+        )
+        XCTAssertTrue(resultText(searchResult).contains("Found 1 match"), resultText(searchResult))
+    }
+}
+
+/// A file that exists on disk with arbitrary bytes — `insert_image_from_path`
+/// checks existence before this test's `index` probe is ever reached, but
+/// with explicit `width`/`height` never actually decodes it as an image
+/// (`resolveImageDimensions` short-circuits), so its content doesn't matter.
+private enum R5FixtureFile {
+    static let existingFilePath: String = {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("s232r5-fixture-\(UUID().uuidString).bin")
+        try? Data("not actually an image".utf8).write(to: url)
+        return url.path
+    }()
 }
