@@ -178,6 +178,34 @@ swift build -c release
 cp .build/release/CheWordMCP ~/bin/
 ```
 
+#### Crash fuzzing (`scripts/fuzz-extreme-params.py`)
+
+Sends extreme values (`Int.max`, `Int.min`, `2^62`, `2^31`, `-1`, `1e300`,
+`-1e300`) to every integer/number parameter declared in `tools/list`,
+against a REAL compiled binary over stdio (MCP JSON-RPC) — one fresh
+server process per probe, so a crash in one probe can't take the whole
+run down. Found 58 crashes before [#234](https://github.com/PsychQuant/che-word-mcp/issues/234)'s
+first round of fixes, and 5 more (within that same issue's own broadened
+audit criterion) that a manual `grep`-based audit had missed — see the
+issue for the full history. Run it whenever a new tool or a new
+integer/number parameter is added, and before any release that touches
+integer/number parameter handling in `Server.swift`:
+
+```bash
+swift build   # ensure .build/debug/CheWordMCP is up to date first
+python3 scripts/fuzz-extreme-params.py .build/debug/CheWordMCP /tmp/fuzz-workdir
+```
+
+Exit code is 0 iff zero crashes and zero timeouts were observed; a summary
+line and a per-probe TSV (`<workdir>/fuzz_results.tsv`) are always
+produced. It's also wired into `swift test` behind an opt-in gate (not run
+by default — spawning ~1500 subprocesses takes on the order of a minute
+and needs a compiled binary):
+
+```bash
+RUN_FUZZ=1 swift test --filter FuzzExtremeParamsGateTests
+```
+
 ## Two Modes of Operation
 
 ### Direct Mode (`source_path`) — Read-only, no state

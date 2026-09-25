@@ -556,4 +556,180 @@ final class Issue234IntegerOverflowGuardTests: XCTestCase {
         XCTAssertEqual(update.isError, true, resultText(update))
         XCTAssertTrue(resultText(update).contains("width"), resultText(update))
     }
+
+    // MARK: - (E) R8: crash sites an independent fuzzer found that #234's
+    // own manual audit missed — team lead's explicit completion condition
+    // for this round is mechanical (the fuzzer finding zero crashes), not
+    // "more manual auditing." See `scripts/fuzz-extreme-params.py` for the
+    // fuzzer itself (adapted from `rev232b`'s probe scripts) and this
+    // round's report section for the actual fuzzer run's output.
+
+    func testCreateNumberingDefinitionRejectsOutOfRangeIlvl() async throws {
+        let server = await WordMCPServer()
+        let id = "s234r8-numdef-ilvl"
+        try await openFixtureDocument(server, id: id)
+        for bad: Value in [.int(Int.max), .int(Int.min), .int(9), .int(-1)] {
+            let result = await server.invokeToolForTesting(
+                name: "create_numbering_definition",
+                arguments: [
+                    "doc_id": .string(id),
+                    "levels": .array([.object(["ilvl": bad, "num_format": .string("decimal"), "lvl_text": .string("%1.")])]),
+                ]
+            )
+            XCTAssertEqual(result.isError, true, "\(bad): \(resultText(result))")
+            XCTAssertTrue(resultText(result).contains("ilvl"), "\(bad): \(resultText(result))")
+        }
+        let ok = await server.invokeToolForTesting(
+            name: "create_numbering_definition",
+            arguments: [
+                "doc_id": .string(id),
+                "levels": .array([.object(["ilvl": .int(8), "num_format": .string("decimal"), "lvl_text": .string("%1.")])]),
+            ]
+        )
+        XCTAssertNotEqual(ok.isError, true, resultText(ok))
+    }
+
+    func testInsertCaptionRejectsOverflowingOrNegativeParagraphIndex() async throws {
+        let server = await WordMCPServer()
+        let id = "s234r8-caption-idx"
+        try await openFixtureDocument(server, id: id)
+        for bad: Value in [.int(Int.max), .int(-1)] {
+            let result = await server.invokeToolForTesting(
+                name: "insert_caption",
+                arguments: ["doc_id": .string(id), "label": .string("Figure"), "caption_text": .string("c"), "paragraph_index": bad]
+            )
+            XCTAssertEqual(result.isError, true, "\(bad): \(resultText(result))")
+            XCTAssertTrue(resultText(result).contains("paragraph_index"), "\(bad): \(resultText(result))")
+        }
+    }
+
+    func testInsertTableRejectsOutOfRangeRowsAndCols() async throws {
+        let server = await WordMCPServer()
+        let id = "s234r8-table-bounds"
+        try await openFixtureDocument(server, id: id)
+        let cases: [(String, Value, Value)] = [
+            ("rows", .int(-1), .int(2)),
+            ("rows", .int(0), .int(2)),
+            ("rows", .int(2_147_483_648), .int(1)),
+            ("cols", .int(2), .int(-1)),
+            ("cols", .int(2), .int(0)),
+            ("cols", .int(2), .int(64)),
+        ]
+        for (namedKey, rows, cols) in cases {
+            let result = await server.invokeToolForTesting(
+                name: "insert_table",
+                arguments: ["doc_id": .string(id), "rows": rows, "cols": cols]
+            )
+            XCTAssertEqual(result.isError, true, "\(namedKey)=\(rows)/\(cols): \(resultText(result))")
+            XCTAssertTrue(resultText(result).contains(namedKey), "\(namedKey)=\(rows)/\(cols): \(resultText(result))")
+        }
+        let ok = await server.invokeToolForTesting(
+            name: "insert_table", arguments: ["doc_id": .string(id), "rows": .int(2), "cols": .int(63)]
+        )
+        XCTAssertNotEqual(ok.isError, true, resultText(ok))
+    }
+
+    func testInsertNestedTableRejectsOutOfRangeRowsAndCols() async throws {
+        let server = await WordMCPServer()
+        let id = "s234r8-nested-bounds"
+        try await openFixtureDocument(server, id: id)
+        let parent = await server.invokeToolForTesting(
+            name: "insert_table", arguments: ["doc_id": .string(id), "rows": .int(2), "cols": .int(2)]
+        )
+        XCTAssertNotEqual(parent.isError, true, resultText(parent))
+        for bad: Value in [.int(-1), .int(0), .int(2_147_483_648)] {
+            let result = await server.invokeToolForTesting(
+                name: "insert_nested_table",
+                arguments: [
+                    "doc_id": .string(id), "parent_table_index": .int(0), "row_index": .int(0), "col_index": .int(0),
+                    "rows": bad, "cols": .int(1),
+                ]
+            )
+            XCTAssertEqual(result.isError, true, "\(bad): \(resultText(result))")
+            XCTAssertTrue(resultText(result).contains("rows"), "\(bad): \(resultText(result))")
+        }
+    }
+
+    func testInsertTextClampsNegativePositionInsteadOfTrapping() async throws {
+        let server = await WordMCPServer()
+        let id = "s234r8-inserttext-negpos"
+        try await openFixtureDocument(server, id: id)
+        let result = await server.invokeToolForTesting(
+            name: "insert_text",
+            arguments: ["doc_id": .string(id), "paragraph_index": .int(0), "text": .string("X"), "position": .int(-1)]
+        )
+        // Clamped (matches the existing upper-bound policy on this same
+        // line), not rejected — see `insertText`'s R8 comment.
+        XCTAssertNotEqual(result.isError, true, resultText(result))
+    }
+
+    func testInsertTocRejectsOutOfRangeOrInvertedLevels() async throws {
+        let server = await WordMCPServer()
+        let id = "s234r8-toc-levels"
+        try await openFixtureDocument(server, id: id)
+        let cases: [[String: Value]] = [
+            ["min_level": .int(5), "max_level": .int(1)],
+            ["min_level": .int(Int.max), "max_level": .int(Int.max)],
+            ["min_level": .int(Int.min), "max_level": .int(Int.max)],
+            ["min_level": .int(0), "max_level": .int(3)],
+            ["min_level": .int(1), "max_level": .int(10)],
+        ]
+        for args in cases {
+            var full = args
+            full["doc_id"] = .string(id)
+            let result = await server.invokeToolForTesting(name: "insert_toc", arguments: full)
+            XCTAssertEqual(result.isError, true, "\(args): \(resultText(result))")
+            XCTAssertTrue(resultText(result).contains("min_level"), "\(args): \(resultText(result))")
+        }
+        let ok = await server.invokeToolForTesting(
+            name: "insert_toc", arguments: ["doc_id": .string(id), "min_level": .int(1), "max_level": .int(3)]
+        )
+        XCTAssertNotEqual(ok.isError, true, resultText(ok))
+    }
+
+    /// R8 (`rev232b` review of #234, "上限值的依據" §3): `left`/`right` are
+    /// `UInt32Value` (unsigned) in the OOXML SDK, `top`/`bottom` are
+    /// `Int32Value` (signed) — they must NOT share a range.
+    func testSetPageMarginsRejectsNegativeLeftRightButAcceptsNegativeTopBottom() async throws {
+        let server = await WordMCPServer()
+        let id = "s234r8-margins-signed"
+        try await openFixtureDocument(server, id: id)
+        for key in ["left", "right"] {
+            let result = await server.invokeToolForTesting(
+                name: "set_page_margins", arguments: ["doc_id": .string(id), key: .int(-100)]
+            )
+            XCTAssertEqual(result.isError, true, "\(key): \(resultText(result))")
+            XCTAssertTrue(resultText(result).contains(key), "\(key): \(resultText(result))")
+        }
+        for key in ["top", "bottom"] {
+            let result = await server.invokeToolForTesting(
+                name: "set_page_margins", arguments: ["doc_id": .string(id), key: .int(-100)]
+            )
+            XCTAssertNotEqual(result.isError, true, "\(key): \(resultText(result))")
+        }
+    }
+
+    /// R8 (`rev232b` review of #234, M-234-6): this exact case — a WIDE
+    /// image (aspect ratio > 1) given only `height` — was the one mutation
+    /// that survived because the existing test used a TALL image (aspect
+    /// ratio 0.001), where the computed `width` never got large enough to
+    /// exercise `safeInt`'s own guard (it was caught by
+    /// `imagePixelDimensionRange` instead, one layer downstream). This test
+    /// uses a 1000×1 image (aspect ratio 1000.0) so `Double(Int.max) *
+    /// 1000.0` is what `safeInt` itself must catch.
+    func testInsertImageFromPathAutoWidthFromHeightWithWideImageRejectsOverflow() async throws {
+        let server = await WordMCPServer()
+        let id = "s234r8-img-wide-height-only"
+        try await openFixtureDocument(server, id: id)
+        let png = try tempPNGPath(width: 1000, height: 1)
+        defer { try? FileManager.default.removeItem(atPath: png) }
+
+        let result = await server.invokeToolForTesting(
+            name: "insert_image_from_path",
+            arguments: ["doc_id": .string(id), "path": .string(png), "height": .int(Int.max)]
+        )
+        XCTAssertEqual(result.isError, true, resultText(result))
+        XCTAssertTrue(resultText(result).contains("height"), resultText(result))
+    }
+
 }
