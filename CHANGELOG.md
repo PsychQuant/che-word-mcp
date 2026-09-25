@@ -262,6 +262,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   新增 15 個回歸測試（8 個 issue 列出的站點端到端各一 + 共用 helper 的單元測試 + 2 個全檔盤點
   發現的站點）；崩潰輸入本身無法在 XCTest 裡驗證（trap 會連測試行程一起殺掉），改用真實 debug
   binary 經 stdio 對每個崩潰輸入分別驗證 RED（修正前當機）與 GREEN（修正後乾淨拒絕，不當機）。
+  **team lead 的獨立審查者複查 R7 時另外發現一處**（尚未經 binary 重現，本次一併處理）：
+  `resolveImageDimensions`（只給 `width`／`height` 其中一個時，用圖片實際的長寬比換算缺的那一邊）
+  用 `Int(Double(w) / aspectRatio)`／`Int(Double(h) * aspectRatio)` 做換算，長寬比是**執行期才知道
+  的 `Double`**、不是固定常數，跟上面 8 處「× 固定常數」的形狀不同，所以把本 issue 的盤點判準明確
+  擴大為「使用者輸入經過任何算術（乘、加、轉型、乘上浮點比例）之後才轉成 `Int` 的所有路徑」，不再
+  只找「× 一個固定常數」這一種形狀。已用真實 debug binary 經 stdio 重現：
+  `insert_image_from_path({height: 9223372036854775807})` 對一張真實 1×1000px PNG（長寬比 0.001）
+  當機；對一張 100×100px（長寬比剛好 1.0，最普通的長寬比）傳 `{width: 9223372036854775807}` 同樣
+  當機——因為 `Double(Int.max)` 本身不是可精確表示值、會無條件進位到剛好 `2^63`（比 `Int.max` 多
+  1），連「長寬比 1.0」這種最不特殊的輸入都踩得到。新增 `Self.safeInt(fromArithmeticResult:key:)`：
+  在呼叫會 trap 的 `Int(_: Double)` 之前，先驗證該 `Double` 是有限值且落在 `[-2^63, 2^63)` 之間
+  （`twipsLine`〔R7〕已經在用的同一種「先驗證再轉換」形狀，只是這裡的界線是可表示範圍本身，不是某
+  個 OOXML 型別的政策上限）——界線刻意寫成 `-0x1p63`／`0x1p63`（2 的冪，`Double` 本身可精確表示），
+  不是 `Double(Int.max)`，正是因為後者的四捨五入會讓上界檢查多放行一個其實仍會 trap 的值。
+  `safeInt` 修完後，只給 `height` 的案例仍然當機：追查後是**同一個 bug 類別在另一層、另一個套件**
+  ——ooxml-swift（`.build/checkouts/ooxml-swift/`，che-word-mcp 無法直接修改的獨立 repo）的
+  `Drawing.from(widthPx:heightPx:)` 與 `Document.updateImage` 都做未加防護的
+  `widthPx * 9525`／`heightPx * 9525`（像素→EMU）；`safeInt` 只守住 `resolveImageDimensions` 自己
+  算出來的那一個維度，使用者直接給的那個維度完全沒被碰過，原封不動傳進這個乘法。同一個未加防護的
+  乘法還被 `insert_image`（base64 版，兩個維度皆為必填、完全沒有長寬比運算）與 `update_image`
+  （`Document.updateImage`，同一段 `* 9525`）共用，不只 `insert_image_from_path` 一個工具。因為
+  無法修改 ooxml-swift 本身，改在 che-word-mcp 這一側、呼叫進 ooxml-swift 之前驗證輸入：新增
+  `Self.imagePixelDimensionRange`，依 DrawingML `<wp:extent>` 的 `cx`／`cy` 實際使用的型別
+  `ST_PositiveCoordinate`（`xsd:long`，文件明確限制在 `0 ≤ n ≤ 27273042316900`——這是真正有文件
+  可查的 XSD 數值限制，不像 `w:before`／`w:sz` 那樣要退而求其次改用 Word UI 上限）推算：
+  `27273042316900 ÷ 9525 = 2863311529`（整數除法）即是換算後仍落在 `ST_PositiveCoordinate` 範圍
+  內的最大像素值。在 `insert_image`、`insert_image_from_path`（`resolveImageDimensions` 解出寬高
+  之後）、`update_image` 三個呼叫點各自驗證，涵蓋這個共用乘法的所有入口。新增 11 個回歸測試
+  （`safeInt` 的單元測試 4 個 + 三個工具端到端各 2–3 個 + 1 個一般值不受影響的回歸鎖）；跟上面 8
+  處一樣，崩潰輸入無法直接在 XCTest 裡驗證，改用「保留 helper 定義、只還原 4 個呼叫點的守門」這種
+  局部 mutation testing：還原後這 6 個端到端測試逐一以真實 `SIGTRAP`（訊號碼 5）當掉整個測試行程，
+  證實測試真的在測這個修正，不是空跑；還原修正後全部轉為乾淨的 `isError: true`。
   **已知限制**：#232 R7 的 CHANGELOG／`twipsLine` doc comment 對 `w:line`（`w:spacing` 的另一
   屬性）宣稱「Open XML SDK 對應型別為 Int32」，本次查證 Microsoft Learn 文件時發現這個型別
   推論本身站不住腳（`w:before`／`w:sz` 的對應屬性實際型別是 `StringValue`，`w:line` 極可能

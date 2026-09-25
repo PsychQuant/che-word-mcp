@@ -1,6 +1,8 @@
 import XCTest
 import MCP
 import OOXMLSwift
+import CoreGraphics
+import ImageIO
 @testable import CheWordMCP
 
 /// PsychQuant/che-word-mcp#234 — 8 sites multiply a user-supplied `Int`
@@ -298,5 +300,260 @@ final class Issue234IntegerOverflowGuardTests: XCTestCase {
             XCTAssertNotEqual(result.isError, true, "\(bad): \(resultText(result))")
             XCTAssertTrue(resultText(result).contains("Anchor"), "\(bad): \(resultText(result))")
         }
+    }
+
+    // MARK: - (D) team-lead follow-up: `resolveImageDimensions` /
+    // `insert_image` / `insert_image_from_path` / `update_image` —
+    // package-boundary crash the team lead's reviewer found while
+    // continuing to review R7 (not yet reproduced by them; reproduced here
+    // via real binary over stdio before writing these tests, per the exact
+    // instruction "用真實 binary 經 stdio 重現，再修正並補測試").
+    //
+    // This is a THIRD layer of the same bug class, distinct from (A)/(B)
+    // above: `resolveImageDimensions` computes a MISSING width/height via
+    // `Double(w) / aspectRatio` or `Double(h) * aspectRatio` — a runtime
+    // ratio, not a fixed literal constant, so it needed its own
+    // `safeInt(fromArithmeticResult:key:)` guard (mirroring `twipsLine`'s
+    // shape) rather than `validatedScaledMeasurement`. But fixing THAT
+    // alone was not sufficient: `Drawing.from(widthPx:heightPx:)` and
+    // `Document.updateImage` — both in ooxml-swift, a SEPARATE package this
+    // repo cannot modify — do their own unguarded `widthPx * 9525`/
+    // `heightPx * 9525` (pixels → EMU) further downstream, reachable
+    // directly (no aspect-ratio math at all) by `insert_image` (base64) and
+    // `update_image`, and by `insert_image_from_path` even when BOTH
+    // width/height are user-supplied (no `resolveImageDimensions` math
+    // involved at all). Hence `imagePixelDimensionRange`, applied at all
+    // three call sites.
+
+    /// Real PNG file of the given pixel size (reusing the pattern already
+    /// established in `Issue175SaveImageConsistencyTests.pngData`), so
+    /// `ImageDimensions.detect(path:)` reads a genuine IHDR chunk and
+    /// `native.aspectRatio` is the real ratio, not a stubbed value.
+    private func pngData(width: Int, height: Int) throws -> Data {
+        let space = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8,
+            bytesPerRow: 0, space: space,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+            let image = { () -> CGImage? in
+                ctx.setFillColor(CGColor(red: 0, green: 0, blue: 1, alpha: 1))
+                ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+                return ctx.makeImage()
+            }()
+        else { throw XCTSkip("CGContext unavailable") }
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(out, "public.png" as CFString, 1, nil) else {
+            throw XCTSkip("PNG encoder unavailable")
+        }
+        CGImageDestinationAddImage(dest, image, nil)
+        CGImageDestinationFinalize(dest)
+        return out as Data
+    }
+
+    private func tempPNGPath(width: Int, height: Int) throws -> String {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("i234-\(UUID().uuidString).png")
+        try pngData(width: width, height: height).write(to: url)
+        return url.path
+    }
+
+    // MARK: (D.1) `safeInt(fromArithmeticResult:key:)` unit tests
+
+    func testSafeIntFromArithmeticResultAcceptsOrdinaryValues() throws {
+        XCTAssertEqual(try WordMCPServer.safeInt(fromArithmeticResult: 1000.0, key: "width"), 1000)
+        XCTAssertEqual(try WordMCPServer.safeInt(fromArithmeticResult: 0.0, key: "width"), 0)
+        XCTAssertEqual(try WordMCPServer.safeInt(fromArithmeticResult: -1000.0, key: "width"), -1000)
+    }
+
+    /// The precise reason a `value <= Double(Int.max)` bound would have
+    /// been wrong: `Double(Int.max)` itself is NOT exactly representable
+    /// and rounds UP to exactly `0x1p63` (2^63), which is one past what
+    /// `Int(_:)` can hold. `0x1p63` must be REJECTED even though it prints
+    /// identically to `Double(Int.max)`.
+    func testSafeIntFromArithmeticResultRejectsExactlyTwoToThe63() throws {
+        XCTAssertEqual(0x1p63, Double(Int.max), "sanity: Double(Int.max) rounds up to exactly 2^63")
+        do {
+            _ = try WordMCPServer.safeInt(fromArithmeticResult: 0x1p63, key: "width")
+            XCTFail("2^63 must be rejected, not silently accepted via Double(Int.max) rounding")
+        } catch WordError.invalidParameter(let key, _) {
+            XCTAssertEqual(key, "width")
+        }
+    }
+
+    func testSafeIntFromArithmeticResultRejectsNonFiniteAndOutOfRange() throws {
+        // `-0x1p63 - 1024` would NOT actually test "below the floor": at
+        // this magnitude the ULP is 2^11 = 2048, so subtracting 1024 (half
+        // a ULP) rounds back to exactly `-0x1p63` under round-to-nearest-
+        // even — which is itself IN range (the guard is `value >= -0x1p63`).
+        // `-0x1p64` (one full power-of-two below, well outside any
+        // rounding ambiguity) is the value that actually exercises the
+        // lower-bound rejection path.
+        for bad in [Double.nan, Double.infinity, -Double.infinity, 0x1p63, -0x1p64] {
+            do {
+                _ = try WordMCPServer.safeInt(fromArithmeticResult: bad, key: "height")
+                XCTFail("expected invalidParameter for \(bad)")
+            } catch WordError.invalidParameter(let key, _) {
+                XCTAssertEqual(key, "height")
+            } catch {
+                XCTFail("expected WordError.invalidParameter, got \(error)")
+            }
+        }
+    }
+
+    func testSafeIntFromArithmeticResultAcceptsJustInsideTheBoundary() throws {
+        // -0x1p63 itself IS in range (the guard is `value >= -0x1p63`);
+        // just below 0x1p63 is the largest acceptable positive value.
+        XCTAssertEqual(try WordMCPServer.safeInt(fromArithmeticResult: -0x1p63, key: "height"), Int.min)
+        XCTAssertNoThrow(try WordMCPServer.safeInt(fromArithmeticResult: 0x1p63.nextDown, key: "height"))
+    }
+
+    // MARK: (D.2) `insert_image_from_path` — auto-computed dimension via
+    // aspect ratio must not trap, whichever operand is the large one.
+
+    /// Case `(.some(width), nil)` with a 100×100 (aspect ratio exactly 1.0)
+    /// image — the most "ordinary" aspect ratio there is. Still traps
+    /// pre-fix because `Double(Int.max) / 1.0` rounds up past `Int.max`.
+    /// Caught by `safeInt`, naming "width" (the parameter the caller
+    /// actually supplied).
+    func testInsertImageFromPathAutoHeightFromWidthRejectsOverflow() async throws {
+        let server = await WordMCPServer()
+        let id = "s234-img-autoheight"
+        try await openFixtureDocument(server, id: id)
+        let png = try tempPNGPath(width: 100, height: 100)
+        defer { try? FileManager.default.removeItem(atPath: png) }
+
+        let result = await server.invokeToolForTesting(
+            name: "insert_image_from_path",
+            arguments: ["doc_id": .string(id), "path": .string(png), "width": .int(Int.max)]
+        )
+        XCTAssertEqual(result.isError, true, resultText(result))
+        XCTAssertTrue(resultText(result).contains("width"), resultText(result))
+    }
+
+    /// Case `(nil, .some(height))` with a 1×1000 (aspect ratio 0.001) image
+    /// — the computed `width` (`Int.max * 0.001` ≈ 9.2e15) does NOT trap
+    /// `safeInt` (it is well inside `Int`'s range), but IS far outside
+    /// `imagePixelDimensionRange`, so it must still be rejected — this was
+    /// the exact case still crashing after the first, incomplete fix
+    /// (`safeInt` alone, before `imagePixelDimensionRange` was added).
+    func testInsertImageFromPathAutoWidthFromHeightRejectsOutOfRangeResult() async throws {
+        let server = await WordMCPServer()
+        let id = "s234-img-autowidth"
+        try await openFixtureDocument(server, id: id)
+        let png = try tempPNGPath(width: 1, height: 1000)
+        defer { try? FileManager.default.removeItem(atPath: png) }
+
+        let result = await server.invokeToolForTesting(
+            name: "insert_image_from_path",
+            arguments: ["doc_id": .string(id), "path": .string(png), "height": .int(Int.max)]
+        )
+        XCTAssertEqual(result.isError, true, resultText(result))
+        XCTAssertTrue(resultText(result).contains("width") || resultText(result).contains("height"), resultText(result))
+    }
+
+    /// Both width/height user-supplied directly — no aspect-ratio math in
+    /// `resolveImageDimensions` at all (the `(.some, .some)` branch returns
+    /// immediately), so this exercises `insertImageFromPath`'s OWN
+    /// `imagePixelDimensionRange` guard, not `safeInt`.
+    func testInsertImageFromPathBothDimensionsGivenRejectsOutOfRange() async throws {
+        let server = await WordMCPServer()
+        let id = "s234-img-bothgiven"
+        try await openFixtureDocument(server, id: id)
+        let png = try tempPNGPath(width: 100, height: 100)
+        defer { try? FileManager.default.removeItem(atPath: png) }
+
+        let result = await server.invokeToolForTesting(
+            name: "insert_image_from_path",
+            arguments: ["doc_id": .string(id), "path": .string(png), "width": .int(Int.max), "height": .int(Int.max)]
+        )
+        XCTAssertEqual(result.isError, true, resultText(result))
+        XCTAssertTrue(resultText(result).contains("width"), resultText(result))
+    }
+
+    /// Ordinary values must keep working — no regression.
+    func testInsertImageFromPathOrdinaryValuesStillSucceed() async throws {
+        let server = await WordMCPServer()
+        let id = "s234-img-ordinary"
+        try await openFixtureDocument(server, id: id)
+        let png = try tempPNGPath(width: 100, height: 100)
+        defer { try? FileManager.default.removeItem(atPath: png) }
+
+        let result = await server.invokeToolForTesting(
+            name: "insert_image_from_path",
+            arguments: ["doc_id": .string(id), "path": .string(png), "width": .int(300), "height": .int(150)]
+        )
+        XCTAssertNotEqual(result.isError, true, resultText(result))
+        XCTAssertTrue(resultText(result).contains("300x150"), resultText(result))
+    }
+
+    // MARK: (D.3) `insert_image` (base64) — no `resolveImageDimensions`
+    // involved at all (both width/height are `missingParameter`-required),
+    // so this is purely `insertImage`'s own `imagePixelDimensionRange`
+    // guard, added because `Drawing.from(widthPx:heightPx:)` is shared with
+    // `insert_image_from_path`.
+
+    func testInsertImageBase64RejectsOverflowingWidth() async throws {
+        let server = await WordMCPServer()
+        let id = "s234-img-b64-width"
+        try await openFixtureDocument(server, id: id)
+
+        let result = await server.invokeToolForTesting(
+            name: "insert_image",
+            arguments: [
+                "doc_id": .string(id), "base64": .string("AA=="), "file_name": .string("x.png"),
+                "width": .int(Int.max), "height": .int(10),
+            ]
+        )
+        XCTAssertEqual(result.isError, true, resultText(result))
+        XCTAssertTrue(resultText(result).contains("width"), resultText(result))
+    }
+
+    func testInsertImageBase64RejectsOverflowingHeight() async throws {
+        let server = await WordMCPServer()
+        let id = "s234-img-b64-height"
+        try await openFixtureDocument(server, id: id)
+
+        let result = await server.invokeToolForTesting(
+            name: "insert_image",
+            arguments: [
+                "doc_id": .string(id), "base64": .string("AA=="), "file_name": .string("x.png"),
+                "width": .int(10), "height": .int(Int.max),
+            ]
+        )
+        XCTAssertEqual(result.isError, true, resultText(result))
+        XCTAssertTrue(resultText(result).contains("height"), resultText(result))
+    }
+
+    // MARK: (D.4) `update_image` — same shared `Document.updateImage` ×
+    // 9525 as `Drawing.from`; both width/height are optional here.
+
+    func testUpdateImageRejectsOverflowingWidth() async throws {
+        let server = await WordMCPServer()
+        let id = "s234-img-update"
+        try await openFixtureDocument(server, id: id)
+        let png = try tempPNGPath(width: 100, height: 100)
+        defer { try? FileManager.default.removeItem(atPath: png) }
+
+        let insert = await server.invokeToolForTesting(
+            name: "insert_image_from_path",
+            arguments: ["doc_id": .string(id), "path": .string(png), "width": .int(200), "height": .int(200)]
+        )
+        XCTAssertNotEqual(insert.isError, true, resultText(insert))
+        // Parse the id out of "Inserted image 'x.png' with id 'rIdN' (...)".
+        guard let range = resultText(insert).range(of: "with id '") else {
+            XCTFail("could not find image id in: \(resultText(insert))"); return
+        }
+        let afterPrefix = resultText(insert)[range.upperBound...]
+        guard let closeQuote = afterPrefix.firstIndex(of: "'") else {
+            XCTFail("could not find image id in: \(resultText(insert))"); return
+        }
+        let imageId = String(afterPrefix[afterPrefix.startIndex..<closeQuote])
+
+        let update = await server.invokeToolForTesting(
+            name: "update_image",
+            arguments: ["doc_id": .string(id), "image_id": .string(imageId), "width": .int(Int.max)]
+        )
+        XCTAssertEqual(update.isError, true, resultText(update))
+        XCTAssertTrue(resultText(update).contains("width"), resultText(update))
     }
 }
