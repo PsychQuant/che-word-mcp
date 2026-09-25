@@ -384,7 +384,7 @@ actor WordMCPServer {
         // R9 (review `rev232c` LOW-6): below 1/480 the value rounds to 0 and
         // would be written as `w:line="0"`, which is not a line height.
         guard scaled >= 1 else {
-            throw WordError.invalidParameter("line_spacing", "換算後小於 1 twip（至少 1/240 倍行距）")
+            throw WordError.invalidParameter("line_spacing", "換算後小於 1 twip（倍數須至少 1/480，四捨五入後才會 ≥ 1 twip）")
         }
         guard scaled.isFinite, scaled >= Double(Int32.min), scaled <= Double(Int32.max) else {
             throw WordError.invalidParameter(
@@ -11365,7 +11365,12 @@ actor WordMCPServer {
     /// - `wp:posOffset` is `ST_PositionOffset` = `xsd:int`, so the value must
     ///   fit a 32-bit signed integer or the written file is invalid.
     func floatingImageOffset(_ args: [String: Value], _ key: String, alignKey: String) throws -> Int? {
-        if case .string = args[key] {
+        if case .string(let raw) = args[key] {
+            // R9 review (rev232c LOW): a numeric string is a type mistake,
+            // not an alignment keyword — don't point it at `*_align`.
+            if Int(raw.trimmingCharacters(in: .whitespaces)) != nil {
+                throw WordError.invalidParameter(key, "必須是 JSON 整數（EMU 偏移），不接受字串 \"\(raw)\"")
+            }
             throw WordError.invalidParameter(
                 key, "必須是整數（EMU 偏移）；對齊關鍵字（例如 \"center\"）請改用 \(alignKey)"
             )
