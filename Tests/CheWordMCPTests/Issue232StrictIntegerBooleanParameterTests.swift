@@ -39,21 +39,28 @@ import OOXMLSwift
 ///      gated reads that used to skip validation entirely — see
 ///      `testSetTableStyleRejectsStringBorderSizeEvenWithoutBorderStyle`).
 ///
-/// Known scope boundary (Codex R3): `Server.swift` has other reads gated the
-/// same conditional-branch way the `set_table_style` fixes address —
-/// `format_text`'s `run_index` (only read when `as_revision` is true),
-/// page-margin presets (custom integers only read on the non-preset
-/// branch), `accept_all_revisions`/`reject_all_revisions` (skip reading
-/// `revision_id` when `all: true`), and `replyToComment`'s
-/// `try (optionalInt(args, "comment_id") ?? optionalInt(args,
-/// "parent_comment_id"))` (a non-nil `comment_id` short-circuits validating
-/// a present-but-mistyped `parent_comment_id`). These were not individually
-/// fixed — #232's literal scope is "a single `args[x]` read must not
-/// conflate wrong-type with absent", not "every argument must validate
+/// #232 R7 (`rev232b` review LOW-2): this comment used to say the sites
+/// below "were not individually fixed" and that closing them was "a
+/// separate, larger undertaking better suited to its own follow-up issue."
+/// That was true when Codex's R3 review wrote it — it is NOT true any more.
+/// R4 fixed every site R3 actually named (`format_text.run_index`, the
+/// page-margin presets, `accept_revision`/`reject_revision.revision_id`,
+/// `replyToComment`'s `comment_id ?? parent_comment_id` short-circuit); R5
+/// and R6 went on to close every other conditionally-gated read the file's
+/// static sweeps and an independent human-assigned re-review (`rev232b`,
+/// PASS, zero remaining HIGH findings) could find. #232's policy, as
+/// team-lead finally settled it in R5, IS "every argument must validate
 /// regardless of which branch of the tool's own logic would actually use
-/// it." Auditing every conditional/mode-gated read in the file for the
-/// latter, broader property is a separate, larger undertaking better suited
-/// to its own follow-up issue.
+/// it" — the narrower R3-era framing this comment used to describe is
+/// obsolete. What's left, as of R7, are two DIFFERENT classes of problem
+/// this policy was never meant to cover: a value read via the wrong
+/// STRICT-TYPING HELPER for its schema's declared type (`insert_floating_
+/// image`'s position parameters read `optionalInt` when the schema says
+/// `"string"` — fixed in R7 M3; see the CHANGELOG's `R7` entry), and
+/// pre-existing `Int * Int` overflow traps unrelated to #232's
+/// wrong-type-vs-absent conflation (e.g. `format_text({font_size:
+/// Int.max})`, present on `gh/main` before #232 and explicitly left alone
+/// by R7 M2 as a different bug class — see the CHANGELOG's M2 entry).
 final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
 
     /// #232 R6 (review LOW-6): `R5FixtureFile.existingFilePath` writes a
@@ -747,6 +754,257 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         XCTAssertEqual(paragraphs.first?.properties.spacing?.line, 480)
     }
 
+    // MARK: - R7 (`rev232b` review M2): `line_spacing` trap avoidance
+    //
+    // `set_paragraph_format`'s `line_spacing` used to feed straight into
+    // `Int(lineSpacing * 240)` with no finiteness/range check. `Int(_:
+    // Double)` TRAPS the whole process — SIGTRAP, not a catchable Swift
+    // error — when the Double doesn't fit. Reproduced against the real
+    // release/debug binary over stdio (not reachable through XCTest, since
+    // a trap kills the test process too): `line_spacing:40000000000000000`
+    // and `line_spacing:1e300` both crashed the server (`Fatal error:
+    // Double value cannot be converted to Int because the result would be
+    // greater than Int.max`, exit -5); `line_spacing:-1e300` crashed the
+    // same way with "...less than Int.min". Confirmed fixed the same way,
+    // post-fix: all three now return a normal `isError: true` response
+    // instead of killing the process (see the R7 RED/GREEN section of the
+    // report for the exact stdio transcripts). These tests exercise
+    // `Self.twipsLine(fromLineSpacingMultiplier:)` — the validation
+    // extracted from that call site — directly, since XCTest itself cannot
+    // observe "the process didn't crash" as a pass/fail signal the way a
+    // thrown Swift error can be asserted on.
+
+    func testTwipsLineRejectsNonFiniteAndNonPositiveValues() {
+        for bad: Double in [.nan, .infinity, -.infinity, 0, -1, -1e300] {
+            do {
+                _ = try WordMCPServer.twipsLine(fromLineSpacingMultiplier: bad)
+                XCTFail("expected invalidParameter for \(bad)")
+            } catch WordError.invalidParameter(let key, _) {
+                XCTAssertEqual(key, "line_spacing")
+            } catch {
+                XCTFail("expected WordError.invalidParameter, got \(error)")
+            }
+        }
+    }
+
+    /// The two exact crash inputs from the independent review's stdio
+    /// reproduction — both are finite, positive Doubles (so they pass the
+    /// first guard), but overflow `Int32` once multiplied by 240.
+    func testTwipsLineRejectsValuesThatWouldOverflowTheOOXMLTypedRange() {
+        for bad: Double in [40_000_000_000_000_000, 1e300] {
+            do {
+                _ = try WordMCPServer.twipsLine(fromLineSpacingMultiplier: bad)
+                XCTFail("expected invalidParameter for \(bad)")
+            } catch WordError.invalidParameter(let key, let reason) {
+                XCTAssertEqual(key, "line_spacing")
+                XCTAssertTrue(reason.contains("Int32"), reason)
+            } catch {
+                XCTFail("expected WordError.invalidParameter, got \(error)")
+            }
+        }
+    }
+
+    /// Ordinary in-range values must still convert exactly as before —
+    /// this fix must not narrow what a normal caller can express.
+    func testTwipsLineAcceptsOrdinaryValues() throws {
+        XCTAssertEqual(try WordMCPServer.twipsLine(fromLineSpacingMultiplier: 1.0), 240)
+        XCTAssertEqual(try WordMCPServer.twipsLine(fromLineSpacingMultiplier: 1.5), 360)
+        XCTAssertEqual(try WordMCPServer.twipsLine(fromLineSpacingMultiplier: 2.0), 480)
+        // The largest value that still fits Int32 once multiplied by 240,
+        // and one twip past it — a boundary check, not just an interior one.
+        let maxOk = Double(Int32.max) / 240
+        XCTAssertNoThrow(try WordMCPServer.twipsLine(fromLineSpacingMultiplier: maxOk))
+        XCTAssertThrowsError(try WordMCPServer.twipsLine(fromLineSpacingMultiplier: maxOk * 1.01))
+    }
+
+    /// #232 R7 (review LOW-4): `optionalDouble` itself must reject NaN and
+    /// ±Infinity for ANY number-typed parameter, not just as a side effect
+    /// of `line_spacing`'s own range check — bringing it to the same
+    /// baseline `optionalInt` already documents ("never silently truncated
+    /// or trapped"). JSON itself cannot encode either value, so this is only
+    /// reachable in-process, exactly like the review's own probe found.
+    func testOptionalDoubleRejectsNaNAndInfinity() async throws {
+        let server = await WordMCPServer()
+        for bad: Double in [.nan, .infinity, -.infinity] {
+            do {
+                _ = try await server.optionalDouble(["line_spacing": .double(bad)], "line_spacing")
+                XCTFail("expected invalidParameter for \(bad)")
+            } catch WordError.invalidParameter(let key, _) {
+                XCTAssertEqual(key, "line_spacing")
+            }
+        }
+    }
+
+    /// End-to-end confirmation that the two exact review-reported crash
+    /// inputs now fail cleanly through the full tool-call path (not just at
+    /// the `twipsLine` unit level) — same call shape as the stdio
+    /// reproduction, driven through `invokeToolForTesting` instead of raw
+    /// JSON over a pipe.
+    func testSetParagraphFormatRejectsLineSpacingValuesThatWouldTrap() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r7-line-spacing-trap"
+        try await openFixtureDocument(server, id: id)
+        for bad: Value in [.double(40_000_000_000_000_000), .double(1e300), .double(-1e300)] {
+            let result = await server.invokeToolForTesting(
+                name: "set_paragraph_format",
+                arguments: ["doc_id": .string(id), "paragraph_index": .int(0), "line_spacing": bad]
+            )
+            XCTAssertEqual(result.isError, true, "\(bad): \(resultText(result))")
+            XCTAssertTrue(resultText(result).contains("line_spacing"), "\(bad): \(resultText(result))")
+        }
+    }
+
+    // MARK: - R7 (`rev232b` review LOW-3): `bulk_resolve_comments.comment_ids`
+    //
+    // Element-level `value.intValue` only matched `.int` — the same
+    // inconsistency R6 fixed for `anchorPresence` (`looksLikeIntAnchor`),
+    // just for a batch array element instead of a single anchor parameter.
+    // A whole-valued `.double` element (only reachable in-process — JSON
+    // integers decode to `.int` on this platform) used to be rejected as
+    // `invalid_id` even though it names a real comment. Per-item failures
+    // now also carry the array `index`, since the old `"comment_id":null`
+    // gave no way to tell which element in a multi-id call had failed.
+
+    func testBulkResolveCommentsAcceptsWholeValuedDoubleId() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r7-bulk-resolve-whole-double"
+        try await openFixtureDocument(server, id: id)
+        try await insertFixtureComment(server, id: id)
+        let doc = await server.openDocuments[id]
+        guard let realId = doc?.comments.comments.first?.id else {
+            XCTFail("fixture comment was not created")
+            return
+        }
+        let result = await server.invokeToolForTesting(
+            name: "bulk_resolve_comments",
+            arguments: ["doc_id": .string(id), "comment_ids": .array([.double(Double(realId))])]
+        )
+        XCTAssertNotEqual(result.isError, true, resultText(result))
+        XCTAssertTrue(resultText(result).contains("\"resolved\":1"), resultText(result))
+        XCTAssertFalse(resultText(result).contains("invalid_id"), resultText(result))
+    }
+
+    func testBulkResolveCommentsReportsIndexOfInvalidId() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r7-bulk-resolve-index"
+        try await openFixtureDocument(server, id: id)
+        try await insertFixtureComment(server, id: id)
+        let doc = await server.openDocuments[id]
+        guard let realId = doc?.comments.comments.first?.id else {
+            XCTFail("fixture comment was not created")
+            return
+        }
+        let result = await server.invokeToolForTesting(
+            name: "bulk_resolve_comments",
+            arguments: ["doc_id": .string(id), "comment_ids": .array([
+                .int(realId), .double(Double(realId) + 0.5), .string("x"),
+            ])]
+        )
+        XCTAssertNotEqual(result.isError, true, resultText(result))
+        let text = resultText(result)
+        XCTAssertTrue(text.contains("\"resolved\":1"), text)
+        XCTAssertTrue(text.contains("\"index\":1"), text)   // fractional double, position 1
+        XCTAssertTrue(text.contains("\"index\":2"), text)   // string, position 2
+    }
+
+    // MARK: - R7 (`rev232b` review M3): `insert_floating_image` position
+    // parameters accept BOTH an EMU offset (integer) and an alignment
+    // keyword (string), matching what the schema has always promised.
+
+    /// Extracts `word/document.xml` from a saved `.docx` and returns it as a
+    /// string, for asserting on the literal `<wp:posOffset>`/`<wp:align>`
+    /// elements the OOXML writer emits — the thing M3 is actually about
+    /// (which XML element gets written), not just which Swift enum case a
+    /// value lands in.
+    private func savedDocumentXML(_ server: WordMCPServer, docId: String) async throws -> String {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("s232r7-floatimg-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("out.docx").path
+        let save = await server.invokeToolForTesting(name: "save_document", arguments: ["doc_id": .string(docId), "path": .string(path)])
+        XCTAssertNotEqual(save.isError, true, resultText(save))
+        let unzipped = try ZipHelper.unzip(URL(fileURLWithPath: path))
+        defer { ZipHelper.cleanup(unzipped) }
+        return try String(contentsOf: unzipped.appendingPathComponent("word/document.xml"), encoding: .utf8)
+    }
+
+    private func insertFloatingImageFixture(_ server: WordMCPServer, id: String, extraArgs: [String: Value]) async -> CallTool.Result {
+        var args: [String: Value] = [
+            "doc_id": .string(id), "path": .string(R5FixtureFile.existingFilePath),
+            "width": .int(100_000), "height": .int(100_000),
+        ]
+        for (k, v) in extraArgs { args[k] = v }
+        return await server.invokeToolForTesting(name: "insert_floating_image", arguments: args)
+    }
+
+    /// Schema-legal string values that were rejected outright before this
+    /// fix (`optionalInt` alone can't parse "center") now resolve to
+    /// `<wp:align>`, not `<wp:posOffset>`.
+    func testInsertFloatingImageAcceptsAlignmentKeywordsAndWritesWpAlign() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r7-floatimg-align"
+        _ = await server.invokeToolForTesting(name: "create_document", arguments: ["doc_id": .string(id)])
+        let result = await insertFloatingImageFixture(server, id: id, extraArgs: [
+            "horizontal_position": .string("center"), "vertical_position": .string("bottom"),
+        ])
+        XCTAssertNotEqual(result.isError, true, resultText(result))
+        let xml = try await savedDocumentXML(server, docId: id)
+        XCTAssertTrue(xml.contains("<wp:align>center</wp:align>"), xml)
+        XCTAssertTrue(xml.contains("<wp:align>bottom</wp:align>"), xml)
+        XCTAssertFalse(xml.contains("<wp:posOffset>"), xml)
+    }
+
+    /// A JSON integer is still an EMU offset, written to `<wp:posOffset>`,
+    /// exactly as before this fix — the string-keyword path is additive,
+    /// not a replacement.
+    func testInsertFloatingImageAcceptsIntegerOffsetAndWritesWpPosOffset() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r7-floatimg-offset"
+        _ = await server.invokeToolForTesting(name: "create_document", arguments: ["doc_id": .string(id)])
+        let result = await insertFloatingImageFixture(server, id: id, extraArgs: [
+            "horizontal_position": .int(457_200), "vertical_position": .int(914_400),
+        ])
+        XCTAssertNotEqual(result.isError, true, resultText(result))
+        let xml = try await savedDocumentXML(server, docId: id)
+        XCTAssertTrue(xml.contains("<wp:posOffset>457200</wp:posOffset>"), xml)
+        XCTAssertTrue(xml.contains("<wp:posOffset>914400</wp:posOffset>"), xml)
+        XCTAssertFalse(xml.contains("<wp:align>"), xml)
+    }
+
+    func testInsertFloatingImageRejectsUnknownAlignmentKeyword() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r7-floatimg-badkw"
+        _ = await server.invokeToolForTesting(name: "create_document", arguments: ["doc_id": .string(id)])
+        let result = await insertFloatingImageFixture(server, id: id, extraArgs: ["horizontal_position": .string("middle")])
+        XCTAssertEqual(result.isError, true, resultText(result))
+        XCTAssertTrue(resultText(result).contains("horizontal_position"), resultText(result))
+    }
+
+    func testInsertFloatingImageRejectsBoolArrayAndObjectPosition() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r7-floatimg-badtype"
+        _ = await server.invokeToolForTesting(name: "create_document", arguments: ["doc_id": .string(id)])
+        for bad: Value in [.bool(true), .array([.int(1)]), .object([:])] {
+            let result = await insertFloatingImageFixture(server, id: id, extraArgs: ["vertical_position": bad])
+            XCTAssertEqual(result.isError, true, "\(bad): \(resultText(result))")
+            XCTAssertTrue(resultText(result).contains("vertical_position"), "\(bad): \(resultText(result))")
+        }
+    }
+
+    /// A whole-valued double offset is tolerated the same way `optionalInt`
+    /// tolerates one elsewhere in this file; a fractional double is not a
+    /// valid EMU offset (EMU is already an integer unit) and must be named.
+    func testInsertFloatingImageAcceptsWholeValuedDoubleRejectsFractionalOffset() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r7-floatimg-doubleoffset"
+        _ = await server.invokeToolForTesting(name: "create_document", arguments: ["doc_id": .string(id)])
+        let ok = await insertFloatingImageFixture(server, id: id, extraArgs: ["horizontal_position": .double(180_000)])
+        XCTAssertNotEqual(ok.isError, true, resultText(ok))
+        let bad = await insertFloatingImageFixture(server, id: id, extraArgs: ["horizontal_position": .double(180_000.5)])
+        XCTAssertEqual(bad.isError, true, resultText(bad))
+        XCTAssertTrue(resultText(bad).contains("horizontal_position"), resultText(bad))
+    }
+
     /// `list_comments`' `context_chars` is an optional integer WITH a
     /// numeric default (`?? 50`), wrapped in `max(0, ...)` — the shape that
     /// needed the `try` placement fix during the #232 migration.
@@ -1111,6 +1369,127 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         XCTAssertEqual(result.isError, true, resultText(result))
         XCTAssertTrue(resultText(result).contains("paragraph_index"), resultText(result))
         XCTAssertFalse(resultText(result).contains("at least one anchor required"), resultText(result))
+    }
+
+    // MARK: - R7 (independent re-review `rev232b`, M1): regression coverage
+    // for the 7 sites R6 actually fixed
+    //
+    // R6's own new tests (`optionalDouble` unit tests, `line_spacing`
+    // end-to-end, the two message-precision tests above, `anchorPresence`)
+    // never called any of the 7 sites R6's diff itself touched
+    // (`create_numbering_definition.levels[].start`, the 5 early-return
+    // tools' `summarize`, `checkpoint.allow_orphan_images`). R6's report
+    // claimed these were "verified via the `gatedParameterProbes` table" —
+    // that claim was wrong: no row in that table exercises any of these 7
+    // sites. `rev232b`'s mutation test proved it by reverting all 7 to their
+    // pre-R6 (`afe0b55`) shape and re-running the full suite: all 481
+    // existing tests still passed. These 4 test functions close that gap.
+    // They are standalone functions, NOT rows in `gatedParameterProbes`
+    // below, because that table shares ONE fixture document per test run
+    // (`openFixtureDocument`, which always has an "Anchor" paragraph + a
+    // 2×2 table) — these 7 sites specifically need an EMPTY document (no
+    // paragraphs/tables/footnotes/endnotes/formatted text) or a document
+    // with a known on-disk source path, neither of which the shared fixture
+    // can provide without changing what every other row in that table sees.
+
+    /// `create_numbering_definition`'s `levels[].start` (R6 HIGH 1): an item
+    /// missing the required `num_format`/`lvl_text` used to `continue` before
+    /// `start` was ever parsed. Confirmed by mutation test: reverting this
+    /// site to its pre-R6 shape leaves every existing test green.
+    func testCreateNumberingDefinitionRejectsStringStartOnItemMissingRequiredFields() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r7-numdef-start"
+        try await openFixtureDocument(server, id: id)
+        let result = await server.invokeToolForTesting(
+            name: "create_numbering_definition",
+            arguments: [
+                "doc_id": .string(id),
+                "levels": .array([
+                    .object(["ilvl": .int(0), "num_format": .string("decimal"), "lvl_text": .string("%1.")]),
+                    .object(["ilvl": .int(1), "start": .string("5")]),   // missing num_format/lvl_text
+                ]),
+            ]
+        )
+        XCTAssertEqual(result.isError, true, resultText(result))
+        XCTAssertTrue(Self.namesParameter(resultText(result), "start"), resultText(result))
+    }
+
+    /// `get_paragraphs`/`get_tables`/`list_footnotes`/`list_endnotes`'
+    /// `summarize` (R6 HIGH 2a): all four used to return their "no X in
+    /// document" string before `summarize` was parsed, on a document with
+    /// none of that content. Confirmed by mutation test.
+    func testEarlyReturnToolsRejectStringSummarizeWithNoContent() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r7-early-return-empty"
+        let create = await server.invokeToolForTesting(name: "create_document", arguments: ["doc_id": .string(id)])
+        XCTAssertNotEqual(create.isError, true, resultText(create))
+
+        for tool in ["get_paragraphs", "get_tables", "list_footnotes", "list_endnotes"] {
+            let result = await server.invokeToolForTesting(
+                name: tool, arguments: ["doc_id": .string(id), "summarize": .string("yes")]
+            )
+            XCTAssertEqual(result.isError, true, "\(tool): \(resultText(result))")
+            XCTAssertTrue(Self.namesParameter(resultText(result), "summarize"), "\(tool): \(resultText(result))")
+        }
+    }
+
+    /// `list_all_formatted_text`'s `summarize` (R6 HIGH 2a, fifth site): same
+    /// shape as the four tools above, but its "no results" precondition is
+    /// "document has content, none of it matches `format_type`" rather than
+    /// "document is empty" — needs its own fixture. Confirmed by mutation test.
+    func testListAllFormattedTextRejectsStringSummarizeWithNoMatches() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r7-formatted-text-no-match"
+        let create = await server.invokeToolForTesting(name: "create_document", arguments: ["doc_id": .string(id)])
+        XCTAssertNotEqual(create.isError, true, resultText(create))
+        let para = await server.invokeToolForTesting(
+            name: "insert_paragraph", arguments: ["doc_id": .string(id), "text": .string("plain, unformatted")]
+        )
+        XCTAssertNotEqual(para.isError, true, resultText(para))
+
+        let result = await server.invokeToolForTesting(
+            name: "list_all_formatted_text",
+            arguments: ["doc_id": .string(id), "format_type": .string("bold"), "summarize": .string("yes")]
+        )
+        XCTAssertEqual(result.isError, true, resultText(result))
+        XCTAssertTrue(Self.namesParameter(resultText(result), "summarize"), resultText(result))
+    }
+
+    /// `checkpoint`'s `allow_orphan_images` (R6 HIGH 2b): the hand-written
+    /// `allowOrphanImagesFlag` reader used to only be called inside the
+    /// `explicitTarget` branch, so a call WITHOUT an explicit `path` (using
+    /// the document's known on-disk source path instead) never read it at
+    /// all. Needs a document with a real `documentOriginalPaths` entry —
+    /// `create_document` alone doesn't set one, so this opens a saved file
+    /// under a fresh `doc_id` first, mirroring how a real caller would reach
+    /// the implicit-path branch. Confirmed by mutation test; also confirms
+    /// the sidecar the old code silently used to write is NOT written once
+    /// this errors out first.
+    func testCheckpointRejectsStringAllowOrphanImagesWithImplicitPath() async throws {
+        let server = await WordMCPServer()
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("s232r7-checkpoint-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("a.docx").path
+
+        let create = await server.invokeToolForTesting(name: "create_document", arguments: ["doc_id": .string("s232r7-cp-src")])
+        XCTAssertNotEqual(create.isError, true, resultText(create))
+        let save = await server.invokeToolForTesting(
+            name: "save_document", arguments: ["doc_id": .string("s232r7-cp-src"), "path": .string(path)]
+        )
+        XCTAssertNotEqual(save.isError, true, resultText(save))
+        let reopen = await server.invokeToolForTesting(
+            name: "open_document", arguments: ["doc_id": .string("s232r7-cp-open"), "path": .string(path)]
+        )
+        XCTAssertNotEqual(reopen.isError, true, resultText(reopen))
+
+        let result = await server.invokeToolForTesting(
+            name: "checkpoint",
+            arguments: ["doc_id": .string("s232r7-cp-open"), "allow_orphan_images": .string("yes")]
+        )
+        XCTAssertEqual(result.isError, true, resultText(result))
+        XCTAssertTrue(Self.namesParameter(resultText(result), "allow_orphan_images"), resultText(result))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path + ".autosave.docx"), "sidecar must not be written when the call errors out first")
     }
 
     // MARK: - R5 (team lead directive): "一律驗證" — table-driven sweep
