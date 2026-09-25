@@ -479,6 +479,15 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         func hasCall(_ fn: String, key: String) -> Bool {
             lines.contains { $0.trimmed.contains("\(fn)(") && $0.trimmed.contains("\"\(key)\")") }
         }
+        // R9: `insert_floating_image`'s offsets are read through
+        // `floatingImageOffset(_:_:alignKey:)`, which rejects a string with a
+        // pointer to the `*_align` parameter and then delegates to
+        // `optionalInt`. Recognized as a strict integer reader here (rather
+        // than listed as an exception) so any parameter read through it stays
+        // under this check.
+        func hasStrictIntWrapperCall(key: String) -> Bool {
+            lines.contains { $0.trimmed.contains("floatingImageOffset(") && $0.trimmed.contains("\"\(key)\",") }
+        }
 
         // No number exceptions today — line_spacing has a real optionalDouble
         // call site (see below), and there is no #201-style permanent stub,
@@ -500,7 +509,7 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
                 switch type {
                 case "integer":
                     if intExceptions.contains(pairName) { continue }
-                    if !hasCall("optionalInt", key: key) { missingInt.append(pairName) }
+                    if !hasCall("optionalInt", key: key) && !hasStrictIntWrapperCall(key: key) { missingInt.append(pairName) }
                 case "boolean":
                     if boolExceptions.contains(pairName) { continue }
                     if !hasCall("optionalBool", key: key) { missingBool.append(pairName) }

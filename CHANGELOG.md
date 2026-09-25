@@ -290,12 +290,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `estimateCharsPerPage` 本身，之後任何新讀取 `pageMargins` 的程式碼都繼承這個保護）；範圍
   ±31680 twips（±22 英吋，Word 邊界設定對話框記載的上限；查證時沒有找到 Word 文件明確記載的
   負值下限，保守以相同大小的負值做下限）。以及 `search_text_with_formatting` 的
-  `context_chars`——本檔案唯一一個完全沒有上限的 `context_chars` 家族參數（其餘 3 個同名參數
-  `list_comments`／`find_unresolved_comments`／`find_inline_math_gaps` 早就有上限），
+  `context_chars`——同名的 3 個參數中，只有 `find_inline_math_gaps` 夾在 `[0, 4096]`，
+  `list_comments`／`find_unresolved_comments` 只有下限 0（R9 更正：R8 這裡寫成「3 個都早就有上限」），
   用在未加防護的 `position - contextChars` 與 `position + matchedText.count + contextChars`
-  運算，`Int.max`／`Int.min` 皆可讓行程當掉；比照另外 3 個同名參數的既有作法夾在 `[0, 4096]`
-  （這個參數沒有對應的 OOXML 輸出型別，純粹是內部顯示用的截斷長度，所以用既有的「靜默夾住」
-  政策而非「拒絕」，不另立第四套規則）。
+  運算，`Int.max`／`Int.min` 皆可讓行程當掉；比照 `find_inline_math_gaps` 夾在 `[0, 4096]`。
+  採「夾住」而不是「拒絕」的理由：這是唯讀工具的顯示截斷長度，不會改動文件，夾住的結果與呼叫端的
+  意圖一致。
   新增 15 個回歸測試（8 個 issue 列出的站點端到端各一 + 共用 helper 的單元測試 + 2 個全檔盤點
   發現的站點）；崩潰輸入本身無法在 XCTest 裡驗證（trap 會連測試行程一起殺掉），改用真實 debug
   binary 經 stdio 對每個崩潰輸入分別驗證 RED（修正前當機）與 GREEN（修正後乾淨拒絕，不當機）。
@@ -357,10 +357,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
      文件記載的表格欄數限制；**列數 Word 沒有記載上限**（官方「Operating parameter
      limitations and specifications in Word」頁面列了書籤、樣式、清單、註解、欄位、分頁上限
      等，唯獨沒有表格列數這一項，多個獨立來源也一致說列數「實質上沒有限制」）——誠實記錄這不是
-     一個 Word 規格數字，而是本次驗證過（65536 列 × 63 欄在真實 binary 上跑不到一秒、記憶體
-     無異常增長）的記憶體安全上限。
+     一個 Word 規格數字。**R9 更正**：R8 原本宣稱 65536 列 × 63 欄「在真實 binary 上跑不到一秒、
+     記憶體無異常增長」，R8 的獨立審查實測不成立：每個空儲存格約佔 2.2 KB，65536 × 63 在
+     `insert_table` 後佔 9.0 GB、存檔峰值 14.2 GB、33 秒，兩次呼叫達 18 GB。R9 改為限制
+     **總格數** `rows × cols ≤ 65536`（約 140 MB、存檔約半秒），欄數上限 63 不變。
   4. `insert_text` 的 `position`：只有上界被夾住，`-1` 直接讓 `String.Index(offsetBy:)`
-     trap。改成上下界都夾住（沿用同一行既有的「靜默夾住」政策，不是拒絕）。
+     trap。**R9 改為負值回 `invalidParameter`**（R8 原本把負值夾到 0，會把文字插到段落開頭、
+     回覆卻寫「position -1」成功）：負值過去一律當機，沒有需要保護的既有契約，同名的
+     `insert_text_as_revision.position` 本來就拒絕負值。超出段落長度仍放在段落末尾（schema
+     記載的預設行為），成功訊息改為回報實際插入的位置。
   5. `insert_toc` 的 `min_level`／`max_level`：`min_level > max_level` 時
      `minLevel...maxLevel` 直接 trap。Word 內建剛好 9 層標題（Heading 1–9），範圍訂
      `1...9` 並明確拒絕 `min_level > max_level`（不是靜默交換）。
@@ -387,6 +392,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Int(Double(h) * native.aspectRatio)`（拿掉 `safeInt`），單獨執行這個測試會讓整個測試行程
   以 `SIGTRAP`（訊號碼 5）當掉（`Fatal error: Double value cannot be converted to Int...`），
   證實新測試真的守住這個分支；還原修正後乾淨通過。
+
+- **R9：回應 R8 的獨立審查**（#232、#234）。除了上面兩處更正（表格改限總格數、`insert_text`
+  負位置改為拒絕），另外：
+  - `insert_floating_image` 的 `horizontal_align`／`vertical_align` 傳非字串（數字、布林、陣列、
+    物件）回 `invalidParameter`；R8 以 `?.stringValue` 讀取，會把這些值默默當成沒給，而同時給
+    偏移與錯型別對齊時還會繞過衝突檢查。
+  - `horizontal_position`／`vertical_position` 傳字串時，錯誤訊息指出對齊關鍵字要改用
+    `horizontal_align`／`vertical_align`（4.3.x 的 schema 把這兩個參數宣告為字串）；偏移量限制在
+    `xsd:int` 範圍內（`wp:posOffset` 是 `ST_PositionOffset`），超出就拒絕，不再寫出不合 schema 的值。
+  - `line_spacing` 換算後小於 1 twip（小於 1/480）時拒絕，不再寫出 `w:line="0"`。
+  - 依長寬比換算圖片的另一邊時改為四捨五入並至少 1 像素：`aspectRatio` 帶浮點誤差，截斷會少 1，
+    1×49 的圖以原生高度 49 呼叫時寬度被截成 0，再被像素範圍檢查以 `width` 的名義拒絕（呼叫端
+    根本沒給 `width`）。換算出的一邊超出上限時，錯誤改為指名呼叫端提供的參數。
+  - `insert_toc` 的範圍錯誤指名實際超出的參數（R8 一律指名 `min_level`），順序錯誤的訊息說明
+    沒提供的一方用了哪個預設值。
+  - 回歸測試：`Issue234R9ReviewTests`（11 個，修正前全部 RED）；`insert_nested_table` 的 `cols`
+    檢查原本沒有任何測試守著（R8 審查的變異測試中存活），已補上。
 
 - **`set_header_row` 只保留一個註冊，`tools/list` 不再有兩份互相矛盾的 schema**（#230）。原本
   `Server.swift` 註冊了兩次：`switch` on tool name 的 dispatch 只執行第一個符合的 `case`（已用最小
