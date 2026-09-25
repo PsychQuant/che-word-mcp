@@ -18,10 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   無損轉換的整數值 double，如 `3.0`；`0.5`、`NaN`、`±Infinity`、超出 `Int` 範圍一律拒絕）／JSON
   `true`／`false`；字串、陣列、物件、其他數字型別一律回 `WordError.invalidParameter` 並指名參數；
   `null` 與缺漏仍視同未提供（維持既有的必填／選填判斷不變）。這是行為變更：呼叫端如果曾經依賴
-  「型別不符時默默套用預設值」，現在會改成收到參數錯誤——但僅限於「該次呼叫實際會執行到的讀取」：
-  少數參數只在同伴參數（如 `border_style`、`as_revision`）也給定、或走到特定分支（如 `all: true`）
-  時才會被讀取，這類條件式讀取不是本次全面稽核的對象（下方會標出已修正與未修正的具體案例），本條
-  目的「一律回參數錯誤」不代表對每個工具的每個整數／布林參數在任何呼叫組合下都成立。
+  「型別不符時默默套用預設值」，現在會改成收到參數錯誤——**包含參數出現在條件式／短路讀取路徑裡的
+  情況**：team lead 定案的規則是「參數出現在 args 裡但型別不符，就報參數錯誤並指名參數，不論這次
+  呼叫會不會用到它；缺漏或 `null` 才視為未提供」，不開放例外（R2／R4／R5 逐步把所有找到的條件式讀取
+  站點改成無條件先解析驗證，詳見下方各輪記錄）。
   範圍：`Server.swift`／`ReadbackTools.swift` 全部 372 個直接 `["x"]?.intValue`／`["x"]?.boolValue`
   呼叫點（268 個 `.intValue`：Server.swift 262 + ReadbackTools.swift 6；104 個 `.boolValue`：
   Server.swift 102 + ReadbackTools.swift 2）；順手修正兩個既有的 schema／實作對不上的 bug
@@ -59,11 +59,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   使後面欄位的型別完全不會被求值——如果 `row` 型別不符但 `table_index` 也缺漏，過去只會看到通用的
   「requires all three fields」，現在會先看到指名 `row` 的型別錯誤）；這三處本來就會在缺欄位時報錯
   （不是靜默成功），這次修的是錯誤訊息的精確度，不是「靜默通過」的行為。
-  已知限制（R4 稽核後仍未修正，範圍認定不變）：`Server.swift` 裡還有約 25 處
-  `if let ... = try optionalInt/optionalBool(...)` 的多參數組合繫結未逐一稽核（原始約 31 處中，
-  `set_table_style`／`into_table_cell` × 3 已於 R2／R4 處理）；是否要求「即使該次呼叫用不到，
-  也要先驗證型別」對這些剩餘案例成立，是比 #232 本身更廣的規範問題，留給後續 issue 決定範圍後
-  逐一稽核。
+  **R5（team lead 定案：一律驗證，不留例外）**：R4 記錄的「約 25 處未稽核」是根據過寬的規則式
+  估計（把每一個單一繫結的 `guard let x = try optionalInt(...)` 都算了進去，但那類單一繫結本來
+  就不會被短路，不是落差）；實際重新以五種互補的靜態掃描（鏈式多重繫結、`if`／`else`／`switch`
+  以非該參數為條件的區塊、陣列項目內「較早的必要欄位短路掉較晚欄位的型別檢查」）逐一核實後，找到
+  並修正 5 個真正的站點：`insert_paragraph`／`insert_image_from_path` 的 `index`（被 into_table_cell
+  ＞after_image_id＞after_text＞before_text 這串錨點優先序擋在最後一個 `else if`，只要任何更高
+  優先序的錨點同時提供，`index` 就完全不會被求值；`insert_equation`／`insert_caption` 的對應參數
+  原本就已經在同一組錨點優先序邏輯之前解析，未受影響）、`set_latent_styles` 陣列項目的
+  `ui_priority`／`semi_hidden`／`unhide_when_used`／`q_format`（原本被同一項目缺少必填 `name`
+  短路掉）、`replace_text_batch` 陣列項目的 `regex`／`match_case`（原本被同一項目缺少必填
+  `find`／`replace` 短路掉）、`search_text_batch` 陣列項目的 `case_sensitive`（原本被同一項目
+  缺少必填 `query` 短路掉）。其餘被掃描工具標記出來的位置（`into_table_cell` 內部的巢狀繫結、
+  `formatText` 對已驗證過參數的重複讀取、`updateStyle` 的兩個 gate、`searchTextBatch` 頂層的
+  `.string`/`.object` 型別分派）逐一核實後確認並非落差：前者已在 R4 修正；`formatText` 的重複讀取
+  讀的是函式最前面已經無條件驗證過的同一批參數；`updateStyle` 的兩個 gate 分別是「至少一個相關
+  欄位存在」的 OR 條件（任何型別不符都會使 gate 成立而不是被跳過）與「`doc.updateStyle` 已成功
+  代表該樣式必然存在」的內部不變量，兩者皆非使用者可觸發的繞過路徑；`.string`/`.object` 分派則是
+  兩種結構不同的查詢寫法，字串寫法在那個 JSON 形狀裡本來就沒有 `case_sensitive` 這個欄位可言。
+  新增一個資料表驅動的回歸測試（`testGatedParametersAreValidatedRegardlessOfWhetherTheCallWouldUseThem`），
+  取代逐一手寫個別測試：每一列是一個「工具＋最小合法參數＋刻意留白的目標欄位＋錯誤型別」的探測，
+  之後若有人不小心讓某個既有繫結退回短路寫法，只需在表裡加一列就能鎖住，不必再開一個新的測試函式。
   `replace_text_batch`／`search_text_batch` 的 per-item `regex`／`match_case`／`case_sensitive`
   型別檢查也在 R1 修正：原本被機械遷移放在該 item 的 `do`／`catch` 範圍**之外**，型別不符會直接
   拋出整個函式，不只中止該批次其餘項目，還會讓前面已經套用（但尚未 persist）的項目一併遺失——
