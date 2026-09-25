@@ -650,7 +650,7 @@ final class Issue234IntegerOverflowGuardTests: XCTestCase {
         }
     }
 
-    func testInsertTextClampsNegativePositionInsteadOfTrapping() async throws {
+    func testInsertTextRejectsNegativePositionInsteadOfTrapping() async throws {
         let server = await WordMCPServer()
         let id = "s234r8-inserttext-negpos"
         try await openFixtureDocument(server, id: id)
@@ -658,28 +658,33 @@ final class Issue234IntegerOverflowGuardTests: XCTestCase {
             name: "insert_text",
             arguments: ["doc_id": .string(id), "paragraph_index": .int(0), "text": .string("X"), "position": .int(-1)]
         )
-        // Clamped (matches the existing upper-bound policy on this same
-        // line), not rejected — see `insertText`'s R8 comment.
-        XCTAssertNotEqual(result.isError, true, resultText(result))
+        // R9 (review `rev232c` M-3): rejected, not clamped to 0 — see
+        // `insertText`'s R9 comment. (R8 clamped it; that wrote the text at
+        // the start while reporting "position -1".)
+        XCTAssertEqual(result.isError, true, resultText(result))
+        XCTAssertTrue(resultText(result).contains("position"), resultText(result))
     }
 
     func testInsertTocRejectsOutOfRangeOrInvertedLevels() async throws {
         let server = await WordMCPServer()
         let id = "s234r8-toc-levels"
         try await openFixtureDocument(server, id: id)
-        let cases: [[String: Value]] = [
-            ["min_level": .int(5), "max_level": .int(1)],
-            ["min_level": .int(Int.max), "max_level": .int(Int.max)],
-            ["min_level": .int(Int.min), "max_level": .int(Int.max)],
-            ["min_level": .int(0), "max_level": .int(3)],
-            ["min_level": .int(1), "max_level": .int(10)],
+        // R9 (review `rev232c` LOW-1): each case names the parameter that is
+        // actually wrong — R8 named `min_level` for all of them, and this
+        // test used to lock that in for `max_level: 10`.
+        let cases: [([String: Value], String)] = [
+            (["min_level": .int(5), "max_level": .int(1)], "min_level"),
+            (["min_level": .int(Int.max), "max_level": .int(Int.max)], "min_level"),
+            (["min_level": .int(Int.min), "max_level": .int(Int.max)], "min_level"),
+            (["min_level": .int(0), "max_level": .int(3)], "min_level"),
+            (["min_level": .int(1), "max_level": .int(10)], "max_level"),
         ]
-        for args in cases {
+        for (args, key) in cases {
             var full = args
             full["doc_id"] = .string(id)
             let result = await server.invokeToolForTesting(name: "insert_toc", arguments: full)
             XCTAssertEqual(result.isError, true, "\(args): \(resultText(result))")
-            XCTAssertTrue(resultText(result).contains("min_level"), "\(args): \(resultText(result))")
+            XCTAssertTrue(resultText(result).contains("Invalid parameter '\(key)'"), "\(args): \(resultText(result))")
         }
         let ok = await server.invokeToolForTesting(
             name: "insert_toc", arguments: ["doc_id": .string(id), "min_level": .int(1), "max_level": .int(3)]
