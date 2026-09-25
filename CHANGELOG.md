@@ -9,413 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **BREAKING：所有整數／布林參數改為嚴格 JSON 型別**（#232，比照 che-pptx-mcp #5 / #10 的先例）。
-  原本 `args["x"]?.intValue`／`args["x"]?.boolValue` 把「型別不符」與「缺漏」視為相同結果（皆為
-  `nil`），present-but-mistyped 的值會被當成沒給、套用預設值後回報成功——`set_header_row` 傳
-  `"row_count": "3"`（字串）過去會被當成沒給，默默退回 `row_index=0` 且不報錯，正是這個問題的
-  動機案例（#230 review 記錄，見下方 #230 條目的已知限制）。
-  現在全部改走新增的 `optionalInt`／`optionalBool`：只接受 JSON 整數（或能被 `Int(exactly:)`
-  無損轉換的整數值 double，如 `3.0`；`0.5`、`NaN`、`±Infinity`、超出 `Int` 範圍一律拒絕）／JSON
-  `true`／`false`；字串、陣列、物件、其他數字型別一律回 `WordError.invalidParameter` 並指名參數；
-  `null` 與缺漏仍視同未提供（維持既有的必填／選填判斷不變）。這是行為變更：呼叫端如果曾經依賴
-  「型別不符時默默套用預設值」，現在會改成收到參數錯誤——**包含參數出現在條件式／短路讀取路徑裡的
-  情況**：team lead 定案的規則是「參數出現在 args 裡但型別不符，就報參數錯誤並指名參數，不論這次
-  呼叫會不會用到它；缺漏或 `null` 才視為未提供」，不開放例外——這是政策本身的定案，不是每一輪都已
-  達成的宣稱：R2／R4／R5 逐步把找到的條件式讀取站點改成無條件先解析驗證，但 R5 當時自認「已收斂為
-  0」其實不成立，獨立審查另外找到 7 個仍被短路擋住的站點，**R6 才是實際把這個政策落實到全部已知
-  站點的一輪**（詳見下方各輪記錄，尤其是 R6 段落誠實記錄 R5 的認定錯在哪裡）。
-  範圍：`Server.swift`／`ReadbackTools.swift` 全部 372 個直接 `["x"]?.intValue`／`["x"]?.boolValue`
-  呼叫點（268 個 `.intValue`：Server.swift 262 + ReadbackTools.swift 6；104 個 `.boolValue`：
-  Server.swift 102 + ReadbackTools.swift 2）；順手修正兩個既有的 schema／實作對不上的 bug
-  （`insert_sequence_field` 的 schema 宣告 `reset_level`、實作卻讀 `reset_on_heading`；
-  `insert_checkbox` 的 schema 宣告 `checked`、實作卻讀 `is_checked`——兩者過去無論傳什麼型別都
-  被忽略，改名後同時修正）。`ScriptPipelineTools.swift`（#134/#227 既有的手寫嚴格檢查）、
-  `allowOrphanImagesFlag`（R1 #14 既有的嚴格檢查，`Issue175R2SaveGateTests.swift` 有直接 pin）、
-  `insert_equation` 的 `display_mode`（`Issue98InsertEquationLibBypassTests.swift` pin 了特定
-  英文措辭；R1 修正了它與其他布林參數不一致的地方——顯式 JSON `null` 過去會報錯，現在比照
-  `optionalBool` 視同未提供）、以及 `insert_watermark`／`insert_image_watermark` 的幾何／視覺
-  參數（#201 永久 stub，參數從未被讀取）維持原樣，未強行套用新 helper。
-  新增 schema-driven 測試：逐一比對 `tools/list` 每個 `"type": "integer"`／`"type": "boolean"`
-  參數都有對應的嚴格讀取呼叫點（`testEveryIntegerAndBooleanSchemaParameterHasAStrictReader`），並
-  鎖定舊的不安全 subscript pattern 全檔案歸零（`testNoDirectIntOrBoolValueSubscriptChainRemainsInSources`），
-  之後有人新增整數／布林參數卻忘了走嚴格讀取會被這兩個測試擋下。已知限制：schema coverage 測試
-  以「該參數鍵名是否在檔案任意處被 `optionalInt`／`optionalBool` 讀取」為準，不是逐工具 handler
-  範圍比對；同一鍵名若被另一個工具正確讀取，理論上可以讓一個「宣告了但完全沒讀」的新工具矇混過關。
-  對已知的重名／忽略案例（本次找到的兩個）此測試確實能抓到，因為當時沒有任何 handler 用該鍵名呼叫
-  helper；但這不是逐工具证明，之後如有人擔心這個落差，可另開 issue 做 dispatch-table-aware 的
-  handler-scoped 版本。R2 另外修正 `set_table_style`：`border_size` 過去只在 `border_style` 一併
-  提供時才被解析，`cell_col` 過去只在 `cell_row` 也提供時才被解析（`if let a = ..., let b = ...`
-  短路求值，`b` 那句根本不會被求值）——單獨提供型別不符的 `border_size`／`cell_col` 會被完全略過、
-  不報錯。現在兩者一律先解析（驗證型別），只有是否「生效」仍依賴同伴參數是否存在。
-  **R4 把 R3 點名的其餘條件式／短路讀取也一併修正**（原本記錄為已知限制，現已解決，不再是限制）：
-  `format_text` 的 `run_index`（原本只在 `as_revision: true` 時讀取）、`set_page_margins` 的
-  `top`／`right`／`bottom`／`left`（原本只在未提供 `preset` 時讀取）、`accept_revision`／
-  `reject_revision` 的 `revision_id`（原本只在 `all: true` 之外才讀取）、`replyToComment` 的
-  `try (optionalInt(args, "comment_id") ?? optionalInt(args, "parent_comment_id"))`（`??`
-  短路：`comment_id` 非 nil 時 `parent_comment_id` 型別不符不會被求值到）、`merge_cells` 的
-  `end_row`／`end_col`（原本只在對應的 `direction` case 才讀取）皆比照 `set_table_style` 的做法
-  改為無條件先解析驗證型別，「是否生效」（哪個必填、哪個被使用）維持原本依同伴參數／模式選擇的邏輯
-  不變。另外把 `insert_paragraph`／`insert_image_from_path`／`insert_equation` 的
-  `into_table_cell` 三個站點也改為三個欄位獨立解析（原本鏈式 `guard let a = ..., let b = ...,
-  let c = ... else { throw "requires all three fields" }` 會在 `table_index` 缺漏時短路，
-  使後面欄位的型別完全不會被求值——如果 `row` 型別不符但 `table_index` 也缺漏，過去只會看到通用的
-  「requires all three fields」，現在會先看到指名 `row` 的型別錯誤）；這三處本來就會在缺欄位時報錯
-  （不是靜默成功），這次修的是錯誤訊息的精確度，不是「靜默通過」的行為。
-  **R5（team lead 定案：一律驗證，不留例外）**：R4 記錄的「約 25 處未稽核」是根據過寬的規則式
-  估計（把每一個單一繫結的 `guard let x = try optionalInt(...)` 都算了進去，但那類單一繫結本來
-  就不會被短路，不是落差）；實際重新以五種互補的靜態掃描（鏈式多重繫結、`if`／`else`／`switch`
-  以非該參數為條件的區塊、陣列項目內「較早的必要欄位短路掉較晚欄位的型別檢查」）逐一核實後，找到
-  並修正 5 個真正的站點，行為變更程度並不一致，分兩類：
-  **(1) 呼叫從成功變失敗**——`insert_paragraph`／`insert_image_from_path` 的 `index`（被
-  into_table_cell＞after_image_id＞after_text＞before_text 這串錨點優先序擋在最後一個
-  `else if`，只要任何更高優先序的錨點同時提供，`index` 就完全不會被求值；`insert_equation`／
-  `insert_caption` 的對應參數原本就已經在同一組錨點優先序邏輯之前解析，未受影響）過去在
-  `after_text`／`before_text`／`into_table_cell` 等更高優先序錨點同時提供時，型別不符的 `index`
-  單純被忽略、呼叫**照常成功並真的插入內容**；修正後同一呼叫整次失敗。`set_latent_styles` 陣列
-  項目的 `ui_priority`／`semi_hidden`／`unhide_when_used`／`q_format`（原本被同一項目缺少必填
-  `name` 短路掉）是這一類裡影響最大的：`set_latent_styles` 沒有 `replace_text_batch`／
-  `search_text_batch` 那種 per-item 失敗回報機制，過去一個沒填 `name` 的項目會被整個跳過、呼叫
-  整體仍回報成功；現在同一個項目若「連同缺 `name`」還帶了型別不符的 `ui_priority` 等欄位，會讓
-  整次 `set_latent_styles` 呼叫失敗，不再是「跳過壞項目、其餘照常寫入」。
-  **(2) 純粹是錯誤訊息更精確，呼叫修正前後都會失敗**——`replace_text_batch` 陣列項目的
-  `regex`／`match_case`（原本被同一項目缺少必填 `find`／`replace` 短路掉）、`search_text_batch`
-  陣列項目的 `case_sensitive`（原本被同一項目缺少必填 `query` 短路掉）：這兩處修正前該筆項目本來
-  就會因為缺 `find`／`replace`／`query` 而失敗，修正只是把失敗原因換成型別錯誤並指名參數，不是
-  「靜默通過→失敗」的行為變更。
-  （R6 更正：R5 當時的報告誤把 `insert_paragraph`／`insert_image_from_path` 的 `index` 也歸進
-  「純粹訊息精確度」一類，與 `set_latent_styles` 對比——這個對比不成立，`index` 同樣是「成功→
-  失敗」，已在此處與測試檔的對應註解一併更正，見 R6 段落。）
-  其餘被掃描工具標記出來的位置（`into_table_cell` 內部的巢狀繫結、
-  `formatText` 對已驗證過參數的重複讀取、`updateStyle` 的兩個 gate、`searchTextBatch` 頂層的
-  `.string`/`.object` 型別分派）逐一核實後確認並非落差：前者已在 R4 修正；`formatText` 的重複讀取
-  讀的是函式最前面已經無條件驗證過的同一批參數；`updateStyle` 的兩個 gate 分別是「至少一個相關
-  欄位存在」的 OR 條件（任何型別不符都會使 gate 成立而不是被跳過）與「`doc.updateStyle` 已成功
-  代表該樣式必然存在」的內部不變量，兩者皆非使用者可觸發的繞過路徑；`.string`/`.object` 分派則是
-  兩種結構不同的查詢寫法，字串寫法在那個 JSON 形狀裡本來就沒有 `case_sensitive` 這個欄位可言。
-  新增一個資料表驅動的回歸測試（`testGatedParametersAreValidatedRegardlessOfWhetherTheCallWouldUseThem`），
-  取代逐一手寫個別測試：每一列是一個「工具＋最小合法參數＋刻意留白的目標欄位＋錯誤型別」的探測，
-  之後若有人不小心讓某個既有繫結退回短路寫法，只需在表裡加一列就能鎖住，不必再開一個新的測試函式。
-  `replace_text_batch`／`search_text_batch` 的 per-item `regex`／`match_case`／`case_sensitive`
-  型別檢查也在 R1 修正：原本被機械遷移放在該 item 的 `do`／`catch` 範圍**之外**，型別不符會直接
-  拋出整個函式，不只中止該批次其餘項目，還會讓前面已經套用（但尚未 persist）的項目一併遺失——
-  違反這兩個工具自己文件寫明的「non-atomic per-item：個別失敗會回報，但不會回滾先前成功」contract。
-  現在型別檢查移回各自 item 的 `do`／`catch` 內，型別不符只讓該筆項目失敗，回報方式與同一個迴圈裡
-  其他既有的驗證失敗（如缺 `find`／`replace` 欄位）一致。
-  **R6（回應獨立 Claude 對抗式審查，VERDICT: FAIL）**：R5 報告當時寫「約 25 處已收斂為 0」、
-  CHANGELOG 寫「不開放例外」，獨立審查用另一份複本＋額外的探測測試（`R5ReviewProbeTests.swift`）
-  重新逐一核實，找到 R5 的五種靜態掃描仍漏掉的兩種形狀，共 7 個真正的站點，這一輪逐一修正：
-  這 7 處與 R5 的 `set_latent_styles`／`insert_paragraph` 的 `index` 同屬「成功變失敗」——修正前
-  型別不符的值被完全忽略、呼叫照常成功；修正後整次呼叫失敗（R7 review LOW-1 指出 R6 段落當時沒有
-  明確標出這個分類，只在 R5 段落標過，這裡補上）。
-  **(a) 陣列項目內「必填欄位」短路掉「同項目型別檢查」的第 6 個站點**——`create_numbering_definition`
-  的 `levels[]` 項目：`start` 原本在 `guard let obj = ..., let ilvl = ..., let num_format = ...,
-  let lvl_text = ... else { continue }` 這個 guard **之後**才解析，項目缺 `num_format`／
-  `lvl_text` 時會先 `continue`，型別不符的 `start` 從未被求值到（R5 只檢查了 `ilvl`，因為它緊接在
-  `obj` 之後不會被短路，但同一個 guard 裡更晚的 `num_format`／`lvl_text` 一樣會短路掉 `start`——
-  R5 判斷這裡「並非落差」是誤判）。現在 `start` 移到 guard 之前，比照 `set_latent_styles` 的模式。
-  **(b) 先提早 return、再解析參數**——R5 的五種靜態掃描完全沒有涵蓋「函式在讀取目標參數之前，先用
-  某個跟該參數無關的條件 `return` 掉」這個形狀，即使 R1 早就在 `list_comments` 修過同一個形狀
-  （並在該函式留了「parse before the empty-comments early return」註解）。這次找到另外 6 個工具
-  還是舊寫法：`get_paragraphs`／`get_tables`／`list_footnotes`／`list_endnotes`／
-  `list_all_formatted_text` 的 `summarize`（文件裡沒有對應內容——分別是無段落／無表格／無註腳／
-  無尾註／無比對結果——時直接回傳成功字串，`summarize` 從未被讀取；改成 5 個工具都比照
-  `list_comments`，把 `summarize` 的解析移到 empty 判斷之前）；`checkpoint` 的
-  `allow_orphan_images`（手寫的 `allowOrphanImagesFlag` 讀取器原本只在有明確 `path` 時才呼叫，
-  R5 的掃描只追蹤 `optionalInt`／`optionalBool` 呼叫點，看不到這類手寫讀取器；改成無條件先解析，
-  是否套用閘門的邏輯不變）。
-  連帶修正三個記錄／測試精確度問題：CHANGELOG 上方的「其餘 4 處單純只是『錯誤訊息更精確』」已更正
-  （`insert_paragraph`／`insert_image_from_path` 的 `index` 其實與 `set_latent_styles` 同屬
-  「成功→失敗」一類，只有 `replace_text_batch`／`search_text_batch` 的三個欄位才是單純訊息精確度，
-  見上方 R5 段落的更正）；R5 報告「約 25 處已收斂為 0」的說法連同「不開放例外」的無保留措辭已更正為
-  誠實記錄 R5 當時的認定錯在哪裡（見上方）；sweep 測試表原本只涵蓋 `set_latent_styles` 的
-  `ui_priority`／`semi_hidden` 兩欄，漏了同一站點的 `unhide_when_used`／`q_format`，以及
-  `replace_text_batch` 的 `match_case`，這次補齊，且比對方式從「錯誤文字包含參數名子字串」改成
-  精確比對 `Invalid parameter '<key>'`／`invalidParameter("<key>"` 兩種實際錯誤格式（子字串比對
-  在 `expectedNamedKey == "index"` 時會被 `insert_paragraph` 自己的錨點衝突訊息「... + index」
-  誤判為通過）。
-  另外三個修正：`anchorPresence` 的 int 型判定改用與 `optionalInt` 一致的規則（`Int(exactly:)`，
-  接受整數值 double），原本用裸 `.intValue` 會讓整數值 double（如 `index: 0.0`）被誤判成「未提供」
-  而略過衝突偵測（R7 review LOW-1 更正：這裡**不是**單純訊息精確度——程序內直接傳 `.double(0.0)`
-  加 `after_text` 時，修正前該呼叫確實**成功**插入且忽略衝突的 `index`，修正後才改報「conflicting
-  anchors」，是貨真價實的成功變失敗。但這個差異只在程序內呼叫可觀察：JSON 的 `0.0` 在這個 SDK 上
-  本來就解成 `.int(0)`，經真實 MCP 傳輸時修正前後都會報衝突，行為一致，已用真實 binary 驗證過）；
-  `update_style` 的 `q_format`／`hidden`／`semi_hidden` 改成在呼叫 `doc.updateStyle()` 之前先
-  解析，`style_id` 不存在時過去只看到「style not found」，看不到同時存在的型別錯誤；
-  `insert_caption` 的 `paragraph_index`／`after_table_index` 改成在錨點存在性檢查之前先解析，
-  兩者其中之一是唯一提供的錨點但型別不符時，過去只看到通用的「at least one anchor required」。
-  **`set_paragraph_format.line_spacing`（`"type": "number"` schema）是同一類問題的 number 版**：
-  `args["line_spacing"]?.doubleValue` 只匹配 JSON 的 `.double` case，但這個 SDK 的 `Value`
-  解碼器對每一個整數值 JSON number（含帶小數點但整數值的 `2.0`）都先試 `Int` 再試 `Double`，所以
-  `line_spacing: 2` 這種合法、型別正確、範圍內的值會被 `.doubleValue` 判定為 `nil` 並**完全不套用**
-  ——比 #232 原本的「型別不符默默套用預設值」更糟：這裡沒有預設值可套，是把使用者明確給的合法值
-  直接丟掉、且不報任何錯誤。新增 `optionalDouble`（`args`／`key` → `Double?`，同時接受 `.int` 與
-  `.double`，present-but-wrong-typed 拋 `WordError.invalidParameter`），`line_spacing` 改用它；
-  全檔案盤點確認這是唯一一個直接讀 `.doubleValue` 的站點，B.1／B.2 兩個 sweep 測試都擴充涵蓋
-  `"type": "number"`／`optionalDouble`（B.2 目前只有 `line_spacing` 這一個 number 型參數可驗，
-  但之後新增的 number 型參數會被同一個 sweep 自動涵蓋）。
-  **R7（回應獨立重審 `rev232b`，VERDICT: PASS，但有 3 MEDIUM／4 LOW 需在發版前處理）**：
-  **M1（測試缺口）**：R6 實際修好的 7 個站點（`create_numbering_definition.start`、5 個
-  `summarize` 早退工具、`checkpoint.allow_orphan_images`）沒有任何測試守著——審查者把全部 7 處
-  改回 `afe0b55` 的寫法，跑全套件，原有 481 個測試照樣全過，只有審查者自己新增的探測測試失敗。
-  R6 報告聲稱「已用 `gatedParameterProbes` 表驗證」與事實不符，已更正。補了 4 個測試函式（1 個
-  `create_numbering_definition`、1 個迴圈涵蓋 4 個早退工具、1 個 `list_all_formatted_text`
-  專屬、1 個 `checkpoint`），未併入 `gatedParameterProbes` 表——那張表的所有列共用同一個「已有
-  Anchor 段落＋2×2 表格」的 fixture 文件，這 7 處需要的前置條件（空文件、或有已知磁碟路徑的
-  文件）跟表格共用的 fixture 互斥，所以用獨立測試函式，與 R2／R4 逐一手寫測試的既有慣例一致。
-  逐一變異驗證：把 7 處都改回舊寫法，4 個新測試如預期全部 RED（15 個斷言失敗，全部落在這 4 個
-  測試裡，其餘 481 個既有測試不受影響——證實這 7 處先前確實零覆蓋）；還原修正後全部 GREEN。
-  **M2（發版阻擋：process crash）**：`set_paragraph_format` 傳 `line_spacing:
-  40000000000000000` 或 `line_spacing: 1e300` 會讓 `Int(lineSpacing * 240)` 直接讓整個
-  server 行程以 SIGTRAP 結束（`Fatal error: Double value cannot be converted to Int`），
-  已用真實 debug binary 經 stdio 送 raw JSON 重現（exit code -5）——行程一死，所有已開啟文件的
-  session 與未存檔修改一起消失。新增 `Self.twipsLine(fromLineSpacingMultiplier:)`：先拒絕非
-  有限值與非正值，再拒絕換算（乘以 240）後超出範圍的值才進行轉換；上限**不是拍腦袋決定**，
-  依 OOXML `w:spacing/@w:line`（`ST_SignedTwipsMeasure`，ECMA-376 §17.3.1.33／§22.9.2.15）
-  實際被寫入的型別而定——~~這個屬性在多數 OOXML 消費端所依循的參考實作（Microsoft Open XML SDK）
-  裡型別是 `Int32Value`~~**（R8 更正：這個引用不準確，見下方 R8 段落；正確依據是 Word 自己
-  只讀取 32 位元整數，MS-OI29500 §17.18.81）**，所以拒絕條件是換算後超出 `Int32` 範圍，不只是
-  「不會讓 64 位元 `Int` trap」這種較低的門檻。同一次順手把 `optionalDouble` 本身也補上
-  `NaN`／`±Infinity` 拒絕（R7
-  review LOW-4）：JSON 本身無法編碼這兩個值，經真實傳輸打不到，但任何程序內呼叫者都碰得到，
-  補上讓 `optionalDouble` 具備跟 `optionalInt` 相同的「never silently truncated or trapped」
-  保證，而不是只讓 `line_spacing` 這一個使用端單獨處理。用同一支 stdio 腳本重跑三個崩潰輸入
-  （`40000000000000000`／`1e300`／`-1e300`），確認皆改為乾淨的 `isError: true` 回應，不再讓
-  行程消失；`format_text({font_size: 9223372036854775807})` 這個**既有、範圍外**的
-  `Int * Int` 溢位當機（#232 之前就存在，走的是 `optionalInt` 回傳值相乘，不是「使用者輸入的
-  Double 轉 Int」這一類）刻意不動，同一支腳本驗證它現在仍會當——確認本次修正沒有意外把不同類的
-  問題也蓋掉、也沒有引入新的假象。順帶修正 `bulk_resolve_comments.comment_ids`（R7 review
-  LOW-3）：元素層級的裸 `.intValue` 判定跟 R6 修 `anchorPresence` 之前一樣不一致，改用
-  `Int(exactly:)`（接受整數值 double），且失敗項目現在帶陣列 `index`，不再只有查無意義的
-  `"comment_id":null`。
-  **M3（回歸：schema 承諾的合法輸入被拒絕）**：`insert_floating_image` 的
-  `horizontal_position`／`vertical_position` schema 宣告 `"type": "string"`（「left, center,
-  right, 或具體偏移像素」），實作卻只用 `optionalInt` 讀——schema 承諾的字串值（如 `"center"`）
-  在 #232 之前會被 `.intValue` 默默當成沒給、退回偏移量 `0`；#232 之後改成嚴格型別，同一個呼叫
-  變成直接報錯拒絕，兩者都不是使用者依照 schema 呼叫時該有的結果。這是 R1 修過的「schema 宣告與
-  實作讀取鍵名不一致」（`reset_level`／`checked`）的姊妹問題：不是鍵名不同，是**型別**不同，
-  R5 review 的 B.2 sweep 只查「schema 宣告 integer/boolean/number → 有沒有嚴格讀取」這個方向，
-  沒有反向查「嚴格讀取的鍵 → schema 宣告的型別是否一致」，所以之前没被抓到（review 用的反向掃描
-  腳本在全檔只找到這兩個型別不一致的欄位）。修法：新增
-  `resolveFloatingImagePosition<A: RawRepresentable>`，JSON 整數（或整數值 double）→ EMU 偏移量
-  （`AnchorPosition.horizontalOffset`／`verticalOffset`）；JSON 字串 → 對齊關鍵字，合法值以
-  ooxml-swift 的 `HorizontalAlignment`／`VerticalAlignment` enum rawValue 為準（`left, center,
-  right, inside, outside` / `top, center, bottom, inside, outside`，寫進
-  `AnchorPosition.horizontalAlignment`／`verticalAlignment`）；其他型別一律 `invalidParameter`
-  並指名參數。offset 與 alignment 互斥（ooxml-swift 的寫入端本來就是 `if let alignment {
-  寫 wp:align } else { 寫 wp:posOffset }` 這種優先序，改動只是讓兩個 Swift 欄位本身也對齊這個
-  互斥語意，不是新規則）。schema 的 `"type"` 改成 `.array([.string("integer"),
-  .string("string")])`——標準 JSON Schema 的「多型別擇一」寫法，本檔第一個這樣宣告的參數，找不到
-  既有慣例可循，直接照 JSON Schema 規範寫。description 一併更正：原本寫「具體偏移**像素**」是錯的
-  ——整數形式從頭到尾都是 **EMU**（English Metric Units，914400 EMU = 1 英吋），跟同一個工具的
-  `width`／`height` 單位一致，只是文件寫錯了單位名稱。補 5 個測試：接受整數偏移、接受五個對齊
-  關鍵字（用 `save_document` 存檔後解壓 `word/document.xml`，直接斷言寫出的是
-  `<wp:align>center</wp:align>` 這類元素而非 `<wp:posOffset>`，反過來也驗證整數路徑寫的是
-  `<wp:posOffset>` 不是 `<wp:align>`）、拒絕不合法關鍵字、拒絕布林／陣列／物件、拒絕小數點偏移
-  （EMU 本身是整數單位）。`relative_to_h`／`relative_to_v`（schema 宣告）與實作讀的
-  `horizontal_relative`（單數、無 `relative_to_` 前綴、且沒有對應的 `vertical_relative`）
-  鍵名不一致——這是另一個既有問題，team lead 指示本輪**不修**，留給另一張 issue。
-  **LOW（4 項，前兩項已在上文各自段落處理，此處索引；後兩項是純註解更正，列在這裡）**：
-  anchorPresence 分類更正（見上）；R6 段落補上「成功變失敗」標示（見上）；
-  `Issue232StrictIntegerBooleanParameterTests.swift` 檔案開頭的類別層級說明曾寫「這些站點
-  未個別修正……是留給後續 issue 的更大工程」，那是 Codex R3 當時（尚未修）的真話，R4／R5／R6
-  陸續修完後這段已經過時，卻一直沒人回頭更正；`Server.swift` 的例外清單註解同樣有兩處過時：
-  一處把 `#201 stub／手寫嚴格讀取器／pinned-message 工具` 各自的數量算少了（分別是 2／5／1 個
-  工具，不是「一個」／「一個」／「一個」），另一處聲稱「條件式讀取」這類還留著「少量刻意保留的
-  例外，各自有名字標注」——這其實是把兩份不同的例外清單搞混了：條件式讀取這條線在 R7 之後已經
-  收斂到 0 個例外，真正有名字的例外清單是給「完全略過 optionalInt/optionalBool」的那幾個工具用
-  的，兩者主題不同。三處都已更正為與目前程式碼一致的敘述。
-  **R8（獨立審查者複查 R7 與 #234 後判定 R7 這一節 PASS，但列出 1 個 MEDIUM 建議＋4 個 LOW，
-  team lead 要求發版前處理，逐項處理如下）**：
-  1. **schema 可攜性（MEDIUM）**：R7 的 `horizontal_position`／`vertical_position`
-     `"type": ["integer","string"]` 是合法 JSON Schema，但**不是**合法 OpenAPI 3.0——
-     Gemini 的 `FunctionDeclaration.parameters` 文件明確記載只接受「a select subset of an
-     OpenAPI 3.0 schema object」，其中 `type` 必須是單一字串；一個型別陣列可能讓這個工具、
-     甚至整份 `tools/list`，被這類 client 拒絕（查證：`ai.google.dev/api/generate-content`）。
-     全檔 246 個工具裡這兩個屬性是唯一的型別陣列。改用**拆成兩個單一型別參數**（審查者的首選
-     建議，也更符合 #232「一個參數一個型別」的精神，而非改用 `anyOf`——`anyOf` 在不同 Gemini
-     API 版本的支援度本身不一致，拆參數則是任何 client 都能懂的最低公分母）：
-     `horizontal_position`（整數 EMU 偏移量）＋`horizontal_align`（字串對齊關鍵字），
-     `vertical_position`／`vertical_align` 同理；兩者同時提供視為衝突，回報錯誤而非默默擇一。
-     這是**破壞性變更**：R7 才剛引入、尚未發版的 `horizontal_position: "center"` 字串用法
-     現在要改成 `horizontal_align: "center"`。
-  2. **`w:line` 的 Int32 引用（LOW）已更正**：見上方 M2 段落的刪除線更正。正確依據來自
-     Microsoft 自己的互通性附註 MS-OI29500 Part 1 §17.18.81（"ST_SignedTwipsMeasure"）：
-     *"The standard states that ST_SignedTwipsMeasure allows unbounded integers. Word only
-     reads 32-bit integers for ST_SignedTwipsMeasure."*——這是 Word 自己記載的讀取行為，不是
-     .NET SDK 怎麼建模這個屬性的細節；範圍數字本身不變（`w:before`／`w:after` 用同樣依據，只是
-     它們的型別是不需要負值的 `ST_TwipsMeasure`）。
-  3. **截斷而非四捨五入（LOW）已修正**：`Int(scaled)`（無條件捨去）改成
-     `(lineSpacing * 240).rounded()` 後再轉 `Int`（四捨五入），範圍檢查搬到 rounding 之後，
-     確保檢查的是實際會寫入的值。**更正查證過程中的一個插曲**：原始回報的例子「`1.15` 寫出
-     275 而不是 276」實測不成立——`1.15 * 240` 在 IEEE 754 double 運算下剛好落在精確的
-     `276.0`（已直接用 Swift 驗證），不會踩到截斷問題；改用 `2.05` 才是真正會重現的例子
-     （`2.05 * 240 == 491.99999999999994`，截斷得到 `491`，正確值是 `492`——已用真實 binary
-     端到端驗證：`set_paragraph_format` → `save_document` → 讀回 `word/document.xml` 的
-     `w:line` 確認修正前寫出 `491`，修正後寫出 `492`）。修正方向不變（改四捨五入本來就是正確
-     政策，不只是為了修 `1.15` 這一個例子），只是原始例子換成一個真的重現得了的值。
-  4. **`insert_floating_image` 呼叫處的過時註解已更正**：隨第 1 點的改寫一併處理（`Server.swift`
-     內原本寫著「schema declares "type": "string"」的註解已不再準確，隨拆分參數的程式碼一起
-     重寫）。
-  新增／重寫 4 個測試（1 個新增的「offset 與 align 衝突」測試、原本測「`horizontal_position`
-  接受字串」的測試改測「`horizontal_align` 接受字串」、另補「`horizontal_position` 傳字串是
-  純型別錯誤」的測試、`twipsLine` 的四捨五入單元測試）。
-- 依賴 ooxml-swift 3.12.0：typed 編輯不再讓未被編輯的段落遺失未建模的 `w:pPr` 子元素，例如 `w:kinsoku`、`w:snapToGrid`（PsychQuant/ooxml-swift#168）；讀取 Word 文件時所有 part 一致解碼，非 UTF-8 宣告依宣告轉碼（PsychQuant/ooxml-swift#171）；依 relationship 解析格式 part 與主 part（PsychQuant/ooxml-swift#173）。
-- `export_script(paragraphs_only: true)` 改呼叫 ooxml-swift 的 `ReverseExtractor.paragraphsOnly`（PsychQuant/ooxml-swift#172），刪除原本逐行照抄自 macdoc CLI 的實作；與 CLI 的一致性從此由共用程式碼保證。`omitted_body_blocks` 的字串維持不變（`table`、`contentControl`、`bookmarkMarker`、`rawBlockElement`）。以真實範本與 macdoc 0.13.0 跑 `ScriptPipelineParityTests`，19 個測試全過。
+- **BREAKING：整數、布林、number 參數改為嚴格 JSON 型別**（#232，比照 che-pptx-mcp #5／#10）。過去型別不符的值會被當成沒給，套用預設值後照樣回報成功；例如 `set_header_row` 傳 `"row_count": "3"`（字串）會默默退回 `row_index=0`。現在的規則：
+  - 整數參數只接受 JSON 整數，或能無損轉成整數的小數（`3.0` 可以；`0.5`、超出 `Int` 範圍的值不行）。布林參數只接受 `true`／`false`。number 參數接受任何有限的 JSON 數字。
+  - 字串、陣列、物件等其他型別一律回 `invalidParameter` 並指名參數。`null` 與缺漏仍視為未提供，必填／選填的判斷不變。
+  - **不論這次呼叫會不會用到該參數都會驗證**。所以下列過去會成功（型別錯的值從未被讀到）的呼叫，現在整次失敗：
+    - `insert_paragraph`／`insert_image_from_path` 的 `index`，同時給了優先序更高的錨點（`into_table_cell`、`after_image_id`、`after_text`、`before_text`）時
+    - `set_latent_styles` 的項目缺 `name`、又帶了型別錯的 `ui_priority`／`semi_hidden`／`unhide_when_used`／`q_format` 時（過去整個項目被跳過、其餘照常寫入）
+    - `create_numbering_definition` 的 `levels[].start`，項目缺 `num_format` 或 `lvl_text` 時
+    - `get_paragraphs`／`get_tables`／`list_footnotes`／`list_endnotes`／`list_all_formatted_text` 的 `summarize`，文件沒有對應內容時
+    - `checkpoint` 的 `allow_orphan_images`，沒給 `path` 時
+    - `set_table_style` 的 `border_size`（沒給 `border_style`）與 `cell_col`（沒給 `cell_row`）
+    - `format_text` 的 `run_index`（沒有 `as_revision: true`）
+    - `set_page_margins` 的 `top`／`right`／`bottom`／`left`（同時給了 `preset`）
+    - `accept_revision`／`reject_revision` 的 `revision_id`（同時給了 `all: true`）
+    - `reply_to_comment` 的 `parent_comment_id`（同時給了 `comment_id`）
+    - `merge_cells` 的 `end_row`／`end_col`（不適用於該方向時）
+  - 下列情況修正前後都會失敗，只是錯誤訊息改成指名型別錯的參數：
+    - `replace_text_batch` 項目缺 `find`／`replace` 又帶型別錯的 `regex`／`match_case`
+    - `search_text_batch` 項目缺 `query` 又帶型別錯的 `case_sensitive`
+    - `insert_paragraph`／`insert_image_from_path`／`insert_equation` 的 `into_table_cell` 欄位
+    - `update_style` 在 `style_id` 不存在時的 `q_format`／`hidden`／`semi_hidden`
+    - `insert_caption` 以 `paragraph_index`／`after_table_index` 為唯一錨點時
+  - `replace_text_batch`／`search_text_batch` 的逐項型別錯誤只讓該項失敗，符合這兩個工具「逐項回報、不回滾」的既有契約。過去會中止整批，連已套用的項目也一併遺失。
+  - 刻意不套用新規則的例外：`ScriptPipelineTools` 與 `checkpoint` 既有的手寫嚴格檢查、`insert_equation` 的 `display_mode`（措辭有測試固定），以及 `insert_watermark`／`insert_image_watermark` 從未被讀取的幾何參數（#201 的 stub）。
+  - 字串參數還沒套用同樣的規則：型別錯誤（例如 `wrap_type: 5`）或不在合法清單內的列舉值，仍被當成沒給而套用預設值（#240）。
+  - 守門測試：`tools/list` 裡每個 integer／boolean／number 參數都必須有嚴格讀取；原始碼裡不得再出現裸 `.intValue`／`.boolValue`／`.doubleValue` 讀取參數。已知限制：前者以參數鍵名比對，不是逐一比對工具的 handler。
+- 修正嚴格型別化過程中找到的幾個既有問題：
+  - `set_paragraph_format` 的 `line_spacing` 傳整數（例如 `2`）過去會被默默丟掉、完全不套用，現在正常套用。換算成 twips 時改為四捨五入（過去截斷，例如 `2.05` 寫成 491 而不是 492）。非有限值、非正值、換算後小於 1 twip，以及超出 Word 可讀的 32 位元整數範圍（MS-OI29500 §17.18.81）的值回 `invalidParameter`；過去傳極大值（例如 `1e300`）會讓整個 server 行程當掉。
+  - `insert_sequence_field` 改讀 schema 宣告的 `reset_level`（過去讀 `reset_on_heading`），`insert_checkbox` 改讀 `checked`（過去讀 `is_checked`）。這兩個參數過去不論傳什麼都被忽略。
+  - `insert_equation` 的 `display_mode: null` 視為未提供（過去會報錯）。
+  - `insert_floating_image` 的位置改成每一軸兩個單一型別的參數：`horizontal_position`／`vertical_position` 是 JSON 整數的 EMU 偏移（寫出 `wp:posOffset`，須在 `xsd:int` 範圍內）；`horizontal_align`／`vertical_align` 是字串對齊關鍵字（寫出 `wp:align`；水平 `left`／`center`／`right`／`inside`／`outside`，垂直 `top`／`center`／`bottom`／`inside`／`outside`）。同一軸兩者都給會被拒絕；對齊參數傳非字串會被拒絕；對 `*_position` 傳非數字的字串時，錯誤訊息會指向對應的 `*_align`（傳數字字串，例如 `"914400"`，則回報型別錯誤）。**遷移**：4.3.x 的 schema 把 `*_position` 宣告為字串（「left、center、right 或偏移」），但字串從來沒有生效（一律被當成偏移 0）；原本傳整數偏移的呼叫照舊有效，原本傳對齊字串的呼叫請改用 `*_align`。同一工具的 `relative_to_h`／`relative_to_v` 與寬高單位問題見 #233。
+  - `bulk_resolve_comments` 的 `comment_ids` 接受整數值小數；失敗的項目回報陣列索引。
+- 依賴 ooxml-swift 3.13.0（4.3.0 是 3.11.0）：
+  - typed 編輯後重新序列化的段落格式 `w:pPr`，子元素依 schema（`CT_PPr`）順序寫出；過去 `w:jc` 會排在 `w:spacing`、`w:ind` 之前（PsychQuant/ooxml-swift#175）。
+  - 段落框線 `w:pBdr` 與網底 `w:shd` 讀進 typed 欄位。過去任何 typed 編輯都會讓整份文件的段落框線與網底消失；現在沒被改到的段落原樣保留。改動框線或網底時走 typed 輸出，theme 色等 typed 模型表達不了的屬性在這條路上仍會遺失（PsychQuant/ooxml-swift#179）（PsychQuant/ooxml-swift#176）。
+  - typed 編輯不再讓未被編輯的段落遺失未建模的 `w:pPr` 子元素，例如 `w:kinsoku`、`w:snapToGrid`（PsychQuant/ooxml-swift#168）；讀取 Word 文件時所有 part 一致解碼，非 UTF-8 宣告依宣告轉碼（PsychQuant/ooxml-swift#171）；依 relationship 解析格式 part 與主 part（PsychQuant/ooxml-swift#173）。
+- `export_script(paragraphs_only: true)` 改呼叫 ooxml-swift 的 `ReverseExtractor.paragraphsOnly`（PsychQuant/ooxml-swift#172），刪除原本逐行照抄自 macdoc CLI 的實作；與 CLI 的一致性從此由共用程式碼保證。`omitted_body_blocks` 的字串維持不變（`table`、`contentControl`、`bookmarkMarker`、`rawBlockElement`）。以真實範本與 macdoc 0.13.0（以 ooxml-swift 3.12.0 建置；本版是 3.13.0）跑 `ScriptPipelineParityTests`，19 個測試全過，兩者匯出的腳本逐位元組相同。
 
 ### Fixed
 
-- **8 處把使用者輸入的整數乘上單位換算常數時沒有範圍檢查，傳入極大值會讓整個 server 行程當掉
-  （trap）**（#234，#232 R7 M2 明確列為範圍外、發現於「既有問題」的同一類 bug，本次補上）：
-  `font_size`（`format_text` ×2、`format_text` as_revision 分支 ×1、`create_style` ×1、
-  `update_style` ×1，共 4 個獨立呼叫點，換算為半點）與 `space_before`／`space_after`
-  （`set_paragraph_format` ×2、`create_style` ×2，共 4 個獨立呼叫點，換算為 twips）。重現：
-  `format_text({font_size: 9223372036854775807})` 讓 server 以 SIGTRAP 結束，已用真實 debug
-  binary 經 stdio 送 raw JSON 驗證（exit code -5）——行程一死，所有已開啟文件的 session 與未存檔
-  修改一起消失。新增共用 helper `Self.validatedScaledMeasurement(_:key:range:multiplier:)`：
-  換算前先驗證原始值（點數）落在範圍內，超出範圍回 `WordError.invalidParameter` 並指名參數，
-  8 處呼叫點共用同一份邏輯，不各自重寫。範圍依 **Microsoft Word 自己文件記載的 UI 限制**訂定
-  （不是 #232 R7 的「Open XML SDK 型別」推論——研究本 issue 時查證 `SpacingBetweenLines.Before`
-  與 `HpsMeasureType.Val` 實際型別是 `StringValue`（XSD union，支援 `ST_UniversalMeasure`
-  字串），不是固定寬度整數，R7 對 `w:line` 的 `Int32Value` 說法很可能不準確，見下方已知限制）：
-  `font_size` 1–1638pt（Word 的字型大小輸入上限，換算 2–3276 半點）；`space_before`／
-  `space_after` 0–1584pt（Word 的段落間距輸入上限，下限 0——Word 會把負值退回 0，不接受負的
-  段落間距）。
-  **全檔盤點**（不只 issue 列出的 8 處）另外找到 2 個同類但形狀不同的站點：
-  `set_page_margins` 的 `top`／`right`／`bottom`／`left`——這 4 個參數本身沒有乘法（直接以
-  twips 存入），但會在**另一個函式**（`estimateCharsPerPage`，被 `estimate_paragraph_for_page`
-  呼叫）裡被拿去做**減法**（`pageSize.width - pageMargins.left - pageMargins.right -
-  pageMargins.gutter`），一個極端的 margin 仍然能讓那個減法下溢／上溢而當機（實測
-  `top: Int.min` 會讓行程當掉；`top: Int.max` 剛好不會，因為單一極端值不足以讓這個特定方向的
-  減法溢位，但這不代表安全，只是這一次的算式方向剛好沒踩到——已在輸入端直接擋掉，不只是修
-  `estimateCharsPerPage` 本身，之後任何新讀取 `pageMargins` 的程式碼都繼承這個保護）；範圍
-  ±31680 twips（±22 英吋，Word 邊界設定對話框記載的上限；查證時沒有找到 Word 文件明確記載的
-  負值下限，保守以相同大小的負值做下限）。以及 `search_text_with_formatting` 的
-  `context_chars`——同名的 3 個參數中，只有 `find_inline_math_gaps` 夾在 `[0, 4096]`，
-  `list_comments`／`find_unresolved_comments` 只有下限 0（R9 更正：R8 這裡寫成「3 個都早就有上限」），
-  用在未加防護的 `position - contextChars` 與 `position + matchedText.count + contextChars`
-  運算，`Int.max`／`Int.min` 皆可讓行程當掉；比照 `find_inline_math_gaps` 夾在 `[0, 4096]`。
-  採「夾住」而不是「拒絕」的理由：這是唯讀工具的顯示截斷長度，不會改動文件，夾住的結果與呼叫端的
-  意圖一致。
-  新增 15 個回歸測試（8 個 issue 列出的站點端到端各一 + 共用 helper 的單元測試 + 2 個全檔盤點
-  發現的站點）；崩潰輸入本身無法在 XCTest 裡驗證（trap 會連測試行程一起殺掉），改用真實 debug
-  binary 經 stdio 對每個崩潰輸入分別驗證 RED（修正前當機）與 GREEN（修正後乾淨拒絕，不當機）。
-  **team lead 的獨立審查者複查 R7 時另外發現一處**（尚未經 binary 重現，本次一併處理）：
-  `resolveImageDimensions`（只給 `width`／`height` 其中一個時，用圖片實際的長寬比換算缺的那一邊）
-  用 `Int(Double(w) / aspectRatio)`／`Int(Double(h) * aspectRatio)` 做換算，長寬比是**執行期才知道
-  的 `Double`**、不是固定常數，跟上面 8 處「× 固定常數」的形狀不同，所以把本 issue 的盤點判準明確
-  擴大為「使用者輸入經過任何算術（乘、加、轉型、乘上浮點比例）之後才轉成 `Int` 的所有路徑」，不再
-  只找「× 一個固定常數」這一種形狀。已用真實 debug binary 經 stdio 重現：
-  `insert_image_from_path({height: 9223372036854775807})` 對一張真實 1×1000px PNG（長寬比 0.001）
-  當機；對一張 100×100px（長寬比剛好 1.0，最普通的長寬比）傳 `{width: 9223372036854775807}` 同樣
-  當機——因為 `Double(Int.max)` 本身不是可精確表示值、會無條件進位到剛好 `2^63`（比 `Int.max` 多
-  1），連「長寬比 1.0」這種最不特殊的輸入都踩得到。新增 `Self.safeInt(fromArithmeticResult:key:)`：
-  在呼叫會 trap 的 `Int(_: Double)` 之前，先驗證該 `Double` 是有限值且落在 `[-2^63, 2^63)` 之間
-  （`twipsLine`〔R7〕已經在用的同一種「先驗證再轉換」形狀，只是這裡的界線是可表示範圍本身，不是某
-  個 OOXML 型別的政策上限）——界線刻意寫成 `-0x1p63`／`0x1p63`（2 的冪，`Double` 本身可精確表示），
-  不是 `Double(Int.max)`，正是因為後者的四捨五入會讓上界檢查多放行一個其實仍會 trap 的值。
-  `safeInt` 修完後，只給 `height` 的案例仍然當機：追查後是**同一個 bug 類別在另一層、另一個套件**
-  ——ooxml-swift（`.build/checkouts/ooxml-swift/`，che-word-mcp 無法直接修改的獨立 repo）的
-  `Drawing.from(widthPx:heightPx:)` 與 `Document.updateImage` 都做未加防護的
-  `widthPx * 9525`／`heightPx * 9525`（像素→EMU）；`safeInt` 只守住 `resolveImageDimensions` 自己
-  算出來的那一個維度，使用者直接給的那個維度完全沒被碰過，原封不動傳進這個乘法。同一個未加防護的
-  乘法還被 `insert_image`（base64 版，兩個維度皆為必填、完全沒有長寬比運算）與 `update_image`
-  （`Document.updateImage`，同一段 `* 9525`）共用，不只 `insert_image_from_path` 一個工具。因為
-  無法修改 ooxml-swift 本身，改在 che-word-mcp 這一側、呼叫進 ooxml-swift 之前驗證輸入：新增
-  `Self.imagePixelDimensionRange`，依 DrawingML `<wp:extent>` 的 `cx`／`cy` 實際使用的型別
-  `ST_PositiveCoordinate`（`xsd:long`，文件明確限制在 `0 ≤ n ≤ 27273042316900`——這是真正有文件
-  可查的 XSD 數值限制，不像 `w:before`／`w:sz` 那樣要退而求其次改用 Word UI 上限）推算：
-  `27273042316900 ÷ 9525 = 2863311529`（整數除法）即是換算後仍落在 `ST_PositiveCoordinate` 範圍
-  內的最大像素值。在 `insert_image`、`insert_image_from_path`（`resolveImageDimensions` 解出寬高
-  之後）、`update_image` 三個呼叫點各自驗證，涵蓋這個共用乘法的所有入口。新增 11 個回歸測試
-  （`safeInt` 的單元測試 4 個 + 三個工具端到端各 2–3 個 + 1 個一般值不受影響的回歸鎖）；跟上面 8
-  處一樣，崩潰輸入無法直接在 XCTest 裡驗證，改用「保留 helper 定義、只還原 4 個呼叫點的守門」這種
-  局部 mutation testing：還原後這 6 個端到端測試逐一以真實 `SIGTRAP`（訊號碼 5）當掉整個測試行程，
-  證實測試真的在測這個修正，不是空跑；還原修正後全部轉為乾淨的 `isError: true`。
-  **已知限制**：#232 R7 的 CHANGELOG／`twipsLine` doc comment 對 `w:line`（`w:spacing` 的另一
-  屬性）宣稱「Open XML SDK 對應型別為 Int32」，本次查證 Microsoft Learn 文件時發現這個型別
-  推論本身站不住腳（`w:before`／`w:sz` 的對應屬性實際型別是 `StringValue`，`w:line` 極可能
-  同理）；R7 選的 Int32 範圍本身仍然安全（沒有錯，只是引用的依據不夠精確），這裡誠實記錄，
-  但依協調者指示本輪不去改寫已經 commit 的 R7 內容，留給之後單獨處理。**（R8 更新：已在下方
-  R7 條目更正——team lead 這輪明確授權修正引用，不再是已知限制。）**
-
-- **獨立審查者寫的 fuzzer 在 #234 修正後的 HEAD（`c1aabdd`）上又找到 5 個當機站點，全部落在
-  #234 自己擴大後的盤點判準之內**（R8，PsychQuant/che-word-mcp#234）。這支 fuzzer 對
-  `tools/list` 宣告的每個 integer／number 參數送極端值（`Int.max`／`Int.min`／`2^62`／
-  `2^31`／`-1`），逐一開一個真實 debug binary 行程測試，在 `50d0e92` 上抓到 58 個當機、在
-  `c1aabdd` 上仍抓到 5 個——證明「人工 grep 盤點」在本輪之前始終有漏網，team lead 因此把本輪
-  的完成條件明訂為機械式的「fuzzer 跑出零當機」，不再接受人工盤點作為完成依據。5 個站點：
-  1. `create_numbering_definition` 的 `levels[].ilvl`：`indent: 720 * (ilvl + 1)` 溢位——
-     這正是 #234 自己的「使用者輸入經任何算術後轉 Int」判準，只是形狀是 `literal * (變數 +
-     literal)`，比 #234 原本 grep 的 `變數 * literal` 多一層括號，因此漏網。範圍依
-     Word 清單只支援 0–8 共 9 層（`set_list_level` 已對同義的 `level` 參數用同一範圍）。
-  2. `insert_caption` 的 `paragraph_index`：`idx + 1` 溢位，另外 `-1` 過去被默默接受、解析成
-     索引 0。改用 `0..<Int.max` 一次擋住兩者。
-  3. `insert_table`／`insert_nested_table` 的 `rows`／`cols`：`Table(rowCount:columnCount:)`
-     （ooxml-swift）對 `-1` 直接 trap（`Range requires lowerBound <= upperBound`），對
-     `Int.max` 嘗試配置約 1.8×10^19 bytes trap，對 `2^31` 雖不 trap 但以約 2.6 GB/秒的速度
-     吃記憶體（審查者實測：2 秒 5.3 GB、5 秒 13 GB、10 秒 26 GB）。欄數上限 63 依 Word 自己
-     文件記載的表格欄數限制；**列數 Word 沒有記載上限**（官方「Operating parameter
-     limitations and specifications in Word」頁面列了書籤、樣式、清單、註解、欄位、分頁上限
-     等，唯獨沒有表格列數這一項，多個獨立來源也一致說列數「實質上沒有限制」）——誠實記錄這不是
-     一個 Word 規格數字。**R9 更正**：R8 原本宣稱 65536 列 × 63 欄「在真實 binary 上跑不到一秒、
-     記憶體無異常增長」，R8 的獨立審查實測不成立：每個空儲存格約佔 2.2 KB，65536 × 63 在
-     `insert_table` 後佔 9.0 GB、存檔峰值 14.2 GB、33 秒，兩次呼叫達 18 GB。R9 改為限制
-     **總格數** `rows × cols ≤ 65536`（約 140 MB、存檔約半秒），欄數上限 63 不變。
-  4. `insert_text` 的 `position`：只有上界被夾住，`-1` 直接讓 `String.Index(offsetBy:)`
-     trap。**R9 改為負值回 `invalidParameter`**（R8 原本把負值夾到 0，會把文字插到段落開頭、
-     回覆卻寫「position -1」成功）：負值過去一律當機，沒有需要保護的既有契約，同名的
-     `insert_text_as_revision.position` 本來就拒絕負值。超出段落長度仍放在段落末尾（schema
-     記載的預設行為），成功訊息改為回報實際插入的位置。
-  5. `insert_toc` 的 `min_level`／`max_level`：`min_level > max_level` 時
-     `minLevel...maxLevel` 直接 trap。Word 內建剛好 9 層標題（Heading 1–9），範圍訂
-     `1...9` 並明確拒絕 `min_level > max_level`（不是靜默交換）。
-  全部先用真實 debug binary 經 stdio／fuzzer 重現 RED，修正後重跑同一支 fuzzer 確認
-  GREEN（`probes=1272 crashes=0 timeouts=0`，完整輸出見報告）；新增 8 個回歸測試（`ilvl`、
-  `paragraph_index`、`insert_table`、`insert_nested_table`、`position`、`min/max_level`、
-  `set_page_margins.left/right`、`resolveImageDimensions` 寬圖測試各一個；已 commit 的
-  commit message 誤植為「9 個」，這裡更正，commit message 本身依既有慣例不回頭改寫）。**這支
-  fuzzer 本身也帶進版控**：`scripts/fuzz-extreme-params.py`（用法見腳本開頭 docstring），
-  之後任何一輪要新增／修改 integer／number 參數時都應該重跑一次，不再需要重新手工推導。
-  **R9 更正**：R8 帶進版控的版本拿掉了原始審查腳本的逐工具覆寫、前置步驟與每次探測後存檔，
-  245 個參數中有 60 個的探測被無關的前置條件擋下、從沒走到目標，所以上面的
-  「probes=1272 零當機」涵蓋面比宣稱的少四分之一。R9 補回三者，並加上 coverage 檢查（走到目標的
-  參數低於 97% 就失敗）、「(must reject)」探測必須真的被拒絕、最大合法表格存檔後的常駐記憶體上限；
-  gate 測試改為在 `RUN_FUZZ=1` 時缺腳本、缺 binary 或 binary 比原始碼舊一律失敗，並先讀完輸出再等
-  行程結束（避免大量失敗時 pipe 死結）。R9 HEAD 上：1287 個探測零當機、零逾時，241/245 個參數
-  走到目標（剩下 3 個是從不讀參數的浮水印 stub、1 個是 fixture 沒有可拼接的公式）。
-  同一次順手修正另一個獨立發現的問題：`set_page_margins` 的 `left`／`right` 過去與
-  `top`／`bottom` 共用同一個 ±31680 twips 範圍，但查證 Microsoft Learn 文件後發現
-  `PageMargin.Left`／`Right`（`w:left`／`w:right`）在 Open XML SDK 裡是 `UInt32Value`
-  （無號），只有 `Top`（`w:top`）是 `Int32Value`（有號）——`left`／`right` 傳負值不會讓行程
-  當掉，但會寫出不符合 `w:left`／`w:right` 自己型別的 XML。`left`／`right` 改用 `0...31680`，
-  `top`／`bottom` 維持原本的 `-31680...31680`。
-  另外補上獨立審查報告點名的測試缺口：`resolveImageDimensions`（#234 續，`c1aabdd`）只給
-  `height` 時計算 `width` 的 `safeInt` 守門，先前唯一涵蓋這個分支的測試用的是一張長寬比 0.001
-  的直立圖片（`Int.max × 0.001 ≈ 9.2e15` 遠低於 `safeInt` 自己的門檻，實際是被下游
-  `imagePixelDimensionRange` 擋下，不是被 `safeInt` 擋下），所以把 `safeInt` 本身拿掉，這個
-  既有測試仍然通過——沒有測試真正守住這個分支。新增一張長寬比 1000（寬圖，`1000×1` px）的測試
-  fixture，只給 `height: Int.max`：`Double(Int.max) × 1000.0` 遠遠超出 `Int` 可表示範圍，
-  只有 `safeInt` 自己的檢查能擋下。Mutation testing：把這個分支還原成修正前的
-  `Int(Double(h) * native.aspectRatio)`（拿掉 `safeInt`），單獨執行這個測試會讓整個測試行程
-  以 `SIGTRAP`（訊號碼 5）當掉（`Fatal error: Double value cannot be converted to Int...`），
-  證實新測試真的守住這個分支；還原修正後乾淨通過。
-
-- **R9：回應 R8 的獨立審查**（#232、#234）。除了上面兩處更正（表格改限總格數、`insert_text`
-  負位置改為拒絕），另外：
-  - `insert_floating_image` 的 `horizontal_align`／`vertical_align` 傳非字串（數字、布林、陣列、
-    物件）回 `invalidParameter`；R8 以 `?.stringValue` 讀取，會把這些值默默當成沒給，而同時給
-    偏移與錯型別對齊時還會繞過衝突檢查。
-  - `horizontal_position`／`vertical_position` 傳字串時，錯誤訊息指出對齊關鍵字要改用
-    `horizontal_align`／`vertical_align`（4.3.x 的 schema 把這兩個參數宣告為字串）；偏移量限制在
-    `xsd:int` 範圍內（`wp:posOffset` 是 `ST_PositionOffset`），超出就拒絕，不再寫出不合 schema 的值。
-  - `line_spacing` 換算後小於 1 twip（小於 1/480）時拒絕，不再寫出 `w:line="0"`。
-  - 依長寬比換算圖片的另一邊時改為四捨五入並至少 1 像素：`aspectRatio` 帶浮點誤差，截斷會少 1，
-    1×49 的圖以原生高度 49 呼叫時寬度被截成 0，再被像素範圍檢查以 `width` 的名義拒絕（呼叫端
-    根本沒給 `width`）。換算出的一邊超出上限時，錯誤改為指名呼叫端提供的參數。
-  - `insert_toc` 的範圍錯誤指名實際超出的參數（R8 一律指名 `min_level`），順序錯誤的訊息說明
-    沒提供的一方用了哪個預設值。
-  - 回歸測試：`Issue234R9ReviewTests`（11 個，修正前全部 RED）；`insert_nested_table` 的 `cols`
-    檢查原本沒有任何測試守著（R8 審查的變異測試中存活），已補上。
+- **單一參數能讓 server 行程當掉的輸入全部改為回報錯誤**（#234）。過去把使用者給的數值做單位換算、索引運算或配置時沒有範圍檢查，傳入極大值、負值或順序顛倒的值，會讓 Swift 的溢位檢查直接結束整個行程，所有已開啟文件的未存檔修改一起消失。現在一律先驗證範圍，超出就回 `invalidParameter` 並指名參數：
+  - 字級 `font_size`：1–1638 pt（Word 的上限）；段落間距 `space_before`／`space_after`：0–1584 pt。適用於 `format_text` 等四個工具。
+  - `set_page_margins`：`top`／`bottom` 為 ±31680 twips；`left`／`right` 為 0–31680（OOXML 型別是無號整數，負值會寫出不合 schema 的檔案）。
+  - 圖片尺寸（`insert_image`、`insert_image_from_path`、`update_image`）：1–2,863,311,529 像素（換算成 EMU 後須在 `ST_PositiveCoordinate` 範圍內）。只給寬或高、依長寬比換算另一邊時改為四捨五入且至少 1 像素；換算結果超出範圍時，錯誤指名呼叫端提供的參數。
+  - 表格（`insert_table`、`insert_nested_table`）：欄數 1–63（Word 的上限），總格數 `rows × cols` ≤ 65,536。過去一個合法範圍內的大表格（65,536 × 63）就會佔用約 9 GB 記憶體、存檔峰值 14 GB。
+  - `create_numbering_definition` 的 `ilvl`：0–8；`insert_toc` 的 `min_level`／`max_level`：1–9，且 `min_level` 不可大於 `max_level`，錯誤指名實際超出範圍的參數。
+  - `insert_caption` 的 `paragraph_index` 過大、`insert_text` 的 `position` 為負值：回報錯誤。`insert_text` 的 `position` 超出段落長度時仍插在段落末尾，回覆改為報告實際插入的位置。
+  - `search_text_with_formatting` 的 `context_chars`：夾在 0–4096（唯讀的顯示截斷長度，夾住與呼叫端意圖一致）。
+  - 開發工具：`scripts/fuzz-extreme-params.py` 對 `tools/list` 每個整數／number 參數送極端值，每次探測開一個真實 binary 行程，並在探測後存檔；並在最大合法表格的探測結束時檢查常駐記憶體。`RUN_FUZZ=1 swift test --filter FuzzExtremeParamsGateTests` 是它的 gate。本版跑 1,287 個探測，零當機、零逾時。腳本另有一道「參數確實被探測到」的覆蓋率門檻（97%），但判定方式會高估：本版回報 241/245，獨立審查逐一核對後實際約 227/245（約 93%），其餘參數的探測被別的參數先擋下、或根本沒走到用到它的分支。審查者替這些參數補上正確的前置條件重送極端值，同樣零當機。判定方式的修正、峰值記憶體的量法，見 #239。
+  - 已知仍未處理：開啟頁面尺寸被竄改成極端值的 docx 後呼叫 `estimate_paragraph_for_page` 仍會當掉（#237）；有些超出 OOXML 範圍的值仍會被接受並寫進檔案（#235）；ooxml-swift 的 `Drawing.from` 等公開 API 本身仍未防護（PsychQuant/ooxml-swift#178），經由本 server 呼叫時已先擋下。
 
 - **`set_header_row` 只保留一個註冊，`tools/list` 不再有兩份互相矛盾的 schema**（#230）。原本
   `Server.swift` 註冊了兩次：`switch` on tool name 的 dispatch 只執行第一個符合的 `case`（已用最小

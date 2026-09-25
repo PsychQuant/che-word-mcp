@@ -198,10 +198,14 @@ python3 scripts/fuzz-extreme-params.py .build/debug/CheWordMCP /tmp/fuzz-workdir
 
 Exit code is 0 only when there is no crash or hang (including the save
 that follows every probe), every "(must reject)" probe was rejected, the
-largest legal table stays under a resident-memory ceiling, and at least 97%
-of the schema's integer/number parameters were actually **reached** — a
-probe stopped by an unrelated precondition proves nothing, so a fuzzer that
-stops reaching its targets fails instead of reporting zero crashes. A
+resident memory at the end of the largest-legal-table probe stays under a
+ceiling (end of probe, not peak), and at least 97% of the schema's
+integer/number parameters were judged **reached** — a probe stopped by an
+unrelated precondition proves nothing, so a fuzzer that stops reaching its
+targets fails instead of reporting zero crashes. The reach judgement
+currently overestimates: on 4.4.0 it counted 241/245, while an independent
+audit found about 227/245 actually reached (fix tracked in
+[#239](https://github.com/PsychQuant/che-word-mcp/issues/239)). A
 summary line, a coverage line (with the unreached parameters) and a
 per-probe TSV (`<workdir>/fuzz_results.tsv`) are always produced. It's also
 wired into `swift test` behind an opt-in gate (not run by default — about
