@@ -364,6 +364,75 @@ actor WordMCPServer {
         return Int(scaled)
     }
 
+    /// #234: `font_size`／`space_before`／`space_after` each get multiplied
+    /// by a small unit-conversion constant (×2 points→half-points, ×20
+    /// points→twips) with no range check first. `Int * Int` in Swift TRAPS
+    /// on overflow — same failure mode as #232 R7's `line_spacing` bug
+    /// (whole server process dies, every open document's unsaved edits go
+    /// with it), just reached through an already-Int value instead of a
+    /// Double→Int cast. Reproduced with `format_text({font_size:
+    /// 9223372036854775807})` via real binary over stdio (see #234 RED
+    /// section of the report).
+    ///
+    /// The bound is NOT the "Open XML SDK types this as Int32Value" claim
+    /// `twipsLine` above uses for `w:line` — checking that claim while
+    /// researching this issue (Microsoft Learn, `SpacingBetweenLines.Before`
+    /// and `HpsMeasureType.Val`) found both are actually modeled as
+    /// `StringValue`, not a fixed-width integer type; `ST_SignedTwipsMeasure`/
+    /// `ST_HpsMeasure` are XSD unions with a UniversalMeasure-string member,
+    /// so there is no single SDK-typed width to cite here (see the #234
+    /// report's "建議 follow-up" for a note on `twipsLine`'s own citation).
+    /// Grounded instead in Microsoft Word's own documented UI limits — a
+    /// weaker-sounding but independently VERIFIABLE source: Word enforces a
+    /// maximum font size of 1638pt (Windows and macOS) and a maximum
+    /// paragraph spacing before/after of 1584pt, with 0 as the enforced
+    /// floor for spacing (Word clamps any negative input back to 0 — see
+    /// the #234 report for the search sources). Values outside what Word's
+    /// own UI accepts are, by construction, not a legitimate `.docx` this
+    /// file needs to be able to write.
+    static func validatedScaledMeasurement(
+        _ value: Int, key: String, range: ClosedRange<Int>, multiplier: Int
+    ) throws -> Int {
+        guard range.contains(value) else {
+            throw WordError.invalidParameter(key, "必須介於 \(range.lowerBound) 到 \(range.upperBound) 之間")
+        }
+        return value * multiplier
+    }
+
+    /// Word's documented font-size UI range (1pt–1638pt), before the ×2
+    /// points→half-points conversion `validatedScaledMeasurement` applies.
+    static let fontSizePointsRange: ClosedRange<Int> = 1...1638
+
+    /// Word's documented paragraph-spacing UI range (0pt–1584pt, Word
+    /// clamps negative input to 0), before the ×20 points→twips conversion.
+    static let paragraphSpacingPointsRange: ClosedRange<Int> = 0...1584
+
+    /// #234 (full-file audit, beyond the issue's 8 listed sites):
+    /// `set_page_margins`' `top`/`right`/`bottom`/`left` are stored as-is
+    /// (twips, no multiplication at THIS call site — so this isn't a
+    /// multiply-overflow like the 8 sites above), but they get SUBTRACTED
+    /// from `pageSize.width`/`height` downstream in `estimateCharsPerPage`
+    /// (`pageSize.width - pageMargins.left - pageMargins.right -
+    /// pageMargins.gutter`), reachable via the `estimate_paragraph_for_page`
+    /// tool. An unbounded margin underflows that subtraction and traps the
+    /// process — same failure class, reached through subtraction instead of
+    /// multiplication, and validated at a DIFFERENT call site than where
+    /// the value is eventually consumed. Bounding it here, at the point
+    /// where the value enters the document, means every future reader of
+    /// `pageMargins` inherits the safety, not just `estimateCharsPerPage`.
+    ///
+    /// Upper bound grounded in Word's own documented UI limit: margins are
+    /// capped at 22 inches (31680 twips) on any side. No authoritative
+    /// documented NEGATIVE limit was found during this issue's research
+    /// (Word's simple margin UI floors at 0, but the Page Setup dialog has
+    /// historically permitted a modest negative margin for overlap effects
+    /// — see the #234 report for what was and wasn't verified); the lower
+    /// bound is conservatively mirrored to the same magnitude rather than
+    /// assumed to be 0, wide enough for any legitimate use while still
+    /// leaving enormous headroom before the downstream subtraction could
+    /// overflow.
+    static let pageMarginTwipsRange: ClosedRange<Int> = -31680...31680
+
     private static func jsonTypeName(_ value: Value) -> String {
         switch value {
         case .null: return "null"
@@ -7999,7 +8068,10 @@ actor WordMCPServer {
         if let bold = try optionalBool(args, "bold") { format.bold = bold }
         if let italic = try optionalBool(args, "italic") { format.italic = italic }
         if let underline = try optionalBool(args, "underline") { format.underline = underline ? .single : nil }
-        if let fontSize = try optionalInt(args, "font_size") { format.fontSize = fontSize * 2 } // 轉換為半點
+        // #234: validate before ×2 (points→half-points); Int*Int overflow traps the process.
+        if let fontSize = try optionalInt(args, "font_size") {
+            format.fontSize = try Self.validatedScaledMeasurement(fontSize, key: "font_size", range: Self.fontSizePointsRange, multiplier: 2)
+        }
         if let fontName = args["font_name"]?.stringValue { format.fontName = fontName }
         if let color = args["color"]?.stringValue { format.color = color }
 
@@ -8037,7 +8109,7 @@ actor WordMCPServer {
                 replacement.underline = underline ? .single : nil
             }
             if let fontSize = try optionalInt(args, "font_size") {
-                replacement.fontSize = fontSize * 2
+                replacement.fontSize = try Self.validatedScaledMeasurement(fontSize, key: "font_size", range: Self.fontSizePointsRange, multiplier: 2)
             }
             if let fontName = args["font_name"]?.stringValue {
                 replacement.fontName = fontName
@@ -8084,13 +8156,14 @@ actor WordMCPServer {
         if let lineSpacing = try optionalDouble(args, "line_spacing") {
             props.spacing = Spacing(line: try Self.twipsLine(fromLineSpacingMultiplier: lineSpacing)) // 轉換為 1/240 點
         }
+        // #234: validate before ×20 (points→twips); Int*Int overflow traps the process.
         if let spaceBefore = try optionalInt(args, "space_before") {
             if props.spacing == nil { props.spacing = Spacing() }
-            props.spacing?.before = spaceBefore * 20 // 轉換為 1/20 點
+            props.spacing?.before = try Self.validatedScaledMeasurement(spaceBefore, key: "space_before", range: Self.paragraphSpacingPointsRange, multiplier: 20)
         }
         if let spaceAfter = try optionalInt(args, "space_after") {
             if props.spacing == nil { props.spacing = Spacing() }
-            props.spacing?.after = spaceAfter * 20
+            props.spacing?.after = try Self.validatedScaledMeasurement(spaceAfter, key: "space_after", range: Self.paragraphSpacingPointsRange, multiplier: 20)
         }
 
         let asRevision = try optionalBool(args, "as_revision") ?? false
@@ -8592,19 +8665,23 @@ actor WordMCPServer {
         if let alignment = args["alignment"]?.stringValue {
             paraProps.alignment = Alignment(rawValue: alignment)
         }
+        // #234: validate before ×20 (points→twips); Int*Int overflow traps the process.
         if let spaceBefore = try optionalInt(args, "space_before") {
             if paraProps.spacing == nil { paraProps.spacing = Spacing() }
-            paraProps.spacing?.before = spaceBefore * 20
+            paraProps.spacing?.before = try Self.validatedScaledMeasurement(spaceBefore, key: "space_before", range: Self.paragraphSpacingPointsRange, multiplier: 20)
         }
         if let spaceAfter = try optionalInt(args, "space_after") {
             if paraProps.spacing == nil { paraProps.spacing = Spacing() }
-            paraProps.spacing?.after = spaceAfter * 20
+            paraProps.spacing?.after = try Self.validatedScaledMeasurement(spaceAfter, key: "space_after", range: Self.paragraphSpacingPointsRange, multiplier: 20)
         }
 
         // 解析 Run 屬性
         var runProps = RunProperties()
         if let fontName = args["font_name"]?.stringValue { runProps.fontName = fontName }
-        if let fontSize = try optionalInt(args, "font_size") { runProps.fontSize = fontSize * 2 }
+        // #234: validate before ×2 (points→half-points); Int*Int overflow traps the process.
+        if let fontSize = try optionalInt(args, "font_size") {
+            runProps.fontSize = try Self.validatedScaledMeasurement(fontSize, key: "font_size", range: Self.fontSizePointsRange, multiplier: 2)
+        }
         if let bold = try optionalBool(args, "bold") { runProps.bold = bold }
         if let italic = try optionalBool(args, "italic") { runProps.italic = italic }
         if let color = args["color"]?.stringValue { runProps.color = color }
@@ -8660,7 +8737,10 @@ actor WordMCPServer {
            args["bold"] != nil || args["italic"] != nil || args["color"] != nil {
             runProps = RunProperties()
             if let fontName = args["font_name"]?.stringValue { runProps?.fontName = fontName }
-            if let fontSize = try optionalInt(args, "font_size") { runProps?.fontSize = fontSize * 2 }
+            // #234: validate before ×2 (points→half-points); Int*Int overflow traps the process.
+            if let fontSize = try optionalInt(args, "font_size") {
+                runProps?.fontSize = try Self.validatedScaledMeasurement(fontSize, key: "font_size", range: Self.fontSizePointsRange, multiplier: 2)
+            }
             if let bold = try optionalBool(args, "bold") { runProps?.bold = bold }
             if let italic = try optionalBool(args, "italic") { runProps?.italic = italic }
             if let color = args["color"]?.stringValue { runProps?.color = color }
@@ -8819,10 +8899,30 @@ actor WordMCPServer {
         // preset gate — a mistyped top/right/bottom/left supplied ALONGSIDE
         // preset used to be silently ignored (never read at all) instead of
         // erroring, same class of bug as set_table_style's border_size.
+        // #234: validate range here too — see `pageMarginTwipsRange`'s doc
+        // comment for why an unbounded margin traps a DIFFERENT function
+        // (estimateCharsPerPage) than this one, and why bounding it at the
+        // point of entry is more robust than only guarding that consumer.
+        // Kept as four literal `optionalInt(args, "…")` calls (not a
+        // key-parameterized helper) so the B.2 schema-coverage sweep in
+        // `Issue232StrictIntegerBooleanParameterTests.swift` — which greps
+        // for the literal key string next to `optionalInt(` — still finds
+        // each one; a `func validatedMargin(_ key: String)` indirection
+        // broke that sweep the first time this was written (caught by
+        // `testEveryIntegerAndBooleanSchemaParameterHasAStrictReader`
+        // itself failing during this issue's own test run).
         let top = try optionalInt(args, "top")
         let right = try optionalInt(args, "right")
         let bottom = try optionalInt(args, "bottom")
         let left = try optionalInt(args, "left")
+        for (key, value) in [("top", top), ("right", right), ("bottom", bottom), ("left", left)] {
+            if let value, !Self.pageMarginTwipsRange.contains(value) {
+                throw WordError.invalidParameter(
+                    key,
+                    "必須介於 \(Self.pageMarginTwipsRange.lowerBound) 到 \(Self.pageMarginTwipsRange.upperBound) 之間（twips）"
+                )
+            }
+        }
 
         // 優先使用預設名稱
         if let preset = args["preset"]?.stringValue {
@@ -12634,7 +12734,19 @@ actor WordMCPServer {
         }
 
         let caseSensitive = try optionalBool(args, "case_sensitive") ?? false
-        let contextChars = try optionalInt(args, "context_chars") ?? 20
+        // #234 (full-file audit, beyond the issue's 8 listed sites): this
+        // was the only `context_chars` in the file with NO upper bound at
+        // all — `find_inline_math_gaps` already clamps to `min(max(0, …),
+        // 4096)`. Unbounded, `position - contextChars` / `position +
+        // matchedText.count + contextChars` below can under/overflow Int
+        // and trap (e.g. `context_chars: Int.min` on the subtraction,
+        // `context_chars: Int.max` on the addition). Clamped to the same
+        // [0, 4096] range as `find_inline_math_gaps` for consistency with
+        // that sibling parameter rather than introducing a fourth policy —
+        // this is a display/formatting knob with no OOXML-typed output, so
+        // silent clamping (matching 3 existing siblings) rather than
+        // rejecting is the less disruptive fix for a purely internal bound.
+        let contextChars = min(max(0, try optionalInt(args, "context_chars") ?? 20), 4096)
 
         let paragraphs = doc.getParagraphs()
         var results: [(paraIndex: Int, position: Int, matchedText: String, context: String, formats: [String])] = []
