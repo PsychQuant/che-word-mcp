@@ -104,6 +104,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **R6（回應獨立 Claude 對抗式審查，VERDICT: FAIL）**：R5 報告當時寫「約 25 處已收斂為 0」、
   CHANGELOG 寫「不開放例外」，獨立審查用另一份複本＋額外的探測測試（`R5ReviewProbeTests.swift`）
   重新逐一核實，找到 R5 的五種靜態掃描仍漏掉的兩種形狀，共 7 個真正的站點，這一輪逐一修正：
+  這 7 處與 R5 的 `set_latent_styles`／`insert_paragraph` 的 `index` 同屬「成功變失敗」——修正前
+  型別不符的值被完全忽略、呼叫照常成功；修正後整次呼叫失敗（R7 review LOW-1 指出 R6 段落當時沒有
+  明確標出這個分類，只在 R5 段落標過，這裡補上）。
   **(a) 陣列項目內「必填欄位」短路掉「同項目型別檢查」的第 6 個站點**——`create_numbering_definition`
   的 `levels[]` 項目：`start` 原本在 `guard let obj = ..., let ilvl = ..., let num_format = ...,
   let lvl_text = ... else { continue }` 這個 guard **之後**才解析，項目缺 `num_format`／
@@ -130,9 +133,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   精確比對 `Invalid parameter '<key>'`／`invalidParameter("<key>"` 兩種實際錯誤格式（子字串比對
   在 `expectedNamedKey == "index"` 時會被 `insert_paragraph` 自己的錨點衝突訊息「... + index」
   誤判為通過）。
-  另外三個訊息精確度修正（呼叫修正前後都會失敗，不是靜默成功變失敗）：`anchorPresence` 的 int 型
-  判定改用與 `optionalInt` 一致的規則（`Int(exactly:)`，接受整數值 double），原本用裸 `.intValue`
-  會讓 `index: 0.0` 這種在這個 SDK 上幾乎不可能出現的值被誤判成「未提供」而略過衝突偵測；
+  另外三個修正：`anchorPresence` 的 int 型判定改用與 `optionalInt` 一致的規則（`Int(exactly:)`，
+  接受整數值 double），原本用裸 `.intValue` 會讓整數值 double（如 `index: 0.0`）被誤判成「未提供」
+  而略過衝突偵測（R7 review LOW-1 更正：這裡**不是**單純訊息精確度——程序內直接傳 `.double(0.0)`
+  加 `after_text` 時，修正前該呼叫確實**成功**插入且忽略衝突的 `index`，修正後才改報「conflicting
+  anchors」，是貨真價實的成功變失敗。但這個差異只在程序內呼叫可觀察：JSON 的 `0.0` 在這個 SDK 上
+  本來就解成 `.int(0)`，經真實 MCP 傳輸時修正前後都會報衝突，行為一致，已用真實 binary 驗證過）；
   `update_style` 的 `q_format`／`hidden`／`semi_hidden` 改成在呼叫 `doc.updateStyle()` 之前先
   解析，`style_id` 不存在時過去只看到「style not found」，看不到同時存在的型別錯誤；
   `insert_caption` 的 `paragraph_index`／`after_table_index` 改成在錨點存在性檢查之前先解析，
@@ -147,6 +153,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   全檔案盤點確認這是唯一一個直接讀 `.doubleValue` 的站點，B.1／B.2 兩個 sweep 測試都擴充涵蓋
   `"type": "number"`／`optionalDouble`（B.2 目前只有 `line_spacing` 這一個 number 型參數可驗，
   但之後新增的 number 型參數會被同一個 sweep 自動涵蓋）。
+  **R7（回應獨立重審 `rev232b`，VERDICT: PASS，但有 3 MEDIUM／4 LOW 需在發版前處理）**：
+  **M1（測試缺口）**：R6 實際修好的 7 個站點（`create_numbering_definition.start`、5 個
+  `summarize` 早退工具、`checkpoint.allow_orphan_images`）沒有任何測試守著——審查者把全部 7 處
+  改回 `afe0b55` 的寫法，跑全套件，原有 481 個測試照樣全過，只有審查者自己新增的探測測試失敗。
+  R6 報告聲稱「已用 `gatedParameterProbes` 表驗證」與事實不符，已更正。補了 4 個測試函式（1 個
+  `create_numbering_definition`、1 個迴圈涵蓋 4 個早退工具、1 個 `list_all_formatted_text`
+  專屬、1 個 `checkpoint`），未併入 `gatedParameterProbes` 表——那張表的所有列共用同一個「已有
+  Anchor 段落＋2×2 表格」的 fixture 文件，這 7 處需要的前置條件（空文件、或有已知磁碟路徑的
+  文件）跟表格共用的 fixture 互斥，所以用獨立測試函式，與 R2／R4 逐一手寫測試的既有慣例一致。
+  逐一變異驗證：把 7 處都改回舊寫法，4 個新測試如預期全部 RED（15 個斷言失敗，全部落在這 4 個
+  測試裡，其餘 481 個既有測試不受影響——證實這 7 處先前確實零覆蓋）；還原修正後全部 GREEN。
+  **M2（發版阻擋：process crash）**：`set_paragraph_format` 傳 `line_spacing:
+  40000000000000000` 或 `line_spacing: 1e300` 會讓 `Int(lineSpacing * 240)` 直接讓整個
+  server 行程以 SIGTRAP 結束（`Fatal error: Double value cannot be converted to Int`），
+  已用真實 debug binary 經 stdio 送 raw JSON 重現（exit code -5）——行程一死，所有已開啟文件的
+  session 與未存檔修改一起消失。新增 `Self.twipsLine(fromLineSpacingMultiplier:)`：先拒絕非
+  有限值與非正值，再拒絕換算（乘以 240）後超出範圍的值才進行轉換；上限**不是拍腦袋決定**，
+  依 OOXML `w:spacing/@w:line`（`ST_SignedTwipsMeasure`，ECMA-376 §17.3.1.33／§22.9.2.15）
+  實際被寫入的型別而定——這個屬性在多數 OOXML 消費端所依循的參考實作（Microsoft Open XML SDK）
+  裡型別是 `Int32Value`，所以拒絕條件是換算後超出 `Int32` 範圍，不只是「不會讓 64 位元 `Int`
+  trap」這種較低的門檻。同一次順手把 `optionalDouble` 本身也補上 `NaN`／`±Infinity` 拒絕（R7
+  review LOW-4）：JSON 本身無法編碼這兩個值，經真實傳輸打不到，但任何程序內呼叫者都碰得到，
+  補上讓 `optionalDouble` 具備跟 `optionalInt` 相同的「never silently truncated or trapped」
+  保證，而不是只讓 `line_spacing` 這一個使用端單獨處理。用同一支 stdio 腳本重跑三個崩潰輸入
+  （`40000000000000000`／`1e300`／`-1e300`），確認皆改為乾淨的 `isError: true` 回應，不再讓
+  行程消失；`format_text({font_size: 9223372036854775807})` 這個**既有、範圍外**的
+  `Int * Int` 溢位當機（#232 之前就存在，走的是 `optionalInt` 回傳值相乘，不是「使用者輸入的
+  Double 轉 Int」這一類）刻意不動，同一支腳本驗證它現在仍會當——確認本次修正沒有意外把不同類的
+  問題也蓋掉、也沒有引入新的假象。順帶修正 `bulk_resolve_comments.comment_ids`（R7 review
+  LOW-3）：元素層級的裸 `.intValue` 判定跟 R6 修 `anchorPresence` 之前一樣不一致，改用
+  `Int(exactly:)`（接受整數值 double），且失敗項目現在帶陣列 `index`，不再只有查無意義的
+  `"comment_id":null`。
+  **M3（回歸：schema 承諾的合法輸入被拒絕）**：`insert_floating_image` 的
+  `horizontal_position`／`vertical_position` schema 宣告 `"type": "string"`（「left, center,
+  right, 或具體偏移像素」），實作卻只用 `optionalInt` 讀——schema 承諾的字串值（如 `"center"`）
+  在 #232 之前會被 `.intValue` 默默當成沒給、退回偏移量 `0`；#232 之後改成嚴格型別，同一個呼叫
+  變成直接報錯拒絕，兩者都不是使用者依照 schema 呼叫時該有的結果。這是 R1 修過的「schema 宣告與
+  實作讀取鍵名不一致」（`reset_level`／`checked`）的姊妹問題：不是鍵名不同，是**型別**不同，
+  R5 review 的 B.2 sweep 只查「schema 宣告 integer/boolean/number → 有沒有嚴格讀取」這個方向，
+  沒有反向查「嚴格讀取的鍵 → schema 宣告的型別是否一致」，所以之前没被抓到（review 用的反向掃描
+  腳本在全檔只找到這兩個型別不一致的欄位）。修法：新增
+  `resolveFloatingImagePosition<A: RawRepresentable>`，JSON 整數（或整數值 double）→ EMU 偏移量
+  （`AnchorPosition.horizontalOffset`／`verticalOffset`）；JSON 字串 → 對齊關鍵字，合法值以
+  ooxml-swift 的 `HorizontalAlignment`／`VerticalAlignment` enum rawValue 為準（`left, center,
+  right, inside, outside` / `top, center, bottom, inside, outside`，寫進
+  `AnchorPosition.horizontalAlignment`／`verticalAlignment`）；其他型別一律 `invalidParameter`
+  並指名參數。offset 與 alignment 互斥（ooxml-swift 的寫入端本來就是 `if let alignment {
+  寫 wp:align } else { 寫 wp:posOffset }` 這種優先序，改動只是讓兩個 Swift 欄位本身也對齊這個
+  互斥語意，不是新規則）。schema 的 `"type"` 改成 `.array([.string("integer"),
+  .string("string")])`——標準 JSON Schema 的「多型別擇一」寫法，本檔第一個這樣宣告的參數，找不到
+  既有慣例可循，直接照 JSON Schema 規範寫。description 一併更正：原本寫「具體偏移**像素**」是錯的
+  ——整數形式從頭到尾都是 **EMU**（English Metric Units，914400 EMU = 1 英吋），跟同一個工具的
+  `width`／`height` 單位一致，只是文件寫錯了單位名稱。補 5 個測試：接受整數偏移、接受五個對齊
+  關鍵字（用 `save_document` 存檔後解壓 `word/document.xml`，直接斷言寫出的是
+  `<wp:align>center</wp:align>` 這類元素而非 `<wp:posOffset>`，反過來也驗證整數路徑寫的是
+  `<wp:posOffset>` 不是 `<wp:align>`）、拒絕不合法關鍵字、拒絕布林／陣列／物件、拒絕小數點偏移
+  （EMU 本身是整數單位）。`relative_to_h`／`relative_to_v`（schema 宣告）與實作讀的
+  `horizontal_relative`（單數、無 `relative_to_` 前綴、且沒有對應的 `vertical_relative`）
+  鍵名不一致——這是另一個既有問題，team lead 指示本輪**不修**，留給另一張 issue。
+  **LOW（4 項，前兩項已在上文各自段落處理，此處索引；後兩項是純註解更正，列在這裡）**：
+  anchorPresence 分類更正（見上）；R6 段落補上「成功變失敗」標示（見上）；
+  `Issue232StrictIntegerBooleanParameterTests.swift` 檔案開頭的類別層級說明曾寫「這些站點
+  未個別修正……是留給後續 issue 的更大工程」，那是 Codex R3 當時（尚未修）的真話，R4／R5／R6
+  陸續修完後這段已經過時，卻一直沒人回頭更正；`Server.swift` 的例外清單註解同樣有兩處過時：
+  一處把 `#201 stub／手寫嚴格讀取器／pinned-message 工具` 各自的數量算少了（分別是 2／5／1 個
+  工具，不是「一個」／「一個」／「一個」），另一處聲稱「條件式讀取」這類還留著「少量刻意保留的
+  例外，各自有名字標注」——這其實是把兩份不同的例外清單搞混了：條件式讀取這條線在 R7 之後已經
+  收斂到 0 個例外，真正有名字的例外清單是給「完全略過 optionalInt/optionalBool」的那幾個工具用
+  的，兩者主題不同。三處都已更正為與目前程式碼一致的敘述。
 - 依賴 ooxml-swift 3.12.0：typed 編輯不再讓未被編輯的段落遺失未建模的 `w:pPr` 子元素，例如 `w:kinsoku`、`w:snapToGrid`（PsychQuant/ooxml-swift#168）；讀取 Word 文件時所有 part 一致解碼，非 UTF-8 宣告依宣告轉碼（PsychQuant/ooxml-swift#171）；依 relationship 解析格式 part 與主 part（PsychQuant/ooxml-swift#173）。
 - `export_script(paragraphs_only: true)` 改呼叫 ooxml-swift 的 `ReverseExtractor.paragraphsOnly`（PsychQuant/ooxml-swift#172），刪除原本逐行照抄自 macdoc CLI 的實作；與 CLI 的一致性從此由共用程式碼保證。`omitted_body_blocks` 的字串維持不變（`table`、`contentControl`、`bookmarkMarker`、`rawBlockElement`）。以真實範本與 macdoc 0.13.0 跑 `ScriptPipelineParityTests`，19 個測試全過。
 

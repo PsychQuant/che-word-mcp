@@ -188,11 +188,25 @@ actor WordMCPServer {
     //
     // Almost every integer/boolean parameter across every tool goes through
     // `optionalInt`/`optionalBool` instead of `Value.intValue`/`Value.boolValue`
-    // directly (the handful of exceptions — a permanent #201 stub, one
-    // pre-existing hand-rolled strict reader, one pinned-message tool — are
-    // named where each is declared, and in
+    // directly. The exceptions (#232 R7, `rev232b` review LOW-2: corrected —
+    // this used to undercount them) are named individually in
     // `Issue232StrictIntegerBooleanParameterTests.swift`'s coverage-sweep
-    // exception lists). `Value.intValue` only matches the `.int` JSON case —
+    // exception lists (`intExceptions`/`boolExceptions`), currently: the
+    // permanent #201 stub (`insert_watermark`/`insert_image_watermark`, 2
+    // tools whose params are never read at all, not just read unsafely);
+    // pre-existing hand-rolled strict readers that predate `optionalInt`/
+    // `optionalBool` but already implement the identical contract
+    // (`allowOrphanImagesFlag`, shared by 3 tools — `checkpoint`/
+    // `finalize_document`/`save_document` — plus `ScriptPipelineTools.swift`'s
+    // own `execute_script.overwrite`/`export_script.paragraphs_only`, 2
+    // more); and one pinned-message tool (`insert_equation.display_mode`,
+    // whose error wording is pinned by a different test and left as-is
+    // rather than reworded to match `optionalBool` verbatim). None of these
+    // are GATED reads left unvalidated on some call path — every one is
+    // either never read (the stub) or already strictly validated by its own
+    // established reader; see the paragraph below for what "gated" means
+    // and why the file has zero of those left, not just few.
+    // `Value.intValue` only matches the `.int` JSON case —
     // a wrong JSON type (string `"3"`, bool, array, object) OR a JSON `null`
     // OR an absent key all fall through to `nil` identically, so callers
     // writing `args["x"]?.intValue ?? default` cannot tell "caller sent the
@@ -208,13 +222,22 @@ actor WordMCPServer {
     // flag is set) still isn't validated on that call, unless the call site
     // was restructured to parse unconditionally (as `set_table_style`'s
     // `border_size`/`cell_row`/`cell_col` were first, and — after the #232
-    // R4–R6 gated-read audits — every other conditionally-read integer/
-    // boolean parameter in this file now is too; see the #232 CHANGELOG
-    // entries for the specific sites and the small number of intentionally-
-    // kept exceptions, named where each is declared). Same shape as
-    // che-pptx-mcp#5 / che-pptx-mcp#10's `optionalInt`/`optionalBool`,
-    // adapted to this file's existing `WordError.invalidParameter(String,
-    // String)` case instead of a new error type.
+    // R4–R7 gated-read audits — every other conditionally-read integer/
+    // boolean/number parameter in this file now is too; see the #232
+    // CHANGELOG entries for the specific sites, each round's round-trip of
+    // "found more via a deeper audit, fixed them" that got the file here).
+    // #232 R7 (`rev232b` review LOW-2, corrected): this comment used to say
+    // there was "a small number of intentionally-kept exceptions, named
+    // where each is declared" for THIS gated-read class specifically — no
+    // such exceptions exist or ever did; that sentence conflated this
+    // paragraph's topic (conditionally-gated reads, now fully closed) with
+    // the DIFFERENT exception list a few paragraphs up (parameters that
+    // skip `optionalInt`/`optionalBool` entirely — the #201 stub and the
+    // hand-rolled pre-existing readers), which is a separate, smaller list
+    // for a separate reason. Same shape as che-pptx-mcp#5 / che-pptx-mcp#10's
+    // `optionalInt`/`optionalBool`, adapted to this file's existing
+    // `WordError.invalidParameter(String, String)` case instead of a new
+    // error type.
     //
     // A JSON integer decodes to `.int`. A whole-valued JSON number written
     // with a decimal point (e.g. `3.0`) ALSO decodes to `.int` on this
@@ -276,17 +299,69 @@ actor WordMCPServer {
     /// input, an even worse failure mode than #232's original "wrong type
     /// silently defaults" — here a *documented, in-range, correctly-typed*
     /// value is thrown away.
+    /// #232 R7 (`rev232b` review LOW-4): the JSON decoder used by this SDK
+    /// cannot itself produce `NaN`/`±Infinity` (JSON's own grammar has no
+    /// literal for either), so this can't be reached over the wire — but it
+    /// COULD be reached by any in-process Swift caller (as the review's own
+    /// `testOptionalDoubleEdgeValues` probe demonstrated), and leaving it
+    /// unchecked here means every call site downstream has to defend against
+    /// it separately, exactly the trap `optionalInt`'s doc comment already
+    /// promises never happens ("never silently truncated or trapped").
+    /// Bringing `optionalDouble` to the same baseline here — reject before
+    /// any call site multiplies/divides it into something that traps —
+    /// means a future `"type": "number"` parameter doesn't inherit this gap
+    /// by default.
     func optionalDouble(_ args: [String: Value], _ key: String) throws -> Double? {
         switch args[key] {
         case nil, .null?:
             return nil
         case .double(let value)?:
+            guard value.isFinite else {
+                throw WordError.invalidParameter(key, "必須是有限數值，不接受 NaN 或 ±Infinity")
+            }
             return value
         case .int(let value)?:
             return Double(value)
         case let other?:
             throw WordError.invalidParameter(key, "必須是數值，不接受\(Self.jsonTypeName(other))")
         }
+    }
+
+    /// #232 R7 (`rev232b` review M2): `set_paragraph_format`'s `line_spacing`
+    /// multiplier gets scaled by 240 and force-cast with `Int(...)` before
+    /// being written into `Spacing.line`. `Int(_: Double)` TRAPS (kills the
+    /// whole server process, taking every open document's unsaved edits with
+    /// it) when the Double doesn't fit `Int`'s range — `optionalDouble`
+    /// alone doesn't prevent this, since a perfectly well-typed, finite
+    /// Double like `40000000000000000` or `1e300` still overflows once
+    /// multiplied by 240. Reproduced via raw JSON over stdio against the
+    /// release binary before this fix (see R7 RED section of the report);
+    /// this closes both the `.int`-decoded path R6 newly opened (JSON
+    /// integers this large decode to `.int`, not `.double` — see the
+    /// `optionalInt` doc comment above) and the pre-existing `.double` path.
+    ///
+    /// The upper bound is tied to the OOXML type actually being written, not
+    /// picked arbitrarily: `w:spacing`'s `w:line` attribute is
+    /// `ST_SignedTwipsMeasure` (ECMA-376 §17.3.1.33 / §22.9.2.15), and the
+    /// reference implementation most OOXML consumers interoperate with —
+    /// Microsoft's Open XML SDK — models this attribute as `Int32Value`.
+    /// A value outside `Int32` range may round-trip through THIS file's
+    /// 64-bit `Spacing.line: Int` without trapping, but is not guaranteed to
+    /// survive being read back by an Int32-typed consumer, so rejecting it
+    /// here is a correctness bound, not just a crash-safety one.
+    static func twipsLine(fromLineSpacingMultiplier lineSpacing: Double) throws -> Int {
+        guard lineSpacing.isFinite, lineSpacing > 0 else {
+            throw WordError.invalidParameter("line_spacing", "必須是大於 0 的有限數值")
+        }
+        let scaled = lineSpacing * 240
+        guard scaled.isFinite, scaled >= Double(Int32.min), scaled <= Double(Int32.max) else {
+            throw WordError.invalidParameter(
+                "line_spacing",
+                "換算後（乘以 240）必須落在 OOXML w:spacing/@w:line（ST_SignedTwipsMeasure，"
+                    + "Open XML SDK 對應型別為 Int32）允許的範圍內"
+            )
+        }
+        return Int(scaled)
     }
 
     private static func jsonTypeName(_ value: Value) -> String {
@@ -3131,13 +3206,27 @@ actor WordMCPServer {
                             "type": .string("string"),
                             "description": .string("文繞方式：square（四邊型）, tight（緊密）, through（穿透）, topAndBottom（上下）, behindText（文字下方）, inFrontOfText（文字上方）")
                         ]),
+                        // #232 R7 (`rev232b` review M3): `"type"` as an
+                        // ARRAY of JSON Schema primitive type names (not a
+                        // single string) is standard JSON Schema for "either
+                        // of these types" — this is the first parameter in
+                        // this file that legitimately accepts two JSON
+                        // types instead of one, so there's no prior
+                        // in-repo convention to match; this follows the
+                        // JSON Schema spec directly. The description used
+                        // to say "像素" (pixels) — wrong; the integer form
+                        // has always been an EMU offset
+                        // (`AnchorPosition.horizontalOffset`/
+                        // `verticalOffset`, English Metric Units, 914400
+                        // per inch), matching `width`/`height` on this same
+                        // tool.
                         "horizontal_position": .object([
-                            "type": .string("string"),
-                            "description": .string("水平位置：left, center, right, 或具體偏移像素")
+                            "type": .array([.string("integer"), .string("string")]),
+                            "description": .string("水平位置：整數為 EMU 偏移量（914400 EMU = 1 英吋），或對齊關鍵字 left/center/right/inside/outside")
                         ]),
                         "vertical_position": .object([
-                            "type": .string("string"),
-                            "description": .string("垂直位置：top, center, bottom, 或具體偏移像素")
+                            "type": .array([.string("integer"), .string("string")]),
+                            "description": .string("垂直位置：整數為 EMU 偏移量（914400 EMU = 1 英吋），或對齊關鍵字 top/center/bottom/inside/outside")
                         ]),
                         "relative_to_h": .object([
                             "type": .string("string"),
@@ -7988,8 +8077,12 @@ actor WordMCPServer {
         // platform) silently fell through to `nil` here and was dropped
         // without error, even though it's a legal, documented value. Fixed
         // by `optionalDouble`, which accepts both `.int` and `.double`.
+        // #232 R7 (`rev232b` review M2): the multiply-then-`Int(...)` used to
+        // happen inline and could trap the whole process on an
+        // out-of-range value; `Self.twipsLine(fromLineSpacingMultiplier:)`
+        // validates finiteness, positivity, and the OOXML-typed range first.
         if let lineSpacing = try optionalDouble(args, "line_spacing") {
-            props.spacing = Spacing(line: Int(lineSpacing * 240)) // 轉換為 1/240 點
+            props.spacing = Spacing(line: try Self.twipsLine(fromLineSpacingMultiplier: lineSpacing)) // 轉換為 1/240 點
         }
         if let spaceBefore = try optionalInt(args, "space_before") {
             if props.spacing == nil { props.spacing = Spacing() }
@@ -10713,9 +10806,27 @@ actor WordMCPServer {
 
         var resolvedCount = 0
         var failed: [String] = []
-        for value in ids {
-            guard let id = value.intValue else {
-                failed.append("{\"comment_id\":null,\"error\":\"invalid_id\"}")
+        // #232 R7 (`rev232b` review LOW-3): `value.intValue` only matches the
+        // `.int` JSON case — the same inconsistency `anchorPresence` had
+        // before R6's `looksLikeIntAnchor` fix, just for a batch tool
+        // instead of an anchor. A whole-valued `.double(3.0)` element (only
+        // reachable in-process, since JSON integers decode to `.int` on this
+        // platform — see the `optionalInt` doc comment above) used to be
+        // rejected as `invalid_id` even though it's numerically a valid
+        // comment id. Matches `Int(exactly:)`, same as `optionalInt`/
+        // `looksLikeIntAnchor`. Also now reports which array position
+        // failed (`index`), not just the element's own value — the old
+        // `"comment_id":null` gave no way to tell which of several
+        // wrong-typed elements a given failure line came from.
+        for (index, value) in ids.enumerated() {
+            let id: Int?
+            switch value {
+            case .int(let v): id = v
+            case .double(let d): id = Int(exactly: d)
+            default: id = nil
+            }
+            guard let id else {
+                failed.append("{\"index\":\(index),\"comment_id\":null,\"error\":\"invalid_id\"}")
                 continue
             }
             guard doc.comments.comments.contains(where: { $0.id == id }) else {
@@ -10772,6 +10883,50 @@ actor WordMCPServer {
 
     // MARK: - 8.2 Floating Images
 
+    /// #232 R7 (`rev232b` review M3): `insert_floating_image`'s
+    /// `horizontal_position`/`vertical_position` schema declares
+    /// `"type": "string"` ("left, center, right, 或具體偏移像素" /
+    /// "top, center, bottom, 或具體偏移像素"), but the handler used to read
+    /// them with `optionalInt` alone — a schema-legal string like `"center"`
+    /// was rejected outright, and on `gh/main` (before #232) it was instead
+    /// silently coerced to the same default as omitting the parameter (`0`).
+    /// Either way, a caller following the schema could never actually get
+    /// alignment-based positioning; only a numeric EMU offset ever worked.
+    ///
+    /// This accepts BOTH shapes for one parameter, matching what the schema
+    /// promises: a JSON integer (or whole-valued double, same tolerance as
+    /// `optionalInt`) is an EMU offset written to `AnchorPosition.
+    /// horizontalOffset`/`verticalOffset`; a string is validated against the
+    /// alignment keywords `A` (`HorizontalAlignment`/`VerticalAlignment`)
+    /// actually accepts and written to `AnchorPosition.horizontalAlignment`/
+    /// `verticalAlignment`. Any other JSON type, or a string that isn't one
+    /// of those keywords, is `invalidParameter` naming `key` — never a
+    /// silent default, matching #232's "one clean strict-typing contract
+    /// per parameter" pattern for every OTHER parameter, extended here to a
+    /// parameter that can legitimately BE two different JSON types.
+    private static func resolveFloatingImagePosition<A: RawRepresentable>(
+        _ args: [String: Value], _ key: String, as alignmentType: A.Type
+    ) throws -> (offset: Int?, alignment: A?) where A.RawValue == String {
+        switch args[key] {
+        case nil, .null?:
+            return (nil, nil)
+        case .int(let value)?:
+            return (value, nil)
+        case .double(let value)?:
+            guard let exact = Int(exactly: value) else {
+                throw WordError.invalidParameter(key, "數值必須是整數 EMU 偏移量，不接受非整數值")
+            }
+            return (exact, nil)
+        case .string(let raw)?:
+            guard let alignment = A(rawValue: raw) else {
+                throw WordError.invalidParameter(key, "字串值必須是合法的對齊關鍵字，不接受 '\(raw)'")
+            }
+            return (nil, alignment)
+        case let other?:
+            throw WordError.invalidParameter(key, "必須是整數（EMU 偏移量）或對齊關鍵字字串，不接受\(Self.jsonTypeName(other))")
+        }
+    }
+
     private func insertFloatingImage(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -10786,8 +10941,16 @@ actor WordMCPServer {
         let paragraphIndex = try optionalInt(args, "paragraph_index") ?? 0
         let widthEmu = try optionalInt(args, "width") ?? 2000000  // ~2 inches default
         let heightEmu = try optionalInt(args, "height") ?? 2000000
-        let horizontalPos = try optionalInt(args, "horizontal_position") ?? 0
-        let verticalPos = try optionalInt(args, "vertical_position") ?? 0
+        // #232 R7 (`rev232b` review M3): schema declares "type": "string"
+        // ("left, center, right, 或具體偏移 EMU" / "top, center, bottom, 或
+        // 具體偏移 EMU") — see `resolveFloatingImagePosition` above for why
+        // this can't be a plain `optionalInt`.
+        let (horizontalOffset, horizontalAlign) = try Self.resolveFloatingImagePosition(
+            args, "horizontal_position", as: HorizontalAlignment.self
+        )
+        let (verticalOffset, verticalAlign) = try Self.resolveFloatingImagePosition(
+            args, "vertical_position", as: VerticalAlignment.self
+        )
         let wrapTypeStr = args["wrap_type"]?.stringValue ?? "square"
         let horizontalRelative = args["horizontal_relative"]?.stringValue ?? "column"
         let allowOverlap = try optionalBool(args, "allow_overlap") ?? true
@@ -10808,8 +10971,24 @@ actor WordMCPServer {
 
         // 建立浮動圖片定位
         var anchorPosition = AnchorPosition()
-        anchorPosition.horizontalOffset = horizontalPos
-        anchorPosition.verticalOffset = verticalPos
+        // #232 R7 (`rev232b` review M3): alignment and numeric offset are
+        // mutually exclusive in the OOXML output (ooxml-swift's writer
+        // checks `horizontalAlignment`/`verticalAlignment` first and only
+        // falls back to `horizontalOffset`/`verticalOffset` when nil — see
+        // `AnchorPosition`'s XML serialization), so only ONE of the pair is
+        // set here per axis, not both. `?? 0` preserves the pre-#232
+        // default (an omitted position parameter anchors at offset 0) for
+        // the case where neither an offset nor an alignment was given.
+        if let horizontalAlign {
+            anchorPosition.horizontalAlignment = horizontalAlign
+        } else {
+            anchorPosition.horizontalOffset = horizontalOffset ?? 0
+        }
+        if let verticalAlign {
+            anchorPosition.verticalAlignment = verticalAlign
+        } else {
+            anchorPosition.verticalOffset = verticalOffset ?? 0
+        }
         anchorPosition.allowOverlap = allowOverlap
 
         // 設定水平參照點
