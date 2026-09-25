@@ -342,23 +342,50 @@ actor WordMCPServer {
     ///
     /// The upper bound is tied to the OOXML type actually being written, not
     /// picked arbitrarily: `w:spacing`'s `w:line` attribute is
-    /// `ST_SignedTwipsMeasure` (ECMA-376 §17.3.1.33 / §22.9.2.15), and the
-    /// reference implementation most OOXML consumers interoperate with —
-    /// Microsoft's Open XML SDK — models this attribute as `Int32Value`.
-    /// A value outside `Int32` range may round-trip through THIS file's
-    /// 64-bit `Spacing.line: Int` without trapping, but is not guaranteed to
-    /// survive being read back by an Int32-typed consumer, so rejecting it
-    /// here is a correctness bound, not just a crash-safety one.
+    /// `ST_SignedTwipsMeasure` (ECMA-376 §17.3.1.33 / §22.9.2.15).
+    ///
+    /// R8 (`rev232b` independent review, "R7 LOW-1"; corrects this doc
+    /// comment's ORIGINAL R7 wording, which is now known to be wrong): the
+    /// claim used to be "Microsoft's Open XML SDK models this attribute as
+    /// `Int32Value`" — checked while researching #234 and found inaccurate.
+    /// `SpacingBetweenLines.Line`'s actual .NET property type in the Open
+    /// XML SDK is `StringValue` (`ST_SignedTwipsMeasure` is an XSD union —
+    /// a signed integer OR an `ST_UniversalMeasure` string like `"5cm"` —
+    /// and the SDK models the whole union as a string, not a fixed-width
+    /// integer). The bound below is unchanged and still correct, but the
+    /// REASON is: per Microsoft's own interoperability notes (MS-OI29500,
+    /// Part 1 §17.18.81, "ST_SignedTwipsMeasure"), *"The standard states
+    /// that ST_SignedTwipsMeasure allows unbounded integers. Word only
+    /// reads 32-bit integers for ST_SignedTwipsMeasure."* — i.e. this is
+    /// Word's own documented READING behavior for this exact attribute
+    /// (not a .NET SDK modeling detail), and is the same source basis used
+    /// for the sibling `w:before`/`w:after` attributes, which use the
+    /// unsigned `ST_TwipsMeasure`.
     static func twipsLine(fromLineSpacingMultiplier lineSpacing: Double) throws -> Int {
         guard lineSpacing.isFinite, lineSpacing > 0 else {
             throw WordError.invalidParameter("line_spacing", "必須是大於 0 的有限數值")
         }
-        let scaled = lineSpacing * 240
+        // R8 (`rev232b` review of #232 R7, LOW item "line_spacing 截斷還是
+        // 四捨五入"): truncating `Int(scaled)` (round-toward-zero) instead
+        // of rounding can write a `w:line` value one twip lower than the
+        // mathematically correct one, whenever `lineSpacing`'s own
+        // floating-point representation error pushes the product just
+        // below the intended integer. The originally-cited example
+        // (`1.15`) turned out NOT to reproduce this — `1.15 * 240` lands on
+        // EXACTLY `276.0` in IEEE 754 double arithmetic, verified directly
+        // — but `2.05` does: `2.05 * 240 == 491.99999999999994`, truncating
+        // to `491` instead of the correct `492` (confirmed end to end via
+        // the real binary: `set_paragraph_format` → `save_document` →
+        // `word/document.xml`'s `w:line` read back as `491` before this
+        // fix). `.rounded()` (round-half-away-from-zero) is applied BEFORE
+        // the range check so the bound still reflects the value actually
+        // written.
+        let scaled = (lineSpacing * 240).rounded()
         guard scaled.isFinite, scaled >= Double(Int32.min), scaled <= Double(Int32.max) else {
             throw WordError.invalidParameter(
                 "line_spacing",
-                "換算後（乘以 240）必須落在 OOXML w:spacing/@w:line（ST_SignedTwipsMeasure，"
-                    + "Open XML SDK 對應型別為 Int32）允許的範圍內"
+                "換算後（乘以 240）必須落在 OOXML w:spacing/@w:line（ST_SignedTwipsMeasure）"
+                    + "Word 自己記載只讀取 32 位元整數（MS-OI29500 §17.18.81）的範圍內"
             )
         }
         return Int(scaled)
@@ -3400,27 +3427,39 @@ actor WordMCPServer {
                             "type": .string("string"),
                             "description": .string("文繞方式：square（四邊型）, tight（緊密）, through（穿透）, topAndBottom（上下）, behindText（文字下方）, inFrontOfText（文字上方）")
                         ]),
-                        // #232 R7 (`rev232b` review M3): `"type"` as an
-                        // ARRAY of JSON Schema primitive type names (not a
-                        // single string) is standard JSON Schema for "either
-                        // of these types" — this is the first parameter in
-                        // this file that legitimately accepts two JSON
-                        // types instead of one, so there's no prior
-                        // in-repo convention to match; this follows the
-                        // JSON Schema spec directly. The description used
-                        // to say "像素" (pixels) — wrong; the integer form
-                        // has always been an EMU offset
-                        // (`AnchorPosition.horizontalOffset`/
-                        // `verticalOffset`, English Metric Units, 914400
-                        // per inch), matching `width`/`height` on this same
-                        // tool.
+                        // R8 (independent review, M-R7-1): R7 declared
+                        // `"type"` as an ARRAY of primitive type names —
+                        // valid JSON Schema, but not valid OpenAPI 3.0
+                        // (which Gemini's `FunctionDeclaration.parameters`
+                        // is restricted to; a `type` array there could get
+                        // this tool, or the whole tools/list response,
+                        // rejected by that class of client). Split into an
+                        // integer offset parameter and a separate string
+                        // alignment parameter per axis instead — every MCP
+                        // client trivially supports two plain-typed
+                        // properties, and this matches #232's "one
+                        // parameter, one JSON type" design. The integer
+                        // form is an EMU offset (`AnchorPosition.
+                        // horizontalOffset`/`verticalOffset`, English
+                        // Metric Units, 914400 per inch), matching
+                        // `width`/`height` on this same tool. Providing
+                        // both an offset and an alignment for the same
+                        // axis is rejected as conflicting.
                         "horizontal_position": .object([
-                            "type": .array([.string("integer"), .string("string")]),
-                            "description": .string("水平位置：整數為 EMU 偏移量（914400 EMU = 1 英吋），或對齊關鍵字 left/center/right/inside/outside")
+                            "type": .string("integer"),
+                            "description": .string("水平位置的 EMU 偏移量（914400 EMU = 1 英吋）；與 horizontal_align 互斥，擇一提供")
+                        ]),
+                        "horizontal_align": .object([
+                            "type": .string("string"),
+                            "description": .string("水平對齊關鍵字：left/center/right/inside/outside；與 horizontal_position 互斥，擇一提供")
                         ]),
                         "vertical_position": .object([
-                            "type": .array([.string("integer"), .string("string")]),
-                            "description": .string("垂直位置：整數為 EMU 偏移量（914400 EMU = 1 英吋），或對齊關鍵字 top/center/bottom/inside/outside")
+                            "type": .string("integer"),
+                            "description": .string("垂直位置的 EMU 偏移量（914400 EMU = 1 英吋）；與 vertical_align 互斥，擇一提供")
+                        ]),
+                        "vertical_align": .object([
+                            "type": .string("string"),
+                            "description": .string("垂直對齊關鍵字：top/center/bottom/inside/outside；與 vertical_position 互斥，擇一提供")
                         ]),
                         "relative_to_h": .object([
                             "type": .string("string"),
@@ -11216,50 +11255,32 @@ actor WordMCPServer {
 
     // MARK: - 8.2 Floating Images
 
-    /// #232 R7 (`rev232b` review M3): `insert_floating_image`'s
-    /// `horizontal_position`/`vertical_position` schema declares
-    /// `"type": "string"` ("left, center, right, 或具體偏移像素" /
-    /// "top, center, bottom, 或具體偏移像素"), but the handler used to read
-    /// them with `optionalInt` alone — a schema-legal string like `"center"`
-    /// was rejected outright, and on `gh/main` (before #232) it was instead
-    /// silently coerced to the same default as omitting the parameter (`0`).
-    /// Either way, a caller following the schema could never actually get
-    /// alignment-based positioning; only a numeric EMU offset ever worked.
+    /// R8 (independent review of #232 R7, M-R7-1): R7 gave
+    /// `horizontal_position`/`vertical_position` a schema `"type"` that was
+    /// a JSON-Schema-legal ARRAY of primitive type names (`["integer",
+    /// "string"]`) so one parameter could accept either an EMU offset or an
+    /// alignment keyword. That is valid JSON Schema, but NOT valid OpenAPI
+    /// 3.0 — and Gemini's `FunctionDeclaration.parameters` field is
+    /// explicitly documented as accepting only "a select subset of an
+    /// OpenAPI 3.0 schema object," where `type` must be a single string.
+    /// A client that converts this tool's `inputSchema` into that shape
+    /// could reject the WHOLE tool list over one malformed property — R7's
+    /// own `tools/list` was (and, before this fix, remained) the only
+    /// place in this 246-tool file where `"type"` was ever an array.
     ///
-    /// This accepts BOTH shapes for one parameter, matching what the schema
-    /// promises: a JSON integer (or whole-valued double, same tolerance as
-    /// `optionalInt`) is an EMU offset written to `AnchorPosition.
-    /// horizontalOffset`/`verticalOffset`; a string is validated against the
-    /// alignment keywords `A` (`HorizontalAlignment`/`VerticalAlignment`)
-    /// actually accepts and written to `AnchorPosition.horizontalAlignment`/
-    /// `verticalAlignment`. Any other JSON type, or a string that isn't one
-    /// of those keywords, is `invalidParameter` naming `key` — never a
-    /// silent default, matching #232's "one clean strict-typing contract
-    /// per parameter" pattern for every OTHER parameter, extended here to a
-    /// parameter that can legitimately BE two different JSON types.
-    private static func resolveFloatingImagePosition<A: RawRepresentable>(
-        _ args: [String: Value], _ key: String, as alignmentType: A.Type
-    ) throws -> (offset: Int?, alignment: A?) where A.RawValue == String {
-        switch args[key] {
-        case nil, .null?:
-            return (nil, nil)
-        case .int(let value)?:
-            return (value, nil)
-        case .double(let value)?:
-            guard let exact = Int(exactly: value) else {
-                throw WordError.invalidParameter(key, "數值必須是整數 EMU 偏移量，不接受非整數值")
-            }
-            return (exact, nil)
-        case .string(let raw)?:
-            guard let alignment = A(rawValue: raw) else {
-                throw WordError.invalidParameter(key, "字串值必須是合法的對齊關鍵字，不接受 '\(raw)'")
-            }
-            return (nil, alignment)
-        case let other?:
-            throw WordError.invalidParameter(key, "必須是整數（EMU 偏移量）或對齊關鍵字字串，不接受\(Self.jsonTypeName(other))")
-        }
-    }
-
+    /// Fixed by splitting each axis into two single-typed parameters
+    /// instead — `horizontal_position` (integer, EMU offset) +
+    /// `horizontal_align` (string, alignment keyword), and the vertical
+    /// equivalents — rather than switching to `anyOf` (the schema's other
+    /// escape hatch): `anyOf` support is itself inconsistent across Gemini
+    /// API versions (some generations of the API reportedly don't support
+    /// it in this field), while splitting into two plain-typed properties
+    /// is trivially supported by every MCP client, no matter how minimal
+    /// its JSON Schema handling. This also matches #232's own "one
+    /// parameter, one JSON type" design more directly than either union
+    /// shape did. Providing BOTH the offset and the alignment for the same
+    /// axis is rejected as conflicting (`ToolRefusal`), not silently
+    /// resolved by picking one.
     private func insertFloatingImage(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -11274,16 +11295,35 @@ actor WordMCPServer {
         let paragraphIndex = try optionalInt(args, "paragraph_index") ?? 0
         let widthEmu = try optionalInt(args, "width") ?? 2000000  // ~2 inches default
         let heightEmu = try optionalInt(args, "height") ?? 2000000
-        // #232 R7 (`rev232b` review M3): schema declares "type": "string"
-        // ("left, center, right, 或具體偏移 EMU" / "top, center, bottom, 或
-        // 具體偏移 EMU") — see `resolveFloatingImagePosition` above for why
-        // this can't be a plain `optionalInt`.
-        let (horizontalOffset, horizontalAlign) = try Self.resolveFloatingImagePosition(
-            args, "horizontal_position", as: HorizontalAlignment.self
-        )
-        let (verticalOffset, verticalAlign) = try Self.resolveFloatingImagePosition(
-            args, "vertical_position", as: VerticalAlignment.self
-        )
+        // R8: see this function's doc comment above for why
+        // horizontal_position/vertical_position are plain integer EMU
+        // offsets again, paired with separate string alignment parameters.
+        let horizontalOffset = try optionalInt(args, "horizontal_position")
+        var horizontalAlign: HorizontalAlignment? = nil
+        if let raw = args["horizontal_align"]?.stringValue {
+            guard let a = HorizontalAlignment(rawValue: raw) else {
+                throw WordError.invalidParameter(
+                    "horizontal_align", "必須是合法的對齊關鍵字 left/center/right/inside/outside，不接受 '\(raw)'"
+                )
+            }
+            horizontalAlign = a
+        }
+        if horizontalOffset != nil, horizontalAlign != nil {
+            throw ToolRefusal("insert_floating_image: horizontal_position 與 horizontal_align 不可同時提供，請擇一")
+        }
+        let verticalOffset = try optionalInt(args, "vertical_position")
+        var verticalAlign: VerticalAlignment? = nil
+        if let raw = args["vertical_align"]?.stringValue {
+            guard let a = VerticalAlignment(rawValue: raw) else {
+                throw WordError.invalidParameter(
+                    "vertical_align", "必須是合法的對齊關鍵字 top/center/bottom/inside/outside，不接受 '\(raw)'"
+                )
+            }
+            verticalAlign = a
+        }
+        if verticalOffset != nil, verticalAlign != nil {
+            throw ToolRefusal("insert_floating_image: vertical_position 與 vertical_align 不可同時提供，請擇一")
+        }
         let wrapTypeStr = args["wrap_type"]?.stringValue ?? "square"
         let horizontalRelative = args["horizontal_relative"]?.stringValue ?? "column"
         let allowOverlap = try optionalBool(args, "allow_overlap") ?? true
