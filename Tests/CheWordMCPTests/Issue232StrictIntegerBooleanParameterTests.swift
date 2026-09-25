@@ -999,6 +999,33 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         )
         XCTAssertTrue(resultText(searchResult).contains("Found 1 match"), resultText(searchResult))
     }
+
+    /// `set_latent_styles` has no per-item failure-reporting mechanism (unlike
+    /// the two batch tools above) — a malformed item used to be silently
+    /// `continue`-skipped and the call as a whole still reported success. The
+    /// R5 fix means a malformed item now makes the WHOLE call fail, not just
+    /// that one entry: this is a real behavior-mode change (documented in
+    /// CHANGELOG.md), not merely a message-precision improvement like the
+    /// other R5 fixes. This test pins that specific consequence: one valid
+    /// item plus one item with a mistyped `ui_priority` must reject the
+    /// entire call, not silently apply only the valid one.
+    func testSetLatentStylesRejectsTheWholeCallWhenAnyItemHasAMistypedField() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r5-latent-styles-atomic"
+        try await openFixtureDocument(server, id: id)
+        let result = await server.invokeToolForTesting(
+            name: "set_latent_styles",
+            arguments: [
+                "doc_id": .string(id),
+                "latent_styles": .array([
+                    .object(["name": .string("Heading1"), "ui_priority": .int(1)]),
+                    .object(["ui_priority": .string("bad")]),   // missing name AND mistyped ui_priority
+                ]),
+            ]
+        )
+        XCTAssertEqual(result.isError, true, resultText(result))
+        XCTAssertTrue(resultText(result).contains("ui_priority"), resultText(result))
+    }
 }
 
 /// A file that exists on disk with arbitrary bytes — `insert_image_from_path`

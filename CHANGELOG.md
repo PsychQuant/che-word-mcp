@@ -68,7 +68,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   優先序的錨點同時提供，`index` 就完全不會被求值；`insert_equation`／`insert_caption` 的對應參數
   原本就已經在同一組錨點優先序邏輯之前解析，未受影響）、`set_latent_styles` 陣列項目的
   `ui_priority`／`semi_hidden`／`unhide_when_used`／`q_format`（原本被同一項目缺少必填 `name`
-  短路掉）、`replace_text_batch` 陣列項目的 `regex`／`match_case`（原本被同一項目缺少必填
+  短路掉——**行為變更程度比其餘 4 處更大**：`set_latent_styles` 沒有 `replace_text_batch`／
+  `search_text_batch` 那種 per-item 失敗回報機制，過去一個沒填 `name` 的項目會被整個跳過、呼叫
+  整體仍回報成功；現在同一個項目若「連同缺 `name`」還帶了型別不符的 `ui_priority` 等欄位，會讓
+  整次 `set_latent_styles` 呼叫失敗，不再是「跳過壞項目、其餘照常寫入」——這是「一律驗證」政策
+  下預期且正確的結果，但與其餘 4 處單純只是「錯誤訊息更精確」不同，值得特別記錄）、
+  `replace_text_batch` 陣列項目的 `regex`／`match_case`（原本被同一項目缺少必填
   `find`／`replace` 短路掉）、`search_text_batch` 陣列項目的 `case_sensitive`（原本被同一項目
   缺少必填 `query` 短路掉）。其餘被掃描工具標記出來的位置（`into_table_cell` 內部的巢狀繫結、
   `formatText` 對已驗證過參數的重複讀取、`updateStyle` 的兩個 gate、`searchTextBatch` 頂層的
