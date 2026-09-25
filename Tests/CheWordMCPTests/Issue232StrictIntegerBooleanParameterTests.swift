@@ -797,7 +797,10 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
                 XCTFail("expected invalidParameter for \(bad)")
             } catch WordError.invalidParameter(let key, let reason) {
                 XCTAssertEqual(key, "line_spacing")
-                XCTAssertTrue(reason.contains("Int32"), reason)
+                // R8: message text corrected — no longer cites "Open XML
+                // SDK 型別為 Int32Value" (found inaccurate; see `twipsLine`'s
+                // doc comment), cites MS-OI29500 §17.18.81 instead.
+                XCTAssertTrue(reason.contains("32 位元整數"), reason)
             } catch {
                 XCTFail("expected WordError.invalidParameter, got \(error)")
             }
@@ -815,6 +818,26 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         let maxOk = Double(Int32.max) / 240
         XCTAssertNoThrow(try WordMCPServer.twipsLine(fromLineSpacingMultiplier: maxOk))
         XCTAssertThrowsError(try WordMCPServer.twipsLine(fromLineSpacingMultiplier: maxOk * 1.01))
+    }
+
+    /// R8 (`rev232b` review of #232 R7, LOW "1.15 寫出 275 而不是 276"):
+    /// `Int(scaled)` truncated (round-toward-zero) instead of rounding.
+    func testTwipsLineRoundsToNearestInsteadOfTruncating() throws {
+        // `1.15 * 240` happens to land on EXACTLY `276.0` in IEEE 754 double
+        // arithmetic (verified directly: `1.15 * 240 == 276.0`), so it does
+        // NOT actually exercise the truncation-vs-rounding difference —
+        // `2.05` does: `2.05 * 240 == 491.99999999999994` (representation
+        // error from `2.05` itself not being exactly representable), so
+        // truncating gives `491` while the mathematically correct value is
+        // `492`. Verified end to end (real binary, `set_paragraph_format`
+        // → `save_document` → read back `word/document.xml`'s `w:line`)
+        // before this fix wrote `491`; confirmed via `1e5x1e5`-style sweep
+        // of two-decimal multipliers that many other values share this
+        // shape (`4.10`, `8.20`, `8.45`, …) — `2.05` is simply the first.
+        XCTAssertEqual(try WordMCPServer.twipsLine(fromLineSpacingMultiplier: 2.05), 492)
+        XCTAssertEqual(try WordMCPServer.twipsLine(fromLineSpacingMultiplier: 4.10), 984)
+        XCTAssertEqual(try WordMCPServer.twipsLine(fromLineSpacingMultiplier: 2.0), 480)
+        XCTAssertEqual(try WordMCPServer.twipsLine(fromLineSpacingMultiplier: 1.5), 360)
     }
 
     /// #232 R7 (review LOW-4): `optionalDouble` itself must reject NaN and
@@ -907,9 +930,15 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         XCTAssertTrue(text.contains("\"index\":2"), text)   // string, position 2
     }
 
-    // MARK: - R7 (`rev232b` review M3): `insert_floating_image` position
-    // parameters accept BOTH an EMU offset (integer) and an alignment
-    // keyword (string), matching what the schema has always promised.
+    // MARK: - R7 (`rev232b` review M3) + R8 (`rev232b` review M-R7-1):
+    // `insert_floating_image` position is expressed as EITHER an EMU
+    // offset OR an alignment keyword per axis. R7 modeled this as one
+    // parameter accepting two JSON types (`horizontal_position`/
+    // `vertical_position`, `"type": ["integer","string"]`); R8 split each
+    // axis into an integer offset parameter and a separate string
+    // alignment parameter (`horizontal_align`/`vertical_align`) instead,
+    // since a `"type"` array is not portable OpenAPI 3.0 (see the R8 doc
+    // comment on `insertFloatingImage` itself for the full reasoning).
 
     /// Extracts `word/document.xml` from a saved `.docx` and returns it as a
     /// string, for asserting on the literal `<wp:posOffset>`/`<wp:align>`
@@ -937,21 +966,37 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         return await server.invokeToolForTesting(name: "insert_floating_image", arguments: args)
     }
 
-    /// Schema-legal string values that were rejected outright before this
-    /// fix (`optionalInt` alone can't parse "center") now resolve to
-    /// `<wp:align>`, not `<wp:posOffset>`.
+    /// R8: alignment keywords now go through the separate `horizontal_align`/
+    /// `vertical_align` string parameters, not the integer `horizontal_position`/
+    /// `vertical_position`. Still resolves to `<wp:align>`, not `<wp:posOffset>`.
     func testInsertFloatingImageAcceptsAlignmentKeywordsAndWritesWpAlign() async throws {
         let server = await WordMCPServer()
         let id = "s232r7-floatimg-align"
         _ = await server.invokeToolForTesting(name: "create_document", arguments: ["doc_id": .string(id)])
         let result = await insertFloatingImageFixture(server, id: id, extraArgs: [
-            "horizontal_position": .string("center"), "vertical_position": .string("bottom"),
+            "horizontal_align": .string("center"), "vertical_align": .string("bottom"),
         ])
         XCTAssertNotEqual(result.isError, true, resultText(result))
         let xml = try await savedDocumentXML(server, docId: id)
         XCTAssertTrue(xml.contains("<wp:align>center</wp:align>"), xml)
         XCTAssertTrue(xml.contains("<wp:align>bottom</wp:align>"), xml)
         XCTAssertFalse(xml.contains("<wp:posOffset>"), xml)
+    }
+
+    /// R8: providing BOTH the offset and the alignment for the same axis is
+    /// rejected as conflicting, not silently resolved by picking one.
+    func testInsertFloatingImageRejectsBothOffsetAndAlignForSameAxis() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r8-floatimg-conflict"
+        _ = await server.invokeToolForTesting(name: "create_document", arguments: ["doc_id": .string(id)])
+        let horizontal = await insertFloatingImageFixture(server, id: id, extraArgs: [
+            "horizontal_position": .int(457_200), "horizontal_align": .string("center"),
+        ])
+        XCTAssertEqual(horizontal.isError, true, resultText(horizontal))
+        let vertical = await insertFloatingImageFixture(server, id: id, extraArgs: [
+            "vertical_position": .int(457_200), "vertical_align": .string("bottom"),
+        ])
+        XCTAssertEqual(vertical.isError, true, resultText(vertical))
     }
 
     /// A JSON integer is still an EMU offset, written to `<wp:posOffset>`,
@@ -971,11 +1016,25 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         XCTAssertFalse(xml.contains("<wp:align>"), xml)
     }
 
+    /// R8: unknown alignment keywords are rejected via `horizontal_align`
+    /// now (the parameter that's actually meant to carry them).
     func testInsertFloatingImageRejectsUnknownAlignmentKeyword() async throws {
         let server = await WordMCPServer()
         let id = "s232r7-floatimg-badkw"
         _ = await server.invokeToolForTesting(name: "create_document", arguments: ["doc_id": .string(id)])
-        let result = await insertFloatingImageFixture(server, id: id, extraArgs: ["horizontal_position": .string("middle")])
+        let result = await insertFloatingImageFixture(server, id: id, extraArgs: ["horizontal_align": .string("middle")])
+        XCTAssertEqual(result.isError, true, resultText(result))
+        XCTAssertTrue(resultText(result).contains("horizontal_align"), resultText(result))
+    }
+
+    /// R8: `horizontal_position` is a plain `optionalInt` again — a string
+    /// there is now an ordinary #232-style type error, not an "unknown
+    /// alignment keyword" (that's `horizontal_align`'s job).
+    func testInsertFloatingImageRejectsStringOnTheIntegerPositionParameter() async throws {
+        let server = await WordMCPServer()
+        let id = "s232r8-floatimg-wrongparam"
+        _ = await server.invokeToolForTesting(name: "create_document", arguments: ["doc_id": .string(id)])
+        let result = await insertFloatingImageFixture(server, id: id, extraArgs: ["horizontal_position": .string("center")])
         XCTAssertEqual(result.isError, true, resultText(result))
         XCTAssertTrue(resultText(result).contains("horizontal_position"), resultText(result))
     }

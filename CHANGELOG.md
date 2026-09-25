@@ -171,9 +171,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session 與未存檔修改一起消失。新增 `Self.twipsLine(fromLineSpacingMultiplier:)`：先拒絕非
   有限值與非正值，再拒絕換算（乘以 240）後超出範圍的值才進行轉換；上限**不是拍腦袋決定**，
   依 OOXML `w:spacing/@w:line`（`ST_SignedTwipsMeasure`，ECMA-376 §17.3.1.33／§22.9.2.15）
-  實際被寫入的型別而定——這個屬性在多數 OOXML 消費端所依循的參考實作（Microsoft Open XML SDK）
-  裡型別是 `Int32Value`，所以拒絕條件是換算後超出 `Int32` 範圍，不只是「不會讓 64 位元 `Int`
-  trap」這種較低的門檻。同一次順手把 `optionalDouble` 本身也補上 `NaN`／`±Infinity` 拒絕（R7
+  實際被寫入的型別而定——~~這個屬性在多數 OOXML 消費端所依循的參考實作（Microsoft Open XML SDK）
+  裡型別是 `Int32Value`~~**（R8 更正：這個引用不準確，見下方 R8 段落；正確依據是 Word 自己
+  只讀取 32 位元整數，MS-OI29500 §17.18.81）**，所以拒絕條件是換算後超出 `Int32` 範圍，不只是
+  「不會讓 64 位元 `Int` trap」這種較低的門檻。同一次順手把 `optionalDouble` 本身也補上
+  `NaN`／`±Infinity` 拒絕（R7
   review LOW-4）：JSON 本身無法編碼這兩個值，經真實傳輸打不到，但任何程序內呼叫者都碰得到，
   補上讓 `optionalDouble` 具備跟 `optionalInt` 相同的「never silently truncated or trapped」
   保證，而不是只讓 `line_spacing` 這一個使用端單獨處理。用同一支 stdio 腳本重跑三個崩潰輸入
@@ -222,6 +224,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   例外，各自有名字標注」——這其實是把兩份不同的例外清單搞混了：條件式讀取這條線在 R7 之後已經
   收斂到 0 個例外，真正有名字的例外清單是給「完全略過 optionalInt/optionalBool」的那幾個工具用
   的，兩者主題不同。三處都已更正為與目前程式碼一致的敘述。
+  **R8（獨立審查者複查 R7 與 #234 後判定 R7 這一節 PASS，但列出 1 個 MEDIUM 建議＋4 個 LOW，
+  team lead 要求發版前處理，逐項處理如下）**：
+  1. **schema 可攜性（MEDIUM）**：R7 的 `horizontal_position`／`vertical_position`
+     `"type": ["integer","string"]` 是合法 JSON Schema，但**不是**合法 OpenAPI 3.0——
+     Gemini 的 `FunctionDeclaration.parameters` 文件明確記載只接受「a select subset of an
+     OpenAPI 3.0 schema object」，其中 `type` 必須是單一字串；一個型別陣列可能讓這個工具、
+     甚至整份 `tools/list`，被這類 client 拒絕（查證：`ai.google.dev/api/generate-content`）。
+     全檔 246 個工具裡這兩個屬性是唯一的型別陣列。改用**拆成兩個單一型別參數**（審查者的首選
+     建議，也更符合 #232「一個參數一個型別」的精神，而非改用 `anyOf`——`anyOf` 在不同 Gemini
+     API 版本的支援度本身不一致，拆參數則是任何 client 都能懂的最低公分母）：
+     `horizontal_position`（整數 EMU 偏移量）＋`horizontal_align`（字串對齊關鍵字），
+     `vertical_position`／`vertical_align` 同理；兩者同時提供視為衝突，回報錯誤而非默默擇一。
+     這是**破壞性變更**：R7 才剛引入、尚未發版的 `horizontal_position: "center"` 字串用法
+     現在要改成 `horizontal_align: "center"`。
+  2. **`w:line` 的 Int32 引用（LOW）已更正**：見上方 M2 段落的刪除線更正。正確依據來自
+     Microsoft 自己的互通性附註 MS-OI29500 Part 1 §17.18.81（"ST_SignedTwipsMeasure"）：
+     *"The standard states that ST_SignedTwipsMeasure allows unbounded integers. Word only
+     reads 32-bit integers for ST_SignedTwipsMeasure."*——這是 Word 自己記載的讀取行為，不是
+     .NET SDK 怎麼建模這個屬性的細節；範圍數字本身不變（`w:before`／`w:after` 用同樣依據，只是
+     它們的型別是不需要負值的 `ST_TwipsMeasure`）。
+  3. **截斷而非四捨五入（LOW）已修正**：`Int(scaled)`（無條件捨去）改成
+     `(lineSpacing * 240).rounded()` 後再轉 `Int`（四捨五入），範圍檢查搬到 rounding 之後，
+     確保檢查的是實際會寫入的值。**更正查證過程中的一個插曲**：原始回報的例子「`1.15` 寫出
+     275 而不是 276」實測不成立——`1.15 * 240` 在 IEEE 754 double 運算下剛好落在精確的
+     `276.0`（已直接用 Swift 驗證），不會踩到截斷問題；改用 `2.05` 才是真正會重現的例子
+     （`2.05 * 240 == 491.99999999999994`，截斷得到 `491`，正確值是 `492`——已用真實 binary
+     端到端驗證：`set_paragraph_format` → `save_document` → 讀回 `word/document.xml` 的
+     `w:line` 確認修正前寫出 `491`，修正後寫出 `492`）。修正方向不變（改四捨五入本來就是正確
+     政策，不只是為了修 `1.15` 這一個例子），只是原始例子換成一個真的重現得了的值。
+  4. **`insert_floating_image` 呼叫處的過時註解已更正**：隨第 1 點的改寫一併處理（`Server.swift`
+     內原本寫著「schema declares "type": "string"」的註解已不再準確，隨拆分參數的程式碼一起
+     重寫）。
+  新增／重寫 4 個測試（1 個新增的「offset 與 align 衝突」測試、原本測「`horizontal_position`
+  接受字串」的測試改測「`horizontal_align` 接受字串」、另補「`horizontal_position` 傳字串是
+  純型別錯誤」的測試、`twipsLine` 的四捨五入單元測試）。
 - 依賴 ooxml-swift 3.12.0：typed 編輯不再讓未被編輯的段落遺失未建模的 `w:pPr` 子元素，例如 `w:kinsoku`、`w:snapToGrid`（PsychQuant/ooxml-swift#168）；讀取 Word 文件時所有 part 一致解碼，非 UTF-8 宣告依宣告轉碼（PsychQuant/ooxml-swift#171）；依 relationship 解析格式 part 與主 part（PsychQuant/ooxml-swift#173）。
 - `export_script(paragraphs_only: true)` 改呼叫 ooxml-swift 的 `ReverseExtractor.paragraphsOnly`（PsychQuant/ooxml-swift#172），刪除原本逐行照抄自 macdoc CLI 的實作；與 CLI 的一致性從此由共用程式碼保證。`omitted_body_blocks` 的字串維持不變（`table`、`contentControl`、`bookmarkMarker`、`rawBlockElement`）。以真實範本與 macdoc 0.13.0 跑 `ScriptPipelineParityTests`，19 個測試全過。
 
