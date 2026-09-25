@@ -365,7 +365,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
      `minLevel...maxLevel` 直接 trap。Word 內建剛好 9 層標題（Heading 1–9），範圍訂
      `1...9` 並明確拒絕 `min_level > max_level`（不是靜默交換）。
   全部先用真實 debug binary 經 stdio／fuzzer 重現 RED，修正後重跑同一支 fuzzer 確認
-  GREEN（`probes=1272 crashes=0 timeouts=0`，完整輸出見報告）；新增 9 個回歸測試。**這支
+  GREEN（`probes=1272 crashes=0 timeouts=0`，完整輸出見報告）；新增 8 個回歸測試（`ilvl`、
+  `paragraph_index`、`insert_table`、`insert_nested_table`、`position`、`min/max_level`、
+  `set_page_margins.left/right`、`resolveImageDimensions` 寬圖測試各一個；已 commit 的
+  commit message 誤植為「9 個」，這裡更正，commit message 本身依既有慣例不回頭改寫）。**這支
   fuzzer 本身也帶進版控**：`scripts/fuzz-extreme-params.py`（用法見腳本開頭 docstring），
   之後任何一輪要新增／修改 integer／number 參數時都應該重跑一次，不再需要重新手工推導。
   同一次順手修正另一個獨立發現的問題：`set_page_margins` 的 `left`／`right` 過去與
@@ -374,6 +377,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   （無號），只有 `Top`（`w:top`）是 `Int32Value`（有號）——`left`／`right` 傳負值不會讓行程
   當掉，但會寫出不符合 `w:left`／`w:right` 自己型別的 XML。`left`／`right` 改用 `0...31680`，
   `top`／`bottom` 維持原本的 `-31680...31680`。
+  另外補上獨立審查報告點名的測試缺口：`resolveImageDimensions`（#234 續，`c1aabdd`）只給
+  `height` 時計算 `width` 的 `safeInt` 守門，先前唯一涵蓋這個分支的測試用的是一張長寬比 0.001
+  的直立圖片（`Int.max × 0.001 ≈ 9.2e15` 遠低於 `safeInt` 自己的門檻，實際是被下游
+  `imagePixelDimensionRange` 擋下，不是被 `safeInt` 擋下），所以把 `safeInt` 本身拿掉，這個
+  既有測試仍然通過——沒有測試真正守住這個分支。新增一張長寬比 1000（寬圖，`1000×1` px）的測試
+  fixture，只給 `height: Int.max`：`Double(Int.max) × 1000.0` 遠遠超出 `Int` 可表示範圍，
+  只有 `safeInt` 自己的檢查能擋下。Mutation testing：把這個分支還原成修正前的
+  `Int(Double(h) * native.aspectRatio)`（拿掉 `safeInt`），單獨執行這個測試會讓整個測試行程
+  以 `SIGTRAP`（訊號碼 5）當掉（`Fatal error: Double value cannot be converted to Int...`），
+  證實新測試真的守住這個分支；還原修正後乾淨通過。
 
 - **`set_header_row` 只保留一個註冊，`tools/list` 不再有兩份互相矛盾的 schema**（#230）。原本
   `Server.swift` 註冊了兩次：`switch` on tool name 的 dispatch 只執行第一個符合的 `case`（已用最小
