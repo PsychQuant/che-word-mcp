@@ -91,6 +91,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   違反這兩個工具自己文件寫明的「non-atomic per-item：個別失敗會回報，但不會回滾先前成功」contract。
   現在型別檢查移回各自 item 的 `do`／`catch` 內，型別不符只讓該筆項目失敗，回報方式與同一個迴圈裡
   其他既有的驗證失敗（如缺 `find`／`replace` 欄位）一致。
+- 依賴 ooxml-swift 3.12.0：typed 編輯不再讓未被編輯的段落遺失未建模的 `w:pPr` 子元素，例如 `w:kinsoku`、`w:snapToGrid`（PsychQuant/ooxml-swift#168）；讀取 Word 文件時所有 part 一致解碼，非 UTF-8 宣告依宣告轉碼（PsychQuant/ooxml-swift#171）；依 relationship 解析格式 part 與主 part（PsychQuant/ooxml-swift#173）。
+- `export_script(paragraphs_only: true)` 改呼叫 ooxml-swift 的 `ReverseExtractor.paragraphsOnly`（PsychQuant/ooxml-swift#172），刪除原本逐行照抄自 macdoc CLI 的實作；與 CLI 的一致性從此由共用程式碼保證。`omitted_body_blocks` 的字串維持不變（`table`、`contentControl`、`bookmarkMarker`、`rawBlockElement`）。以真實範本與 macdoc 0.13.0 跑 `ScriptPipelineParityTests`，19 個測試全過。
 
 ### Fixed
 

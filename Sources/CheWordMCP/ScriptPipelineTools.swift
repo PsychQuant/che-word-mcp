@@ -8,9 +8,10 @@
 // layer reimplements ZERO transcode logic; behavior parity with the CLI is
 // structural, and the parity tests in ScriptPipelineParityTests only guard it.
 //
-// One exception (#227): the paragraphs-only reverse loop lives in the macdoc
-// CLI rather than in ooxml-swift, so `paragraphsOnlyReverse` is a port. For
-// that path the gated cross-check is the guard, not a backstop.
+// The paragraphs-only reverse (#227) used to be a line-for-line port of the
+// macdoc CLI's loop. Since ooxml-swift 3.12.0 it is
+// `ReverseExtractor.paragraphsOnly` (PsychQuant/ooxml-swift#172), shared with
+// the CLI, so this path is structural parity too.
 //
 // Registration (Tool entries + handleToolCall cases) lives in Server.swift,
 // following the MarkdownExportTools satellite-file precedent.
@@ -186,61 +187,25 @@ func scriptPipelineExportParagraphsOnly(
         throw ParagraphsOnlySidecarConflict(
             sidecarPath: SidecarStore.oplogURL(for: sourceURL).path)
     }
-    let reversed = try paragraphsOnlyReverse(from: sourceURL)
-    let source = try ScriptExporter.exportSwift(log: reversed.log, slots: slots)
-    try source.write(to: URL(fileURLWithPath: outputPath),
-                     atomically: true, encoding: .utf8)
+    let reversed = try ReverseExtractor.paragraphsOnly(url: sourceURL, slots: slots)
+    try reversed.script.write(to: URL(fileURLWithPath: outputPath),
+                              atomically: true, encoding: .utf8)
     return ParagraphsOnlyExportSummary(
-        omittedBodyBlocks: reversed.omittedBodyBlocks,
+        omittedBodyBlocks: reversed.omittedBlocks.map { omittedBlockLabel($0.reason) },
         slotCount: slots.count)
 }
 
-/// Builds the paragraphs-only authoring log from the docx typed views.
-///
-/// PORT, not a shared call: this is a line-for-line copy of
-/// `MacDoc.Word.Reverse.reverseEngineer(from:)` (macdoc v0.10.0,
-/// Sources/MacDocCLI/MacDoc+Word.swift). Unlike the full-fidelity path, that
-/// logic lives in the CLI, not in ooxml-swift, so the two faces cannot share
-/// it structurally until it is hoisted into the library. Until then the
-/// gated cross-check in ScriptPipelineParityTests is what guards
-/// byte-identical scripts — change both copies together.
-///
-/// The one deliberate difference is the skipped-block label: the CLI prints
-/// `String(describing:).prefix(30)` to stderr; here the case name alone is
-/// returned. It is informational only and never reaches the script.
-func paragraphsOnlyReverse(from url: URL) throws
-    -> (log: OperationLog, omittedBodyBlocks: [String])
-{
-    let document = try DocxReader.read(from: url, wireTreeBackedViews: true)
-    var log = OperationLog()
-    var omitted: [String] = []
-
-    var paragraphIndex = 0
-    for child in document.body.children {
-        switch child {
-        case .paragraph(let paragraph):
-            paragraphIndex += 1
-            var paraId: String?
-            if let raw = paragraph.elementID?.raw,
-               raw.hasPrefix("w14:paraId=") {
-                paraId = String(raw.dropFirst("w14:paraId=".count))
-            }
-            // Paragraphs without a w14:paraId get a synthesized sequential
-            // id (p<N>, N counts every top-level paragraph from 1) so the
-            // script uses DSL Paragraph blocks and slots can target them.
-            log.append(.appendParagraph(in: nil, paragraph: ParagraphPayload(
-                text: paragraph.text,
-                styleId: paragraph.properties.style,
-                paraId: paraId ?? "p\(paragraphIndex)")), source: .swift)
-        case .table:
-            omitted.append("table")
-        default:
-            let described = String(describing: child)
-            omitted.append(described.split(separator: "(", maxSplits: 1)
-                .first.map(String.init) ?? described)
-        }
+/// The `omitted_body_blocks` label the MCP response has carried since #227:
+/// the `BodyChild` case name. Kept byte-for-byte so existing clients see no
+/// change now that the reason comes from a closed enum. No `default`: a new
+/// upstream case must be given a label here at compile time.
+func omittedBlockLabel(_ reason: ReverseExtractor.OmittedBodyBlockReason) -> String {
+    switch reason {
+    case .table: return "table"
+    case .contentControl: return "contentControl"
+    case .bookmarkMarker: return "bookmarkMarker"
+    case .rawBlockElement: return "rawBlockElement"
     }
-    return (log, omitted)
 }
 
 
