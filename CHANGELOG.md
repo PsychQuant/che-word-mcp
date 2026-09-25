@@ -227,6 +227,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **8 處把使用者輸入的整數乘上單位換算常數時沒有範圍檢查，傳入極大值會讓整個 server 行程當掉
+  （trap）**（#234，#232 R7 M2 明確列為範圍外、發現於「既有問題」的同一類 bug，本次補上）：
+  `font_size`（`format_text` ×2、`format_text` as_revision 分支 ×1、`create_style` ×1、
+  `update_style` ×1，共 4 個獨立呼叫點，換算為半點）與 `space_before`／`space_after`
+  （`set_paragraph_format` ×2、`create_style` ×2，共 4 個獨立呼叫點，換算為 twips）。重現：
+  `format_text({font_size: 9223372036854775807})` 讓 server 以 SIGTRAP 結束，已用真實 debug
+  binary 經 stdio 送 raw JSON 驗證（exit code -5）——行程一死，所有已開啟文件的 session 與未存檔
+  修改一起消失。新增共用 helper `Self.validatedScaledMeasurement(_:key:range:multiplier:)`：
+  換算前先驗證原始值（點數）落在範圍內，超出範圍回 `WordError.invalidParameter` 並指名參數，
+  8 處呼叫點共用同一份邏輯，不各自重寫。範圍依 **Microsoft Word 自己文件記載的 UI 限制**訂定
+  （不是 #232 R7 的「Open XML SDK 型別」推論——研究本 issue 時查證 `SpacingBetweenLines.Before`
+  與 `HpsMeasureType.Val` 實際型別是 `StringValue`（XSD union，支援 `ST_UniversalMeasure`
+  字串），不是固定寬度整數，R7 對 `w:line` 的 `Int32Value` 說法很可能不準確，見下方已知限制）：
+  `font_size` 1–1638pt（Word 的字型大小輸入上限，換算 2–3276 半點）；`space_before`／
+  `space_after` 0–1584pt（Word 的段落間距輸入上限，下限 0——Word 會把負值退回 0，不接受負的
+  段落間距）。
+  **全檔盤點**（不只 issue 列出的 8 處）另外找到 2 個同類但形狀不同的站點：
+  `set_page_margins` 的 `top`／`right`／`bottom`／`left`——這 4 個參數本身沒有乘法（直接以
+  twips 存入），但會在**另一個函式**（`estimateCharsPerPage`，被 `estimate_paragraph_for_page`
+  呼叫）裡被拿去做**減法**（`pageSize.width - pageMargins.left - pageMargins.right -
+  pageMargins.gutter`），一個極端的 margin 仍然能讓那個減法下溢／上溢而當機（實測
+  `top: Int.min` 會讓行程當掉；`top: Int.max` 剛好不會，因為單一極端值不足以讓這個特定方向的
+  減法溢位，但這不代表安全，只是這一次的算式方向剛好沒踩到——已在輸入端直接擋掉，不只是修
+  `estimateCharsPerPage` 本身，之後任何新讀取 `pageMargins` 的程式碼都繼承這個保護）；範圍
+  ±31680 twips（±22 英吋，Word 邊界設定對話框記載的上限；查證時沒有找到 Word 文件明確記載的
+  負值下限，保守以相同大小的負值做下限）。以及 `search_text_with_formatting` 的
+  `context_chars`——本檔案唯一一個完全沒有上限的 `context_chars` 家族參數（其餘 3 個同名參數
+  `list_comments`／`find_unresolved_comments`／`find_inline_math_gaps` 早就有上限），
+  用在未加防護的 `position - contextChars` 與 `position + matchedText.count + contextChars`
+  運算，`Int.max`／`Int.min` 皆可讓行程當掉；比照另外 3 個同名參數的既有作法夾在 `[0, 4096]`
+  （這個參數沒有對應的 OOXML 輸出型別，純粹是內部顯示用的截斷長度，所以用既有的「靜默夾住」
+  政策而非「拒絕」，不另立第四套規則）。
+  新增 15 個回歸測試（8 個 issue 列出的站點端到端各一 + 共用 helper 的單元測試 + 2 個全檔盤點
+  發現的站點）；崩潰輸入本身無法在 XCTest 裡驗證（trap 會連測試行程一起殺掉），改用真實 debug
+  binary 經 stdio 對每個崩潰輸入分別驗證 RED（修正前當機）與 GREEN（修正後乾淨拒絕，不當機）。
+  **已知限制**：#232 R7 的 CHANGELOG／`twipsLine` doc comment 對 `w:line`（`w:spacing` 的另一
+  屬性）宣稱「Open XML SDK 對應型別為 Int32」，本次查證 Microsoft Learn 文件時發現這個型別
+  推論本身站不住腳（`w:before`／`w:sz` 的對應屬性實際型別是 `StringValue`，`w:line` 極可能
+  同理）；R7 選的 Int32 範圍本身仍然安全（沒有錯，只是引用的依據不夠精確），這裡誠實記錄，
+  但依協調者指示本輪不去改寫已經 commit 的 R7 內容，留給之後單獨處理。
+
 - **`set_header_row` 只保留一個註冊，`tools/list` 不再有兩份互相矛盾的 schema**（#230）。原本
   `Server.swift` 註冊了兩次：`switch` on tool name 的 dispatch 只執行第一個符合的 `case`（已用最小
   重現腳本驗證），所以第二份 schema（`row_count`，標記前 N 列）發布給 client 卻從未真的執行——實際
