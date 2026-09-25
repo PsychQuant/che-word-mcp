@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.4.0] - 2026-09-25
+
+> 含 BREAKING 的輸入驗證收緊：型別錯的值過去被默默忽略，現在回報錯誤；型別正確的呼叫行為不變。依本專案先例（3.16.0 的「BREAKING (input validation only)」），bump minor。
+
 ### Changed
 
 - **BREAKING：整數、布林、number 參數改為嚴格 JSON 型別**（#232，比照 che-pptx-mcp #5／#10）。過去型別不符的值會被當成沒給，套用預設值後照樣回報成功；例如 `set_header_row` 傳 `"row_count": "3"`（字串）會默默退回 `row_index=0`。現在的規則：
