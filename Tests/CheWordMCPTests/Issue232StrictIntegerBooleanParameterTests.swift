@@ -287,6 +287,31 @@ final class Issue232StrictIntegerBooleanParameterTests: XCTestCase {
         }
     }
 
+    // MARK: - (A.3) anchorPresence int predicates (review LOW-1)
+    //
+    // #232 R6 (review LOW-1): `WordMCPServer.anchorPresence`'s three int-typed
+    // anchor predicates (`index`, `paragraph_index`, `after_table_index`) used
+    // to read `$0.intValue != nil` directly — only matching `.int` — which was
+    // inconsistent with `optionalInt`'s `Int(exactly:)` rule (a whole-valued
+    // `.double` like `3.0` counts as present everywhere else in this file).
+    // Fixed via the private `looksLikeIntAnchor(_:)` helper, which isn't
+    // directly reachable from this test target (it's `private`, and this is a
+    // separate module even with `@testable import`) — but `anchorPresence`
+    // itself is internal and already exercised directly by
+    // `AnchorDXConsistencyTests.swift`, so calling its closures is the way to
+    // observe `looksLikeIntAnchor`'s behavior without loosening its access
+    // level just for a test.
+    func testAnchorPresenceIndexPredicatesAcceptWholeValuedDouble() {
+        for key in ["index", "paragraph_index", "after_table_index"] {
+            let predicate = WordMCPServer.anchorPresence[key]
+            XCTAssertNotNil(predicate, "anchorPresence missing entry for \(key)")
+            XCTAssertTrue(predicate?(.double(3.0)) ?? false, "\(key): whole-valued .double(3.0) should count as present")
+            XCTAssertTrue(predicate?(.int(3)) ?? false, "\(key): .int(3) should count as present")
+            XCTAssertFalse(predicate?(.double(3.5)) ?? true, "\(key): fractional .double(3.5) must NOT count as present")
+            XCTAssertFalse(predicate?(.string("3")) ?? true, "\(key): .string(\"3\") must NOT count as present")
+        }
+    }
+
     // MARK: - (B) schema-driven source sweep
 
     private static var sourcesDir: URL {
