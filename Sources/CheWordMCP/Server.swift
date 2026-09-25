@@ -110,6 +110,19 @@ actor WordMCPServer {
 
     // MARK: - anchor-dx-consistency (#71): conflict-detection helper
 
+    /// #232 R6 (review LOW-1): matches `optionalInt`'s acceptance rule — a
+    /// whole-valued JSON double (`3.0`) counts as present, same as `.int`.
+    /// Raw `.intValue` only matched `.int` and would treat a whole-valued
+    /// double anchor as absent, which is inconsistent with how every other
+    /// int-typed parameter in this file is read.
+    private static func looksLikeIntAnchor(_ value: Value) -> Bool {
+        switch value {
+        case .int: return true
+        case .double(let d): return Int(exactly: d) != nil
+        default: return false
+        }
+    }
+
     /// Per-anchor presence predicate. Each entry knows its expected JSON-Value type
     /// so JSON `null` and wrong-type values do NOT count as present (matches the
     /// existing dispatcher pattern where `args["after_text"]?.stringValue` returning
@@ -119,9 +132,9 @@ actor WordMCPServer {
         "after_image_id":    { $0.stringValue != nil },
         "after_text":        { $0.stringValue != nil },
         "before_text":       { $0.stringValue != nil },
-        "index":             { $0.intValue    != nil },
-        "paragraph_index":   { $0.intValue    != nil },
-        "after_table_index": { $0.intValue    != nil },
+        "index":             { looksLikeIntAnchor($0) },
+        "paragraph_index":   { looksLikeIntAnchor($0) },
+        "after_table_index": { looksLikeIntAnchor($0) },
     ]
 
     /// #80 — single source of truth for each #61-target tool's accepted anchor names.
@@ -194,15 +207,24 @@ actor WordMCPServer {
     // call doesn't take (e.g. an option that only matters when a sibling
     // flag is set) still isn't validated on that call, unless the call site
     // was restructured to parse unconditionally (as `set_table_style`'s
-    // `border_size`/`cell_row`/`cell_col` now are; see #232 CHANGELOG entry
-    // for the ones that were and weren't audited for this). Same shape as
+    // `border_size`/`cell_row`/`cell_col` were first, and — after the #232
+    // R4–R6 gated-read audits — every other conditionally-read integer/
+    // boolean parameter in this file now is too; see the #232 CHANGELOG
+    // entries for the specific sites and the small number of intentionally-
+    // kept exceptions, named where each is declared). Same shape as
     // che-pptx-mcp#5 / che-pptx-mcp#10's `optionalInt`/`optionalBool`,
     // adapted to this file's existing `WordError.invalidParameter(String,
     // String)` case instead of a new error type.
     //
-    // A JSON integer decodes to `.int` outright; a whole-valued JSON double
-    // (e.g. `3.0`, which the MCP SDK's `Value` decoder produces for any JSON
-    // number carrying a decimal point) is accepted via `Int(exactly:)` —
+    // A JSON integer decodes to `.int`. A whole-valued JSON number written
+    // with a decimal point (e.g. `3.0`) ALSO decodes to `.int` on this
+    // platform, not `.double` — the SDK's `Value.init(from:)` tries `Int`
+    // before `Double` (`try? container.decode(Int.self)` first), and
+    // Foundation's `JSONDecoder` accepts a whole-valued literal for an
+    // `Int` container. The `.double` branch below exists for genuinely
+    // fractional values (`3.5`) and as a defensive fallback in case a
+    // future SDK version or platform decodes a whole-valued literal as
+    // `.double` instead; `Int(exactly:)` accepts both origins identically.
     // `0.5`, `NaN`, `±Infinity`, and magnitudes outside `Int` range all fail
     // that conversion and are rejected, never silently truncated or trapped.
 
@@ -237,6 +259,33 @@ actor WordMCPServer {
             return value
         case let other?:
             throw WordError.invalidParameter(key, "必須是布林值，不接受\(Self.jsonTypeName(other))")
+        }
+    }
+
+    /// #232 R6 — the `number`-typed-schema counterpart to `optionalInt`.
+    /// The double under `key`, or nil when it is absent or JSON null.
+    /// Throws `WordError.invalidParameter` when `key` is present with a
+    /// non-numeric JSON type. Accepts BOTH `.int` and `.double` — on this
+    /// platform a JSON number literal decodes to `.int` whenever it happens
+    /// to be whole-valued (see the `optionalInt` comment above), so a
+    /// `"type": "number"` schema parameter that a caller legitimately fills
+    /// with a whole number (`2`, not `2.0`) must not be rejected just
+    /// because it didn't arrive as `.double`. This is the fix for the
+    /// `line_spacing`-class bug: reading such a site via `.doubleValue`
+    /// (which only matches `.double`) silently drops every whole-valued
+    /// input, an even worse failure mode than #232's original "wrong type
+    /// silently defaults" — here a *documented, in-range, correctly-typed*
+    /// value is thrown away.
+    func optionalDouble(_ args: [String: Value], _ key: String) throws -> Double? {
+        switch args[key] {
+        case nil, .null?:
+            return nil
+        case .double(let value)?:
+            return value
+        case .int(let value)?:
+            return Double(value)
+        case let other?:
+            throw WordError.invalidParameter(key, "必須是數值，不接受\(Self.jsonTypeName(other))")
         }
     }
 
@@ -7200,9 +7249,13 @@ actor WordMCPServer {
         // and, since the baseline is an open-time snapshot, cannot launder it.
         // Path-string comparison was bypassed by case/symlink variants
         // (R2 security S2/S3, logic N3) — so the rule is by intent, not by path.
+        // #232 R6 (review H2b): parsed unconditionally, before the
+        // explicitTarget gate — a mistyped allow_orphan_images supplied
+        // WITHOUT an explicit path used to be silently ignored (never read
+        // at all), since only the explicit-path branch consulted it.
+        let allow = try Self.allowOrphanImagesFlag(args)
         let explicitTarget = args["path"]?.stringValue.map { !$0.isEmpty } ?? false
         if explicitTarget {
-            let allow = try Self.allowOrphanImagesFlag(args)
             if !allow, let refusal = imageConsistencySaveRefusal(doc, docId: docId) {
                 throw ToolRefusal(refusal)
             }
@@ -7461,18 +7514,22 @@ actor WordMCPServer {
     private func getParagraphs(args: [String: Value]) async throws -> String {
         let (doc, _) = try await resolveDocument(args: args)
 
-        let paragraphs = doc.getParagraphs()
-        if paragraphs.isEmpty {
-            return "No paragraphs in document"
-        }
-
         // Spec word-mcp-markdown-export — Requirement: Truncation policy via
         // summarize parameter. #178: this cut every paragraph at 50 characters
         // and appended "..." UNCONDITIONALLY, so a paragraph reading "Hi" was
         // printed as "Hi..." — the reader could not tell a short paragraph from
         // a truncated one. Wrong in both directions at once: it truncated
         // without being asked, and claimed elision that had not happened.
+        // #232 R6 (review H2a): parsed before the empty-document early
+        // return, not after — same fix as R1's list_comments; a mistyped
+        // summarize on a document with no paragraphs used to succeed
+        // silently instead of erroring.
         let summarize = try optionalBool(args, "summarize") ?? false
+
+        let paragraphs = doc.getParagraphs()
+        if paragraphs.isEmpty {
+            return "No paragraphs in document"
+        }
 
         var result = "Paragraphs:\n"
         for (index, para) in paragraphs.enumerated() {
@@ -7926,7 +7983,12 @@ actor WordMCPServer {
         if let alignment = args["alignment"]?.stringValue {
             props.alignment = Alignment(rawValue: alignment)
         }
-        if let lineSpacing = args["line_spacing"]?.doubleValue {
+        // #232 R6: `.doubleValue` only matches the `.double` JSON case — a
+        // whole-valued `line_spacing` (JSON `2`, decoded as `.int` on this
+        // platform) silently fell through to `nil` here and was dropped
+        // without error, even though it's a legal, documented value. Fixed
+        // by `optionalDouble`, which accepts both `.int` and `.double`.
+        if let lineSpacing = try optionalDouble(args, "line_spacing") {
             props.spacing = Spacing(line: Int(lineSpacing * 240)) // 轉換為 1/240 點
         }
         if let spaceBefore = try optionalInt(args, "space_before") {
@@ -8120,20 +8182,22 @@ actor WordMCPServer {
     private func getTables(args: [String: Value]) async throws -> String {
         let (doc, _) = try await resolveDocument(args: args)
 
-        let tables = doc.getTables()
-        if tables.isEmpty {
-            return "No tables in document"
-        }
-
         // Spec word-mcp-markdown-export — Requirement: Truncation policy via
         // summarize parameter. Default (summarize omitted/false) SHALL return
         // complete content with no upper bound. #177: this tool previously
         // truncated unconditionally (first-row column count in the header,
         // 3 rows, 3 columns, 15 characters per cell) and disclosed only the
         // row truncation, so its own header contradicted its own body.
+        // #232 R6 (review H2a): parsed before the empty-document early
+        // return, not after — same fix as R1's list_comments.
         let summarize = try optionalBool(args, "summarize") ?? false
         let summarizedRowCap = 3
         let summarizedColCap = 3
+
+        let tables = doc.getTables()
+        if tables.isEmpty {
+            return "No tables in document"
+        }
 
         var result = "Tables in document:\n"
         for (index, table) in tables.enumerated() {
@@ -8509,6 +8573,19 @@ actor WordMCPServer {
             if let color = args["color"]?.stringValue { runProps?.color = color }
         }
 
+        // #232 R6 (review LOW-2): parsed unconditionally, before
+        // `doc.updateStyle()` is even called — these three used to be read
+        // only AFTER a successful update, inside the `firstIndex(where:)`
+        // gate below. If `doc.updateStyle()` throws first for an unrelated
+        // reason (e.g. the style id doesn't exist), a mistyped
+        // q_format/hidden/semi_hidden on that same call was never reported:
+        // the caller saw "style not found" and, after fixing the id alone,
+        // would only discover the (also-present) type error on a second
+        // call instead of both at once.
+        let qFormatArg = try optionalBool(args, "q_format")
+        let hiddenArg = try optionalBool(args, "hidden")
+        let semiHiddenArg = try optionalBool(args, "semi_hidden")
+
         let updates = StyleUpdate(
             name: args["name"]?.stringValue,
             paragraphProperties: paraProps,
@@ -8522,9 +8599,9 @@ actor WordMCPServer {
             if let basedOn = args["based_on"]?.stringValue { doc.styles[idx].basedOn = basedOn }
             if let nextId = args["next_style_id"]?.stringValue { doc.styles[idx].nextStyle = nextId }
             if let linked = args["linked_style_id"]?.stringValue { doc.styles[idx].linkedStyleId = linked }
-            if let qFormat = try optionalBool(args, "q_format") { doc.styles[idx].isQuickStyle = qFormat }
-            if let hidden = try optionalBool(args, "hidden") { doc.styles[idx].hidden = hidden }
-            if let semiHidden = try optionalBool(args, "semi_hidden") { doc.styles[idx].semiHidden = semiHidden }
+            if let qFormat = qFormatArg { doc.styles[idx].isQuickStyle = qFormat }
+            if let hidden = hiddenArg { doc.styles[idx].hidden = hidden }
+            if let semiHidden = semiHiddenArg { doc.styles[idx].semiHidden = semiHidden }
             doc.markPartDirty("word/styles.xml")
         }
 
@@ -11971,15 +12048,17 @@ actor WordMCPServer {
     private func listFootnotes(args: [String: Value]) async throws -> String {
         let (doc, _) = try await resolveDocument(args: args)
 
+        // #178 — same shape as get_paragraphs: unconditional 50-char cut plus
+        // an unconditional "..." that claimed an elision which may not have
+        // happened.
+        // #232 R6 (review H2a): parsed before the empty-document early
+        // return, not after — same fix as R1's list_comments.
+        let summarize = try optionalBool(args, "summarize") ?? false
+
         let footnotes = doc.getFootnotes()
         if footnotes.isEmpty {
             return "No footnotes in document"
         }
-
-        // #178 — same shape as get_paragraphs: unconditional 50-char cut plus
-        // an unconditional "..." that claimed an elision which may not have
-        // happened.
-        let summarize = try optionalBool(args, "summarize") ?? false
 
         var output = "Footnotes in document (\(footnotes.count)):\n"
         for footnote in footnotes {
@@ -11992,13 +12071,15 @@ actor WordMCPServer {
     private func listEndnotes(args: [String: Value]) async throws -> String {
         let (doc, _) = try await resolveDocument(args: args)
 
+        // #178 — same shape as get_paragraphs / list_footnotes.
+        // #232 R6 (review H2a): parsed before the empty-document early
+        // return, not after — same fix as R1's list_comments.
+        let summarize = try optionalBool(args, "summarize") ?? false
+
         let endnotes = doc.getEndnotes()
         if endnotes.isEmpty {
             return "No endnotes in document"
         }
-
-        // #178 — same shape as get_paragraphs / list_footnotes.
-        let summarize = try optionalBool(args, "summarize") ?? false
 
         var output = "Endnotes in document (\(endnotes.count)):\n"
         for endnote in endnotes {
@@ -12505,15 +12586,17 @@ actor WordMCPServer {
             }
         }
 
+        // #178 — this one already gated its ellipsis on length, so it never
+        // claimed an elision that had not happened. What it violated is the
+        // other half of the SHALL: a 60-character ceiling nobody asked for.
+        // #232 R6 (review H2a): parsed before the empty-results early
+        // return, not after — same fix as R1's list_comments.
+        let summarize = try optionalBool(args, "summarize") ?? false
+
         if results.isEmpty {
             let rangeInfo = paragraphEnd != nil ? " in paragraphs \(paragraphStart)-\(endIndex)" : ""
             return "No \(formatType) text found\(rangeInfo)"
         }
-
-        // #178 — this one already gated its ellipsis on length, so it never
-        // claimed an elision that had not happened. What it violated is the
-        // other half of the SHALL: a 60-character ceiling nobody asked for.
-        let summarize = try optionalBool(args, "summarize") ?? false
 
         var output = "Found \(results.count) \(formatType) text segment(s):\n"
         for result in results {
@@ -14223,6 +14306,19 @@ actor WordMCPServer {
         let includeChapterNumber = try optionalBool(args, "include_chapter_number") ?? false
         let position = args["position"]?.stringValue ?? "below"
 
+        // #232 R6 (review LOW-2): the two int-typed anchors are parsed here,
+        // BEFORE `detectPresentAnchors`/the conflict/zero-anchor checks below
+        // — not after. `detectPresentAnchors` treats a wrong-typed anchor
+        // value as simply "not present" (by design: it can't throw, since it
+        // also has to tolerate anchors the caller didn't intend to use at
+        // all). So a call with only a mistyped `paragraph_index` (e.g. a
+        // string) used to be preempted by "at least one anchor required" —
+        // a confusing error when the caller DID supply an anchor, just with
+        // the wrong JSON type. Parsing these unconditionally first lets the
+        // real type error surface instead.
+        let paragraphIndexArg = try optionalInt(args, "paragraph_index")
+        let afterTableIndexArg = try optionalInt(args, "after_table_index")
+
         // anchor-dx-consistency (#71): unified conflict + zero-anchor detection.
         // Caption-specific anchor set: paragraph_index / after_image_id /
         // after_table_index / after_text / before_text (no `index` or `into_table_cell`).
@@ -14236,9 +14332,7 @@ actor WordMCPServer {
             throw ToolRefusal("insert_caption: at least one anchor required (paragraph_index / after_image_id / after_table_index / after_text / before_text). Specify exactly one.")
         }
 
-        let paragraphIndexArg = try optionalInt(args, "paragraph_index")
         let afterImageIdArg = args["after_image_id"]?.stringValue
-        let afterTableIndexArg = try optionalInt(args, "after_table_index")
         let afterTextArg = args["after_text"]?.stringValue
         let beforeTextArg = args["before_text"]?.stringValue
         let textInstance = try optionalInt(args, "text_instance") ?? 1
@@ -16301,13 +16395,18 @@ actor WordMCPServer {
 
         var levels: [Level] = []
         for item in levelsArr {
-            guard let obj = item.objectValue,
-                  let ilvl = try optionalInt(obj, "ilvl"),
+            // #232 R6 (review H1): `start` parsed BEFORE the required-field
+            // guard, not after — an item missing `num_format`/`lvl_text`
+            // used to `continue` first, so a mistyped `start` on that same
+            // item was never validated. Same class as set_latent_styles.
+            guard let obj = item.objectValue else { continue }
+            let startArg = try optionalInt(obj, "start")
+            guard let ilvl = try optionalInt(obj, "ilvl"),
                   let fmtStr = obj["num_format"]?.stringValue,
                   let lvlText = obj["lvl_text"]?.stringValue
             else { continue }
             let fmt = NumberFormat(rawValue: fmtStr) ?? .decimal
-            let start = try optionalInt(obj, "start") ?? 1
+            let start = startArg ?? 1
             levels.append(Level(ilvl: ilvl, start: start, numFmt: fmt, lvlText: lvlText, indent: 720 * (ilvl + 1)))
         }
         do {
