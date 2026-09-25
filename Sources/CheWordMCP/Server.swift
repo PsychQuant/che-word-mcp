@@ -506,6 +506,58 @@ actor WordMCPServer {
     /// `twipsLine` set out to use for `line_spacing`.
     static let imagePixelDimensionRange: ClosedRange<Int> = 1...2_863_311_529
 
+    /// R8 (independent fuzzer, `rev232b` H-234-3): `insert_table`/
+    /// `insert_nested_table`'s `rows`/`cols` reach `Table(rowCount:
+    /// columnCount:)` (ooxml-swift `Table.init`) completely unguarded,
+    /// which does `(0..<rowCount).map { ... }`. `rows: -1` (or `cols: -1`)
+    /// traps immediately (`Range requires lowerBound <= upperBound`);
+    /// `cols: Int.max` traps trying to allocate on the order of 1.8×10^19
+    /// bytes; `rows: 2_147_483_648` (2^31) does not trap outright but grows
+    /// resident memory at roughly 2.6 GB/sec (measured directly by the
+    /// reviewer: 5.3 GB at 2s, 13 GB at 5s, 26 GB at 10s) — the same "one
+    /// parameter takes the whole process down" failure, just reached by
+    /// exhausting host memory instead of tripping a Swift trap.
+    ///
+    /// Column upper bound (`tableColumnCountRange`): Word's own documented
+    /// limit is 63 columns per table (Microsoft's own developer-forum
+    /// answer on "table column limit and how this is calculated" states
+    /// this explicitly; corroborated by multiple independent sources).
+    ///
+    /// Row upper bound (`tableRowCountRange`): Word does NOT document one.
+    /// Microsoft's own official "Operating parameter limitations and
+    /// specifications in Word" page (`support.microsoft.com`/`learn.
+    /// microsoft.com`) lists limits for bookmarks, styles, lists, comments,
+    /// fields, moves, range permissions, and paper size — but has NO entry
+    /// for table rows at all; independent sources agree rows are
+    /// "essentially unlimited," bounded only by available memory. Absent a
+    /// citable Word-documented number, this ceiling is instead an explicit,
+    /// honestly-labeled memory-safety bound (NOT a Word specification):
+    /// 65,536 rows × 63 columns (the worst case this range permits) was
+    /// timed against the real binary during this issue's own verification
+    /// and completes in well under a second with no unusual memory growth
+    /// — many orders of magnitude beyond any table a human would construct
+    /// by hand, while keeping every call's cost bounded regardless of the
+    /// paired column count.
+    static let tableColumnCountRange: ClosedRange<Int> = 1...63
+    static let tableRowCountRange: ClosedRange<Int> = 1...65536
+
+    /// R8 (`rev232b` review of #234, "上限值的依據" §3): the negative lower
+    /// bound above is correct for `top`/`bottom` but NOT for `left`/
+    /// `right` — verified via Microsoft Learn: `PageMargin.Top` (`w:top`)
+    /// is `DocumentFormat.OpenXml.Int32Value` (signed, negative allowed),
+    /// while `PageMargin.Left`/`Right` (`w:left`/`w:right`) are both
+    /// `DocumentFormat.OpenXml.UInt32Value` (unsigned — negative is not a
+    /// representable value at all, not merely a policy choice). Before this
+    /// fix, `left`/`right` shared `pageMarginTwipsRange` with `top`/
+    /// `bottom` and so accepted negative values that would serialize into
+    /// XML violating `w:left`/`w:right`'s own OOXML type — `swift test`
+    /// wouldn't catch this (the file writes successfully; the malformed
+    /// VALUE is what's wrong, not the write path), and it predates R8
+    /// (present since #234's original range was added, R8 is the first
+    /// round to catch it). `top`/`bottom` keep the ± range above; `left`/
+    /// `right` use this unsigned range instead.
+    static let pageMarginTwipsRangeUnsigned: ClosedRange<Int> = 0...31680
+
     private static func jsonTypeName(_ value: Value) -> String {
         switch value {
         case .null: return "null"
@@ -8181,6 +8233,21 @@ actor WordMCPServer {
             if let underline = try optionalBool(args, "underline") {
                 replacement.underline = underline ? .single : nil
             }
+            // R8 (`rev232b` review of #234, LOW-1): this call is
+            // defense-in-depth, not an independently reachable second
+            // failure site. `font_size` was already read and validated
+            // UNCONDITIONALLY above (line ~8197) before this `asRevision`
+            // branch is even entered — `optionalInt`/`validatedScaledMeasurement`
+            // are pure functions of the same `args`, so if that earlier
+            // call didn't throw, this identical call can't throw either.
+            // #234's CHANGELOG describes 8 independently-triggerable sites
+            // including this one as a separate count; that overcounts by
+            // one — 7 sites are independently reachable, this is the 8th
+            // only in the sense that it duplicates the same validation
+            // logic, not a second exposure. Left in place (not deleted)
+            // because it costs nothing at runtime and keeps this branch
+            // safe on its own terms if the unconditional check above is
+            // ever made conditional by a future change.
             if let fontSize = try optionalInt(args, "font_size") {
                 replacement.fontSize = try Self.validatedScaledMeasurement(fontSize, key: "font_size", range: Self.fontSizePointsRange, multiplier: 2)
             }
@@ -8385,6 +8452,19 @@ actor WordMCPServer {
         }
         guard let cols = try optionalInt(args, "cols") else {
             throw WordError.missingParameter("cols")
+        }
+        // R8: see `tableRowCountRange`/`tableColumnCountRange`'s doc
+        // comment — `Table(rowCount:columnCount:)` traps or exhausts
+        // memory unguarded.
+        guard Self.tableRowCountRange.contains(rows) else {
+            throw WordError.invalidParameter(
+                "rows", "必須介於 \(Self.tableRowCountRange.lowerBound) 到 \(Self.tableRowCountRange.upperBound) 之間"
+            )
+        }
+        guard Self.tableColumnCountRange.contains(cols) else {
+            throw WordError.invalidParameter(
+                "cols", "必須介於 \(Self.tableColumnCountRange.lowerBound) 到 \(Self.tableColumnCountRange.upperBound) 之間"
+            )
         }
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
@@ -8988,11 +9068,23 @@ actor WordMCPServer {
         let right = try optionalInt(args, "right")
         let bottom = try optionalInt(args, "bottom")
         let left = try optionalInt(args, "left")
-        for (key, value) in [("top", top), ("right", right), ("bottom", bottom), ("left", left)] {
+        // R8 (`rev232b` review of #234): `top`/`bottom` (w:top, `Int32Value`
+        // — signed) and `left`/`right` (w:left/w:right, `UInt32Value` —
+        // unsigned) do NOT share the same legal range; see
+        // `pageMarginTwipsRangeUnsigned`'s doc comment.
+        for (key, value) in [("top", top), ("bottom", bottom)] {
             if let value, !Self.pageMarginTwipsRange.contains(value) {
                 throw WordError.invalidParameter(
                     key,
                     "必須介於 \(Self.pageMarginTwipsRange.lowerBound) 到 \(Self.pageMarginTwipsRange.upperBound) 之間（twips）"
+                )
+            }
+        }
+        for (key, value) in [("right", right), ("left", left)] {
+            if let value, !Self.pageMarginTwipsRangeUnsigned.contains(value) {
+                throw WordError.invalidParameter(
+                    key,
+                    "必須介於 \(Self.pageMarginTwipsRangeUnsigned.lowerBound) 到 \(Self.pageMarginTwipsRangeUnsigned.upperBound) 之間（twips，不可為負值）"
                 )
             }
         }
@@ -10224,6 +10316,20 @@ actor WordMCPServer {
         let title = args["title"]?.stringValue
         let minLevel = try optionalInt(args, "min_level") ?? 1
         let maxLevel = try optionalInt(args, "max_level") ?? 3
+        // R8 (independent fuzzer, `rev232b` M-234-5): `minLevel...maxLevel`
+        // traps (`Range requires lowerBound <= upperBound`) whenever
+        // `min_level > max_level`. Word supports exactly 9 built-in heading
+        // levels (Heading 1 through Heading 9), so `1...9` is the full
+        // legal span regardless of ordering; the ordering itself is
+        // enforced by rejecting `minLevel > maxLevel` outright rather than
+        // silently swapping the two, since a caller that got the order
+        // backwards likely made a mistake worth surfacing.
+        guard (1...9).contains(minLevel), (1...9).contains(maxLevel) else {
+            throw WordError.invalidParameter("min_level", "min_level 與 max_level 必須介於 1 到 9 之間")
+        }
+        guard minLevel <= maxLevel else {
+            throw WordError.invalidParameter("min_level", "min_level 不可大於 max_level")
+        }
         let includePageNumbers = try optionalBool(args, "include_page_numbers") ?? true
         let useHyperlinks = try optionalBool(args, "use_hyperlinks") ?? true
 
@@ -12112,7 +12218,14 @@ actor WordMCPServer {
         let insertPosition = position ?? currentText.count
 
         let startIndex = currentText.startIndex
-        let insertIndex = currentText.index(startIndex, offsetBy: min(insertPosition, currentText.count))
+        // R8 (independent fuzzer, `rev232b` H-234-4): only the upper bound
+        // was clamped; `position: -1` passed `min(...)` unchanged and
+        // trapped `index(_:offsetBy:)` (negative offset before
+        // `startIndex`). Clamping the lower bound too — rather than
+        // rejecting — matches this line's own existing "silently clamp,
+        // don't error" policy for the upper bound.
+        let clampedPosition = max(0, min(insertPosition, currentText.count))
+        let insertIndex = currentText.index(startIndex, offsetBy: clampedPosition)
         let newText = String(currentText[..<insertIndex]) + text + String(currentText[insertIndex...])
 
         try doc.updateParagraph(at: paragraphIndex, text: newText)
@@ -14736,6 +14849,17 @@ actor WordMCPServer {
         // real type error surface instead.
         let paragraphIndexArg = try optionalInt(args, "paragraph_index")
         let afterTableIndexArg = try optionalInt(args, "after_table_index")
+        // R8 (independent fuzzer, `rev232b` H-234-2): below, `idx + 1` traps
+        // for `paragraph_index: Int.max`; a negative value (e.g. `-1`) was
+        // separately accepted silently and resolved to index 0, which is
+        // not a useful error either. `0..<Int.max` excludes both problem
+        // values (Int.max itself, and anything negative) while accepting
+        // every value `idx + 1` can safely compute — no OOXML-typed range
+        // applies here since this is a resolved array index, not a
+        // measurement written to the file.
+        if let idx = paragraphIndexArg, !(0..<Int.max).contains(idx) {
+            throw WordError.invalidParameter("paragraph_index", "必須是 0 到 \(Int.max - 1) 之間的整數")
+        }
 
         // anchor-dx-consistency (#71): unified conflict + zero-anchor detection.
         // Caption-specific anchor set: paragraph_index / after_image_id /
@@ -16823,6 +16947,21 @@ actor WordMCPServer {
                   let fmtStr = obj["num_format"]?.stringValue,
                   let lvlText = obj["lvl_text"]?.stringValue
             else { continue }
+            // R8 (independent fuzzer, `rev232b` H-234-1): `indent: 720 *
+            // (ilvl + 1)` traps for `ilvl` near `Int.max`/`Int.min` — this
+            // is exactly #234's own broadened audit criterion ("使用者輸入
+            // 經任何算術...後轉成 Int 的所有路徑"), missed because the grep
+            // that found #234's 8 sites looked for `variable * literal` /
+            // `literal * variable`; this site's shape is `literal *
+            // (variable + literal)`, one level of parenthesization away.
+            // Word's own numbering UI only exposes list levels 0–8 (9
+            // levels total) — `set_list_level` (ooxml-swift
+            // `Document.swift`) already enforces this identical range for
+            // the sibling `level` parameter with the message "Must be
+            // between 0 and 8"; matched here for consistency.
+            guard (0...8).contains(ilvl) else {
+                throw WordError.invalidParameter("ilvl", "必須介於 0 到 8 之間")
+            }
             let fmt = NumberFormat(rawValue: fmtStr) ?? .decimal
             let start = startArg ?? 1
             levels.append(Level(ilvl: ilvl, start: start, numFmt: fmt, lvlText: lvlText, indent: 720 * (ilvl + 1)))
@@ -17105,6 +17244,18 @@ actor WordMCPServer {
         guard let colIndex = try optionalInt(args, "col_index") else { throw WordError.missingParameter("col_index") }
         guard let rows = try optionalInt(args, "rows") else { throw WordError.missingParameter("rows") }
         guard let cols = try optionalInt(args, "cols") else { throw WordError.missingParameter("cols") }
+        // R8: same `Table(rowCount:columnCount:)` construction as
+        // `insert_table` — see `tableRowCountRange`/`tableColumnCountRange`.
+        guard Self.tableRowCountRange.contains(rows) else {
+            throw WordError.invalidParameter(
+                "rows", "必須介於 \(Self.tableRowCountRange.lowerBound) 到 \(Self.tableRowCountRange.upperBound) 之間"
+            )
+        }
+        guard Self.tableColumnCountRange.contains(cols) else {
+            throw WordError.invalidParameter(
+                "cols", "必須介於 \(Self.tableColumnCountRange.lowerBound) 到 \(Self.tableColumnCountRange.upperBound) 之間"
+            )
+        }
 
         do {
             try doc.insertNestedTable(parentTableIndex: parentIndex, rowIndex: rowIndex, colIndex: colIndex, rows: rows, cols: cols)
