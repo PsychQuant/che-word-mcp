@@ -196,11 +196,17 @@ swift build   # ensure .build/debug/CheWordMCP is up to date first
 python3 scripts/fuzz-extreme-params.py .build/debug/CheWordMCP /tmp/fuzz-workdir
 ```
 
-Exit code is 0 iff zero crashes and zero timeouts were observed; a summary
-line and a per-probe TSV (`<workdir>/fuzz_results.tsv`) are always
-produced. It's also wired into `swift test` behind an opt-in gate (not run
-by default — spawning ~1500 subprocesses takes on the order of a minute
-and needs a compiled binary):
+Exit code is 0 only when there is no crash or hang (including the save
+that follows every probe), every "(must reject)" probe was rejected, the
+largest legal table stays under a resident-memory ceiling, and at least 97%
+of the schema's integer/number parameters were actually **reached** — a
+probe stopped by an unrelated precondition proves nothing, so a fuzzer that
+stops reaching its targets fails instead of reporting zero crashes. A
+summary line, a coverage line (with the unreached parameters) and a
+per-probe TSV (`<workdir>/fuzz_results.tsv`) are always produced. It's also
+wired into `swift test` behind an opt-in gate (not run by default — about
+1,300 subprocesses and a compiled binary; with `RUN_FUZZ=1` set, a missing or
+out-of-date binary fails the gate):
 
 ```bash
 RUN_FUZZ=1 swift test --filter FuzzExtremeParamsGateTests

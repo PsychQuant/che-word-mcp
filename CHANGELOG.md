@@ -376,6 +376,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   commit message 誤植為「9 個」，這裡更正，commit message 本身依既有慣例不回頭改寫）。**這支
   fuzzer 本身也帶進版控**：`scripts/fuzz-extreme-params.py`（用法見腳本開頭 docstring），
   之後任何一輪要新增／修改 integer／number 參數時都應該重跑一次，不再需要重新手工推導。
+  **R9 更正**：R8 帶進版控的版本拿掉了原始審查腳本的逐工具覆寫、前置步驟與每次探測後存檔，
+  245 個參數中有 60 個的探測被無關的前置條件擋下、從沒走到目標，所以上面的
+  「probes=1272 零當機」涵蓋面比宣稱的少四分之一。R9 補回三者，並加上 coverage 檢查（走到目標的
+  參數低於 97% 就失敗）、「(must reject)」探測必須真的被拒絕、最大合法表格存檔後的常駐記憶體上限；
+  gate 測試改為在 `RUN_FUZZ=1` 時缺腳本、缺 binary 或 binary 比原始碼舊一律失敗，並先讀完輸出再等
+  行程結束（避免大量失敗時 pipe 死結）。R9 HEAD 上：1287 個探測零當機、零逾時，241/245 個參數
+  走到目標（剩下 3 個是從不讀參數的浮水印 stub、1 個是 fixture 沒有可拼接的公式）。
   同一次順手修正另一個獨立發現的問題：`set_page_margins` 的 `left`／`right` 過去與
   `top`／`bottom` 共用同一個 ±31680 twips 範圍，但查證 Microsoft Learn 文件後發現
   `PageMargin.Left`／`Right`（`w:left`／`w:right`）在 Open XML SDK 裡是 `UInt32Value`
