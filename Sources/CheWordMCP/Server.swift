@@ -433,6 +433,79 @@ actor WordMCPServer {
     /// overflow.
     static let pageMarginTwipsRange: ClosedRange<Int> = -31680...31680
 
+    /// #234 (team lead directive, scope broadened beyond "× a fixed literal
+    /// constant" to "any user-input arithmetic that feeds `Int(_: Double)`"):
+    /// `resolveImageDimensions` (below) computes the OMITTED image
+    /// dimension by dividing/multiplying a user-supplied `Int` (`width` or
+    /// `height`, in pixels) by the ACTUAL image file's aspect ratio — a
+    /// runtime `Double`, not a fixed literal, so `validatedScaledMeasurement`'s
+    /// "check the input is in range before multiplying by a KNOWN constant"
+    /// shape doesn't fit: the danger here depends on BOTH operands jointly,
+    /// not on bounding one of them against a fixed policy. Guarding the
+    /// RESULT right before the trapping `Int(_: Double)` conversion — the
+    /// same shape `twipsLine` already uses for `line_spacing` — covers this
+    /// regardless of which operand turns out to be the "large" one.
+    ///
+    /// Reproduced via real binary over stdio (`insert_image_from_path`):
+    /// `width: 9223372036854775807` against a real 1×1000 PNG (aspect ratio
+    /// ≈ 0.001) traps computing `height`; against a real 100×100 PNG
+    /// (aspect ratio = 1.0, the most "ordinary" case there is) it STILL
+    /// traps, because `Double(Int.max)` itself already rounds UP to exactly
+    /// `2^63` (one past `Int.max`) at this magnitude — so this is not only
+    /// reachable with an unusual image shape.
+    ///
+    /// `-0x1p63`/`0x1p63` (±2^63) are the exact mathematical boundary of
+    /// what `Int(_: Double)` can convert without trapping — both are
+    /// themselves exactly representable as `Double` (powers of two), unlike
+    /// `Double(Int.max)` (which is NOT exact and rounds up to `0x1p63`,
+    /// making a `<= Double(Int.max)` comparison silently accept one value
+    /// too many — the trap above happens precisely because the ORIGINAL
+    /// code effectively relied on that rounding).
+    static func safeInt(fromArithmeticResult value: Double, key: String) throws -> Int {
+        guard value.isFinite, value >= -0x1p63, value < 0x1p63 else {
+            throw WordError.invalidParameter(key, "換算後的數值超出可表示範圍或不是有限值")
+        }
+        return Int(value)
+    }
+
+    /// #234 (team lead follow-up: `resolveImageDimensions`'s fix above only
+    /// guards the AUTO-ASPECT computation — it does NOT prevent the crash
+    /// team lead's reviewer found, because that crash happens LATER, in a
+    /// DIFFERENT unguarded multiplication this fix doesn't touch:
+    /// `Drawing.from(widthPx:heightPx:)` and `Document.updateImage` in
+    /// **ooxml-swift** (a separate package/repo — its source lives under
+    /// `.build/checkouts/ooxml-swift/`, not in this repo) both do
+    /// `widthPx * 9525` / `heightPx * 9525` (pixels → EMU) with no range
+    /// check at all. Reproduced via real binary over stdio:
+    /// `insert_image_from_path({height: 9223372036854775807})` against a
+    /// 1×1000 PNG — the AUTO-COMPUTED `width` is safe (this fix's own
+    /// `safeInt` guard catches it), but the user-supplied `height` itself
+    /// passes through unchanged and traps `heightPx * 9525` downstream.
+    /// The same `Drawing.from(widthPx:heightPx:)` call is also reached
+    /// directly (no aspect-ratio math at all) by `insert_image` (both
+    /// `width`/`height` required, base64 path) and by `update_image`
+    /// (`Document.updateImage`, same `* 9525`), so both need this guard
+    /// too — three tools share the one unguarded ooxml-swift multiplication,
+    /// not just `insert_image_from_path`.
+    ///
+    /// Since che-word-mcp cannot modify ooxml-swift's source, the fix has
+    /// to be on THIS side of the package boundary: validate the pixel value
+    /// against a bound that provably keeps `pixels * 9525` inside what
+    /// OOXML itself allows the RESULT to be, before calling into
+    /// ooxml-swift at all. `<wp:extent>`'s `cx`/`cy` (the EMU width/height
+    /// DrawingML actually writes) use `ST_PositiveCoordinate`
+    /// (`a:ST_PositiveCoordinate`, `xsd:long` restricted to
+    /// `0 ≤ n ≤ 27273042316900` — this is a genuinely documented XSD
+    /// numeric restriction, not a `StringValue`-wrapped union like the
+    /// `w:before`/`w:sz` attributes #234's other sites had to fall back to
+    /// Word's UI limits for). `27273042316900 / 9525 = 2863311529`
+    /// (integer division) is therefore the largest pixel value that keeps
+    /// the EMU result within `ST_PositiveCoordinate`'s own documented range
+    /// — not merely "large enough not to trap this file's 64-bit `Int`",
+    /// but the actual OOXML-typed ceiling, same standard #232 R7's
+    /// `twipsLine` set out to use for `line_spacing`.
+    static let imagePixelDimensionRange: ClosedRange<Int> = 1...2_863_311_529
+
     private static func jsonTypeName(_ value: Value) -> String {
         switch value {
         case .null: return "null"
@@ -9146,6 +9219,21 @@ actor WordMCPServer {
         guard let height = try optionalInt(args, "height") else {
             throw WordError.missingParameter("height")
         }
+        // #234: ooxml-swift's `Drawing.from(widthPx:heightPx:)` does an
+        // unguarded `widthPx * 9525`/`heightPx * 9525` (pixels → EMU) — see
+        // `imagePixelDimensionRange`'s doc comment for why this is checked
+        // here, on this side of the package boundary, and for the
+        // ST_PositiveCoordinate derivation of the bound.
+        guard Self.imagePixelDimensionRange.contains(width) else {
+            throw WordError.invalidParameter(
+                "width", "必須介於 \(Self.imagePixelDimensionRange.lowerBound) 到 \(Self.imagePixelDimensionRange.upperBound) 之間（像素）"
+            )
+        }
+        guard Self.imagePixelDimensionRange.contains(height) else {
+            throw WordError.invalidParameter(
+                "height", "必須介於 \(Self.imagePixelDimensionRange.lowerBound) 到 \(Self.imagePixelDimensionRange.upperBound) 之間（像素）"
+            )
+        }
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
@@ -9230,6 +9318,26 @@ actor WordMCPServer {
         let widthArg = try optionalInt(args, "width")
         let heightArg = try optionalInt(args, "height")
         let (width, height) = try resolveImageDimensions(path: path, width: widthArg, height: heightArg)
+        // #234: `resolveImageDimensions`'s `safeInt` guard only protects the
+        // AUTO-COMPUTED dimension (when only one of width/height was given)
+        // from the aspect-ratio math itself trapping — it does NOT protect
+        // `doc.insertImage`'s own `widthPx * 9525`/`heightPx * 9525` further
+        // downstream in ooxml-swift, which every path through here reaches
+        // regardless of whether width/height came from the user directly,
+        // were computed from aspect ratio, or came from the native image
+        // file. Validated here, once, after resolution, covering all of
+        // those paths uniformly — see `imagePixelDimensionRange`'s doc
+        // comment for the ST_PositiveCoordinate-derived bound.
+        guard Self.imagePixelDimensionRange.contains(width) else {
+            throw WordError.invalidParameter(
+                "width", "必須介於 \(Self.imagePixelDimensionRange.lowerBound) 到 \(Self.imagePixelDimensionRange.upperBound) 之間（像素）"
+            )
+        }
+        guard Self.imagePixelDimensionRange.contains(height) else {
+            throw WordError.invalidParameter(
+                "height", "必須介於 \(Self.imagePixelDimensionRange.lowerBound) 到 \(Self.imagePixelDimensionRange.upperBound) 之間（像素）"
+            )
+        }
 
         let name = args["name"]?.stringValue ?? "Picture"
         let description = args["description"]?.stringValue ?? ""
@@ -9352,10 +9460,15 @@ actor WordMCPServer {
         let native = try ImageDimensions.detect(path: path)
         switch (width, height) {
         case let (.some(w), nil):
-            let h = native.aspectRatio > 0 ? Int(Double(w) / native.aspectRatio) : native.heightPx
+            // #234: see `safeInt(fromArithmeticResult:key:)`'s doc comment —
+            // naming "width" here since that's the parameter the caller
+            // actually supplied and would need to change.
+            let h = native.aspectRatio > 0
+                ? try Self.safeInt(fromArithmeticResult: Double(w) / native.aspectRatio, key: "width")
+                : native.heightPx
             return (w, h)
         case let (nil, .some(h)):
-            let w = Int(Double(h) * native.aspectRatio)
+            let w = try Self.safeInt(fromArithmeticResult: Double(h) * native.aspectRatio, key: "height")
             return (w, h)
         default:
             return (native.widthPx, native.heightPx)
@@ -9375,6 +9488,20 @@ actor WordMCPServer {
 
         let width = try optionalInt(args, "width")
         let height = try optionalInt(args, "height")
+        // #234: `Document.updateImage` does the same unguarded
+        // `widthPx * 9525`/`heightPx * 9525` as `Drawing.from(widthPx:
+        // heightPx:)` (ooxml-swift) — see `imagePixelDimensionRange`'s doc
+        // comment.
+        if let width, !Self.imagePixelDimensionRange.contains(width) {
+            throw WordError.invalidParameter(
+                "width", "必須介於 \(Self.imagePixelDimensionRange.lowerBound) 到 \(Self.imagePixelDimensionRange.upperBound) 之間（像素）"
+            )
+        }
+        if let height, !Self.imagePixelDimensionRange.contains(height) {
+            throw WordError.invalidParameter(
+                "height", "必須介於 \(Self.imagePixelDimensionRange.lowerBound) 到 \(Self.imagePixelDimensionRange.upperBound) 之間（像素）"
+            )
+        }
 
         try doc.updateImage(imageId: imageId, widthPx: width, heightPx: height)
         try await storeDocument(doc, for: docId)
