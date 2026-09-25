@@ -298,7 +298,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   屬性）宣稱「Open XML SDK 對應型別為 Int32」，本次查證 Microsoft Learn 文件時發現這個型別
   推論本身站不住腳（`w:before`／`w:sz` 的對應屬性實際型別是 `StringValue`，`w:line` 極可能
   同理）；R7 選的 Int32 範圍本身仍然安全（沒有錯，只是引用的依據不夠精確），這裡誠實記錄，
-  但依協調者指示本輪不去改寫已經 commit 的 R7 內容，留給之後單獨處理。
+  但依協調者指示本輪不去改寫已經 commit 的 R7 內容，留給之後單獨處理。**（R8 更新：已在下方
+  R7 條目更正——team lead 這輪明確授權修正引用，不再是已知限制。）**
+
+- **獨立審查者寫的 fuzzer 在 #234 修正後的 HEAD（`c1aabdd`）上又找到 5 個當機站點，全部落在
+  #234 自己擴大後的盤點判準之內**（R8，PsychQuant/che-word-mcp#234）。這支 fuzzer 對
+  `tools/list` 宣告的每個 integer／number 參數送極端值（`Int.max`／`Int.min`／`2^62`／
+  `2^31`／`-1`），逐一開一個真實 debug binary 行程測試，在 `50d0e92` 上抓到 58 個當機、在
+  `c1aabdd` 上仍抓到 5 個——證明「人工 grep 盤點」在本輪之前始終有漏網，team lead 因此把本輪
+  的完成條件明訂為機械式的「fuzzer 跑出零當機」，不再接受人工盤點作為完成依據。5 個站點：
+  1. `create_numbering_definition` 的 `levels[].ilvl`：`indent: 720 * (ilvl + 1)` 溢位——
+     這正是 #234 自己的「使用者輸入經任何算術後轉 Int」判準，只是形狀是 `literal * (變數 +
+     literal)`，比 #234 原本 grep 的 `變數 * literal` 多一層括號，因此漏網。範圍依
+     Word 清單只支援 0–8 共 9 層（`set_list_level` 已對同義的 `level` 參數用同一範圍）。
+  2. `insert_caption` 的 `paragraph_index`：`idx + 1` 溢位，另外 `-1` 過去被默默接受、解析成
+     索引 0。改用 `0..<Int.max` 一次擋住兩者。
+  3. `insert_table`／`insert_nested_table` 的 `rows`／`cols`：`Table(rowCount:columnCount:)`
+     （ooxml-swift）對 `-1` 直接 trap（`Range requires lowerBound <= upperBound`），對
+     `Int.max` 嘗試配置約 1.8×10^19 bytes trap，對 `2^31` 雖不 trap 但以約 2.6 GB/秒的速度
+     吃記憶體（審查者實測：2 秒 5.3 GB、5 秒 13 GB、10 秒 26 GB）。欄數上限 63 依 Word 自己
+     文件記載的表格欄數限制；**列數 Word 沒有記載上限**（官方「Operating parameter
+     limitations and specifications in Word」頁面列了書籤、樣式、清單、註解、欄位、分頁上限
+     等，唯獨沒有表格列數這一項，多個獨立來源也一致說列數「實質上沒有限制」）——誠實記錄這不是
+     一個 Word 規格數字，而是本次驗證過（65536 列 × 63 欄在真實 binary 上跑不到一秒、記憶體
+     無異常增長）的記憶體安全上限。
+  4. `insert_text` 的 `position`：只有上界被夾住，`-1` 直接讓 `String.Index(offsetBy:)`
+     trap。改成上下界都夾住（沿用同一行既有的「靜默夾住」政策，不是拒絕）。
+  5. `insert_toc` 的 `min_level`／`max_level`：`min_level > max_level` 時
+     `minLevel...maxLevel` 直接 trap。Word 內建剛好 9 層標題（Heading 1–9），範圍訂
+     `1...9` 並明確拒絕 `min_level > max_level`（不是靜默交換）。
+  全部先用真實 debug binary 經 stdio／fuzzer 重現 RED，修正後重跑同一支 fuzzer 確認
+  GREEN（`probes=1272 crashes=0 timeouts=0`，完整輸出見報告）；新增 9 個回歸測試。**這支
+  fuzzer 本身也帶進版控**：`scripts/fuzz-extreme-params.py`（用法見腳本開頭 docstring），
+  之後任何一輪要新增／修改 integer／number 參數時都應該重跑一次，不再需要重新手工推導。
+  同一次順手修正另一個獨立發現的問題：`set_page_margins` 的 `left`／`right` 過去與
+  `top`／`bottom` 共用同一個 ±31680 twips 範圍，但查證 Microsoft Learn 文件後發現
+  `PageMargin.Left`／`Right`（`w:left`／`w:right`）在 Open XML SDK 裡是 `UInt32Value`
+  （無號），只有 `Top`（`w:top`）是 `Int32Value`（有號）——`left`／`right` 傳負值不會讓行程
+  當掉，但會寫出不符合 `w:left`／`w:right` 自己型別的 XML。`left`／`right` 改用 `0...31680`，
+  `top`／`bottom` 維持原本的 `-31680...31680`。
 
 - **`set_header_row` 只保留一個註冊，`tools/list` 不再有兩份互相矛盾的 schema**（#230）。原本
   `Server.swift` 註冊了兩次：`switch` on tool name 的 dispatch 只執行第一個符合的 `case`（已用最小
