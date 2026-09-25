@@ -20,8 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `null` 與缺漏仍視同未提供（維持既有的必填／選填判斷不變）。這是行為變更：呼叫端如果曾經依賴
   「型別不符時默默套用預設值」，現在會改成收到參數錯誤——**包含參數出現在條件式／短路讀取路徑裡的
   情況**：team lead 定案的規則是「參數出現在 args 裡但型別不符，就報參數錯誤並指名參數，不論這次
-  呼叫會不會用到它；缺漏或 `null` 才視為未提供」，不開放例外（R2／R4／R5 逐步把所有找到的條件式讀取
-  站點改成無條件先解析驗證，詳見下方各輪記錄）。
+  呼叫會不會用到它；缺漏或 `null` 才視為未提供」，不開放例外——這是政策本身的定案，不是每一輪都已
+  達成的宣稱：R2／R4／R5 逐步把找到的條件式讀取站點改成無條件先解析驗證，但 R5 當時自認「已收斂為
+  0」其實不成立，獨立審查另外找到 7 個仍被短路擋住的站點，**R6 才是實際把這個政策落實到全部已知
+  站點的一輪**（詳見下方各輪記錄，尤其是 R6 段落誠實記錄 R5 的認定錯在哪裡）。
   範圍：`Server.swift`／`ReadbackTools.swift` 全部 372 個直接 `["x"]?.intValue`／`["x"]?.boolValue`
   呼叫點（268 個 `.intValue`：Server.swift 262 + ReadbackTools.swift 6；104 個 `.boolValue`：
   Server.swift 102 + ReadbackTools.swift 2）；順手修正兩個既有的 schema／實作對不上的 bug
@@ -63,19 +65,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   估計（把每一個單一繫結的 `guard let x = try optionalInt(...)` 都算了進去，但那類單一繫結本來
   就不會被短路，不是落差）；實際重新以五種互補的靜態掃描（鏈式多重繫結、`if`／`else`／`switch`
   以非該參數為條件的區塊、陣列項目內「較早的必要欄位短路掉較晚欄位的型別檢查」）逐一核實後，找到
-  並修正 5 個真正的站點：`insert_paragraph`／`insert_image_from_path` 的 `index`（被 into_table_cell
-  ＞after_image_id＞after_text＞before_text 這串錨點優先序擋在最後一個 `else if`，只要任何更高
-  優先序的錨點同時提供，`index` 就完全不會被求值；`insert_equation`／`insert_caption` 的對應參數
-  原本就已經在同一組錨點優先序邏輯之前解析，未受影響）、`set_latent_styles` 陣列項目的
-  `ui_priority`／`semi_hidden`／`unhide_when_used`／`q_format`（原本被同一項目缺少必填 `name`
-  短路掉——**行為變更程度比其餘 4 處更大**：`set_latent_styles` 沒有 `replace_text_batch`／
+  並修正 5 個真正的站點，行為變更程度並不一致，分兩類：
+  **(1) 呼叫從成功變失敗**——`insert_paragraph`／`insert_image_from_path` 的 `index`（被
+  into_table_cell＞after_image_id＞after_text＞before_text 這串錨點優先序擋在最後一個
+  `else if`，只要任何更高優先序的錨點同時提供，`index` 就完全不會被求值；`insert_equation`／
+  `insert_caption` 的對應參數原本就已經在同一組錨點優先序邏輯之前解析，未受影響）過去在
+  `after_text`／`before_text`／`into_table_cell` 等更高優先序錨點同時提供時，型別不符的 `index`
+  單純被忽略、呼叫**照常成功並真的插入內容**；修正後同一呼叫整次失敗。`set_latent_styles` 陣列
+  項目的 `ui_priority`／`semi_hidden`／`unhide_when_used`／`q_format`（原本被同一項目缺少必填
+  `name` 短路掉）是這一類裡影響最大的：`set_latent_styles` 沒有 `replace_text_batch`／
   `search_text_batch` 那種 per-item 失敗回報機制，過去一個沒填 `name` 的項目會被整個跳過、呼叫
   整體仍回報成功；現在同一個項目若「連同缺 `name`」還帶了型別不符的 `ui_priority` 等欄位，會讓
-  整次 `set_latent_styles` 呼叫失敗，不再是「跳過壞項目、其餘照常寫入」——這是「一律驗證」政策
-  下預期且正確的結果，但與其餘 4 處單純只是「錯誤訊息更精確」不同，值得特別記錄）、
-  `replace_text_batch` 陣列項目的 `regex`／`match_case`（原本被同一項目缺少必填
-  `find`／`replace` 短路掉）、`search_text_batch` 陣列項目的 `case_sensitive`（原本被同一項目
-  缺少必填 `query` 短路掉）。其餘被掃描工具標記出來的位置（`into_table_cell` 內部的巢狀繫結、
+  整次 `set_latent_styles` 呼叫失敗，不再是「跳過壞項目、其餘照常寫入」。
+  **(2) 純粹是錯誤訊息更精確，呼叫修正前後都會失敗**——`replace_text_batch` 陣列項目的
+  `regex`／`match_case`（原本被同一項目缺少必填 `find`／`replace` 短路掉）、`search_text_batch`
+  陣列項目的 `case_sensitive`（原本被同一項目缺少必填 `query` 短路掉）：這兩處修正前該筆項目本來
+  就會因為缺 `find`／`replace`／`query` 而失敗，修正只是把失敗原因換成型別錯誤並指名參數，不是
+  「靜默通過→失敗」的行為變更。
+  （R6 更正：R5 當時的報告誤把 `insert_paragraph`／`insert_image_from_path` 的 `index` 也歸進
+  「純粹訊息精確度」一類，與 `set_latent_styles` 對比——這個對比不成立，`index` 同樣是「成功→
+  失敗」，已在此處與測試檔的對應註解一併更正，見 R6 段落。）
+  其餘被掃描工具標記出來的位置（`into_table_cell` 內部的巢狀繫結、
   `formatText` 對已驗證過參數的重複讀取、`updateStyle` 的兩個 gate、`searchTextBatch` 頂層的
   `.string`/`.object` 型別分派）逐一核實後確認並非落差：前者已在 R4 修正；`formatText` 的重複讀取
   讀的是函式最前面已經無條件驗證過的同一批參數；`updateStyle` 的兩個 gate 分別是「至少一個相關
@@ -91,6 +101,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   違反這兩個工具自己文件寫明的「non-atomic per-item：個別失敗會回報，但不會回滾先前成功」contract。
   現在型別檢查移回各自 item 的 `do`／`catch` 內，型別不符只讓該筆項目失敗，回報方式與同一個迴圈裡
   其他既有的驗證失敗（如缺 `find`／`replace` 欄位）一致。
+  **R6（回應獨立 Claude 對抗式審查，VERDICT: FAIL）**：R5 報告當時寫「約 25 處已收斂為 0」、
+  CHANGELOG 寫「不開放例外」，獨立審查用另一份複本＋額外的探測測試（`R5ReviewProbeTests.swift`）
+  重新逐一核實，找到 R5 的五種靜態掃描仍漏掉的兩種形狀，共 7 個真正的站點，這一輪逐一修正：
+  **(a) 陣列項目內「必填欄位」短路掉「同項目型別檢查」的第 6 個站點**——`create_numbering_definition`
+  的 `levels[]` 項目：`start` 原本在 `guard let obj = ..., let ilvl = ..., let num_format = ...,
+  let lvl_text = ... else { continue }` 這個 guard **之後**才解析，項目缺 `num_format`／
+  `lvl_text` 時會先 `continue`，型別不符的 `start` 從未被求值到（R5 只檢查了 `ilvl`，因為它緊接在
+  `obj` 之後不會被短路，但同一個 guard 裡更晚的 `num_format`／`lvl_text` 一樣會短路掉 `start`——
+  R5 判斷這裡「並非落差」是誤判）。現在 `start` 移到 guard 之前，比照 `set_latent_styles` 的模式。
+  **(b) 先提早 return、再解析參數**——R5 的五種靜態掃描完全沒有涵蓋「函式在讀取目標參數之前，先用
+  某個跟該參數無關的條件 `return` 掉」這個形狀，即使 R1 早就在 `list_comments` 修過同一個形狀
+  （並在該函式留了「parse before the empty-comments early return」註解）。這次找到另外 6 個工具
+  還是舊寫法：`get_paragraphs`／`get_tables`／`list_footnotes`／`list_endnotes`／
+  `list_all_formatted_text` 的 `summarize`（文件裡沒有對應內容——分別是無段落／無表格／無註腳／
+  無尾註／無比對結果——時直接回傳成功字串，`summarize` 從未被讀取；改成 5 個工具都比照
+  `list_comments`，把 `summarize` 的解析移到 empty 判斷之前）；`checkpoint` 的
+  `allow_orphan_images`（手寫的 `allowOrphanImagesFlag` 讀取器原本只在有明確 `path` 時才呼叫，
+  R5 的掃描只追蹤 `optionalInt`／`optionalBool` 呼叫點，看不到這類手寫讀取器；改成無條件先解析，
+  是否套用閘門的邏輯不變）。
+  連帶修正三個記錄／測試精確度問題：CHANGELOG 上方的「其餘 4 處單純只是『錯誤訊息更精確』」已更正
+  （`insert_paragraph`／`insert_image_from_path` 的 `index` 其實與 `set_latent_styles` 同屬
+  「成功→失敗」一類，只有 `replace_text_batch`／`search_text_batch` 的三個欄位才是單純訊息精確度，
+  見上方 R5 段落的更正）；R5 報告「約 25 處已收斂為 0」的說法連同「不開放例外」的無保留措辭已更正為
+  誠實記錄 R5 當時的認定錯在哪裡（見上方）；sweep 測試表原本只涵蓋 `set_latent_styles` 的
+  `ui_priority`／`semi_hidden` 兩欄，漏了同一站點的 `unhide_when_used`／`q_format`，以及
+  `replace_text_batch` 的 `match_case`，這次補齊，且比對方式從「錯誤文字包含參數名子字串」改成
+  精確比對 `Invalid parameter '<key>'`／`invalidParameter("<key>"` 兩種實際錯誤格式（子字串比對
+  在 `expectedNamedKey == "index"` 時會被 `insert_paragraph` 自己的錨點衝突訊息「... + index」
+  誤判為通過）。
+  另外三個訊息精確度修正（呼叫修正前後都會失敗，不是靜默成功變失敗）：`anchorPresence` 的 int 型
+  判定改用與 `optionalInt` 一致的規則（`Int(exactly:)`，接受整數值 double），原本用裸 `.intValue`
+  會讓 `index: 0.0` 這種在這個 SDK 上幾乎不可能出現的值被誤判成「未提供」而略過衝突偵測；
+  `update_style` 的 `q_format`／`hidden`／`semi_hidden` 改成在呼叫 `doc.updateStyle()` 之前先
+  解析，`style_id` 不存在時過去只看到「style not found」，看不到同時存在的型別錯誤；
+  `insert_caption` 的 `paragraph_index`／`after_table_index` 改成在錨點存在性檢查之前先解析，
+  兩者其中之一是唯一提供的錨點但型別不符時，過去只看到通用的「at least one anchor required」。
+  **`set_paragraph_format.line_spacing`（`"type": "number"` schema）是同一類問題的 number 版**：
+  `args["line_spacing"]?.doubleValue` 只匹配 JSON 的 `.double` case，但這個 SDK 的 `Value`
+  解碼器對每一個整數值 JSON number（含帶小數點但整數值的 `2.0`）都先試 `Int` 再試 `Double`，所以
+  `line_spacing: 2` 這種合法、型別正確、範圍內的值會被 `.doubleValue` 判定為 `nil` 並**完全不套用**
+  ——比 #232 原本的「型別不符默默套用預設值」更糟：這裡沒有預設值可套，是把使用者明確給的合法值
+  直接丟掉、且不報任何錯誤。新增 `optionalDouble`（`args`／`key` → `Double?`，同時接受 `.int` 與
+  `.double`，present-but-wrong-typed 拋 `WordError.invalidParameter`），`line_spacing` 改用它；
+  全檔案盤點確認這是唯一一個直接讀 `.doubleValue` 的站點，B.1／B.2 兩個 sweep 測試都擴充涵蓋
+  `"type": "number"`／`optionalDouble`（B.2 目前只有 `line_spacing` 這一個 number 型參數可驗，
+  但之後新增的 number 型參數會被同一個 sweep 自動涵蓋）。
 - 依賴 ooxml-swift 3.12.0：typed 編輯不再讓未被編輯的段落遺失未建模的 `w:pPr` 子元素，例如 `w:kinsoku`、`w:snapToGrid`（PsychQuant/ooxml-swift#168）；讀取 Word 文件時所有 part 一致解碼，非 UTF-8 宣告依宣告轉碼（PsychQuant/ooxml-swift#171）；依 relationship 解析格式 part 與主 part（PsychQuant/ooxml-swift#173）。
 - `export_script(paragraphs_only: true)` 改呼叫 ooxml-swift 的 `ReverseExtractor.paragraphsOnly`（PsychQuant/ooxml-swift#172），刪除原本逐行照抄自 macdoc CLI 的實作；與 CLI 的一致性從此由共用程式碼保證。`omitted_body_blocks` 的字串維持不變（`table`、`contentControl`、`bookmarkMarker`、`rawBlockElement`）。以真實範本與 macdoc 0.13.0 跑 `ScriptPipelineParityTests`，19 個測試全過。
 
