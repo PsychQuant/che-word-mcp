@@ -584,6 +584,27 @@ final class Issue98InsertEquationLibBypassTests: XCTestCase {
         )
     }
 
+    /// PsychQuant/che-word-mcp#127 — the inline-mode branch used to read
+    /// `paragraphIndex!`. Unreachable today (the pre-check above already
+    /// rejects inline mode + nil `paragraph_index`), but a force-unwrap
+    /// panics the whole MCP server *process* — every other open session goes
+    /// down with it — instead of returning a per-call error, if any future
+    /// refactor of the anchor-resolution block ever lets this branch be
+    /// reached with a nil index. Defense-in-depth: replace it with a thrown
+    /// error so that failure mode degrades to "one call gets an error"
+    /// instead of "the whole server crashes."
+    func testInsertEquationSourceNoLongerForceUnwrapsParagraphIndex() throws {
+        let source = try serverSource()
+        XCTAssertFalse(
+            source.contains("let idx = paragraphIndex!"),
+            "insert_equation's inline-mode handler must not force-unwrap paragraphIndex; got source containing it"
+        )
+        XCTAssertTrue(
+            source.contains("guard let idx = paragraphIndex else"),
+            "insert_equation's inline-mode handler should read paragraphIndex via a guard that throws instead of force-unwrapping"
+        )
+    }
+
     // MARK: - Helpers
 
     private func textOf(_ r: CallTool.Result) -> String {
