@@ -108,7 +108,40 @@ final class Issue191UpdateCellFormatInheritanceTests: XCTestCase {
                       "existing run's own font was lost: \(paragraph)")
     }
 
+    // MARK: - R2 review Finding 2: only the font is inherited, not the whole RunProperties
+
+    /// Donor run ("*必填") is bold, red, underlined AND declares 標楷體. The
+    /// filled-in value must come out in 標楷體 but plain (no bold, no red,
+    /// no underline) — those are the label's own emphasis, not something a
+    /// caller's answer should inherit just because the label happened to be
+    /// the nearest run with a declared font.
+    func testUpdateCellInheritsOnlyFontNotBoldColorOrUnderline() async throws {
+        let saved = try await editAndSave(row: 0, col: 1, text: "使用者填入的內容",
+                                          documentXML: boldRedDonorDocumentXML)
+
+        let run = try XCTUnwrap(runXML(containing: "使用者填入的內容", in: saved),
+                                "the new text is missing:\n\(saved)")
+        XCTAssertTrue(run.contains(#"w:eastAsia="標楷體""#), "font was not inherited: \(run)")
+        XCTAssertFalse(run.contains("<w:b/>") || run.contains("<w:b "),
+                       "bold leaked from the donor label: \(run)")
+        XCTAssertFalse(run.contains("FF0000"), "color leaked from the donor label: \(run)")
+        XCTAssertFalse(run.contains("<w:u "), "underline leaked from the donor label: \(run)")
+    }
+
     // MARK: - Helpers
+
+    /// The single `<w:r>…</w:r>` element whose `<w:t>` text contains
+    /// `needle`.
+    private func runXML(containing needle: String, in xml: String) -> String? {
+        guard let hit = xml.range(of: needle) else { return nil }
+        let before = xml[xml.startIndex..<hit.lowerBound]
+        let starts = [before.range(of: "<w:r>", options: .backwards),
+                      before.range(of: "<w:r ", options: .backwards)].compactMap { $0 }
+        guard let open = starts.max(by: { $0.lowerBound < $1.lowerBound }),
+              let close = xml.range(of: "</w:r>", range: hit.upperBound..<xml.endIndex)
+        else { return nil }
+        return String(xml[open.lowerBound..<close.upperBound])
+    }
 
     private func editAndSave(row: Int, col: Int, text: String,
                              documentXML: String) async throws -> String {
@@ -182,6 +215,27 @@ final class Issue191UpdateCellFormatInheritanceTests: XCTestCase {
 // MARK: - Fixtures
 
 /// Row 0 col 0: run with `eastAsia="標楷體"`. Row 0 col 1: `<w:p/>`, no run.
+/// Row 0 col 0: run declaring 標楷體 AND bold + red + underline (a "*必填"
+/// required-field label — the common real-world shape). Row 0 col 1:
+/// `<w:p/>`, no run.
+private let boldRedDonorDocumentXML = """
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<w:body>
+<w:tbl>
+<w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr>
+<w:tblGrid><w:gridCol w:w="2000"/><w:gridCol w:w="2000"/></w:tblGrid>
+<w:tr>
+<w:tc><w:tcPr><w:tcW w:w="2000" w:type="dxa"/></w:tcPr><w:p><w:r><w:rPr><w:rFonts w:eastAsia="標楷體"/><w:b/><w:color w:val="FF0000"/><w:u w:val="single"/></w:rPr><w:t>*必填</w:t></w:r></w:p></w:tc>
+<w:tc><w:tcPr><w:tcW w:w="2000" w:type="dxa"/></w:tcPr><w:p/></w:tc>
+</w:tr>
+</w:tbl>
+<w:p/>
+<w:sectPr></w:sectPr>
+</w:body>
+</w:document>
+"""
+
 private let sameRowFallbackDocumentXML = """
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">

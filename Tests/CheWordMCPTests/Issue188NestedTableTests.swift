@@ -203,6 +203,80 @@ final class Issue188NestedTableTests: XCTestCase {
         XCTAssertEqual(updated.isError, true, "an out-of-range nested_table_index must fail: \(text(of: updated))")
     }
 
+    // MARK: - R2 review Finding 2: nested path also only inherits the font
+
+    /// Same failure mode as the top-level path (`Issue191...
+    /// testUpdateCellInheritsOnlyFontNotBoldColorOrUnderline`), confirmed
+    /// separately here because `fallbackCellRunProperties`/
+    /// `applyCellTextWrite` are shared by both the #191 top-level path and
+    /// this #188 nested path — R2 review found the leak reproduced
+    /// identically through both call sites.
+    func testUpdateCellInsideNestedTableInheritsOnlyFontNotBoldOrColor() async throws {
+        let source = scratch.appendingPathComponent("source.docx")
+        let output = scratch.appendingPathComponent("saved.docx")
+        try Self.writePackage(documentXML: nestedTableBoldDonorDocumentXML, to: source)
+
+        let server = await WordMCPServer()
+        let docId = "t188-boldcolor-\(UUID().uuidString)"
+        let opened = await server.invokeToolForTesting(name: "open_document", arguments: [
+            "doc_id": .string(docId), "path": .string(source.path),
+        ])
+        XCTAssertNotEqual(opened.isError, true, text(of: opened))
+
+        let updated = await server.invokeToolForTesting(name: "update_cell", arguments: [
+            "doc_id": .string(docId),
+            "table_index": .int(0), "row": .int(0), "col": .int(0),
+            "nested_table_index": .int(0), "nested_row": .int(0), "nested_col": .int(1),
+            "text": .string("使用者填入的內容"),
+        ])
+        XCTAssertNotEqual(updated.isError, true, text(of: updated))
+
+        let savedResult = await server.invokeToolForTesting(name: "save_document", arguments: [
+            "doc_id": .string(docId), "path": .string(output.path),
+        ])
+        XCTAssertNotEqual(savedResult.isError, true, text(of: savedResult))
+
+        let archive = try Archive(url: output, accessMode: .read)
+        let entry = try XCTUnwrap(archive["word/document.xml"])
+        var data = Data()
+        _ = try archive.extract(entry) { data.append($0) }
+        let saved = String(decoding: data, as: UTF8.self)
+
+        let run = try XCTUnwrap(runXML(containing: "使用者填入的內容", in: saved))
+        XCTAssertTrue(run.contains(#"w:eastAsia="標楷體""#), "font was not inherited: \(run)")
+        XCTAssertFalse(run.contains("<w:b/>") || run.contains("<w:b "), "bold leaked from the donor label: \(run)")
+        XCTAssertFalse(run.contains("FF0000"), "color leaked from the donor label: \(run)")
+    }
+
+    // MARK: - R2 review Finding 4: writing into a cell that itself has a deeper nested table
+
+    /// `nested_table_index`/`nested_row`/`nested_col` only supports one
+    /// level. A target cell that itself contains another nested table must
+    /// fail explicitly, not silently write text into its paragraph while
+    /// leaving its own nested content unaddressed.
+    func testUpdateCellRejectsNestedCellThatItselfHasADeeperNestedTable() async throws {
+        let source = scratch.appendingPathComponent("source.docx")
+        try Self.writePackage(documentXML: doublyNestedTableDocumentXML, to: source)
+
+        let server = await WordMCPServer()
+        let docId = "t188-depth2-\(UUID().uuidString)"
+        let opened = await server.invokeToolForTesting(name: "open_document", arguments: [
+            "doc_id": .string(docId), "path": .string(source.path),
+        ])
+        XCTAssertNotEqual(opened.isError, true, text(of: opened))
+
+        let updated = await server.invokeToolForTesting(name: "update_cell", arguments: [
+            "doc_id": .string(docId),
+            "table_index": .int(0), "row": .int(0), "col": .int(0),
+            "nested_table_index": .int(0), "nested_row": .int(0), "nested_col": .int(0),
+            "text": .string("x"),
+        ])
+        XCTAssertEqual(updated.isError, true,
+                       "writing into a nested cell that itself contains another nested table must fail: \(text(of: updated))")
+        XCTAssertTrue(text(of: updated).contains("nested"),
+                     "the error should explain the depth limitation: \(text(of: updated))")
+    }
+
     // MARK: - Helpers
 
     private func text(of result: CallTool.Result) -> String {
@@ -295,6 +369,77 @@ private let nestedTableEmptyCellDocumentXML = """
 <w:tr>
 <w:tc><w:tcPr><w:tcW w:w="4000" w:type="dxa"/></w:tcPr><w:p><w:r><w:rPr><w:rFonts w:eastAsia="標楷體"/></w:rPr><w:t>受刑人</w:t></w:r></w:p></w:tc>
 <w:tc><w:tcPr><w:tcW w:w="4000" w:type="dxa"/></w:tcPr><w:p/></w:tc>
+</w:tr>
+</w:tbl>
+</w:tc>
+</w:tr>
+</w:tbl>
+<w:p/>
+<w:sectPr></w:sectPr>
+</w:body>
+</w:document>
+"""
+
+/// Same shape as `nestedTableDocumentXML`, but the nested table's row 0 col 0
+/// ("受刑人") is bold, red, AND declares 標楷體 — the #191/#188-shared
+/// fallback-format donor for `testUpdateCellInsideNestedTableInheritsOnlyFontNotBoldOrColor`.
+private let nestedTableBoldDonorDocumentXML = """
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<w:body>
+<w:tbl>
+<w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr>
+<w:tblGrid><w:gridCol w:w="9000"/></w:tblGrid>
+<w:tr>
+<w:tc><w:tcPr><w:tcW w:w="9000" w:type="dxa"/></w:tcPr>
+<w:p><w:r><w:t>8. 有關研究參與者的選取</w:t></w:r></w:p>
+<w:tbl>
+<w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr>
+<w:tblGrid><w:gridCol w:w="4000"/><w:gridCol w:w="4000"/></w:tblGrid>
+<w:tr>
+<w:tc><w:tcPr><w:tcW w:w="4000" w:type="dxa"/></w:tcPr><w:p><w:r><w:rPr><w:rFonts w:eastAsia="標楷體"/><w:b/><w:color w:val="FF0000"/></w:rPr><w:t>受刑人</w:t></w:r></w:p></w:tc>
+<w:tc><w:tcPr><w:tcW w:w="4000" w:type="dxa"/></w:tcPr><w:p/></w:tc>
+</w:tr>
+</w:tbl>
+</w:tc>
+</w:tr>
+</w:tbl>
+<w:p/>
+<w:sectPr></w:sectPr>
+</w:body>
+</w:document>
+"""
+
+/// Outer table (table_index 0) → host cell (row 0, col 0) → nested table
+/// (nested_table_index 0) → that nested table's row 0 col 0 cell ITSELF
+/// contains yet another nested table (depth 2 from the outer table's
+/// perspective). `update_cell` addressing `nested_table_index:0,
+/// nested_row:0, nested_col:0` must refuse — that cell has unaddressed
+/// content one level deeper than this tool supports.
+private let doublyNestedTableDocumentXML = """
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<w:body>
+<w:tbl>
+<w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr>
+<w:tblGrid><w:gridCol w:w="9000"/></w:tblGrid>
+<w:tr>
+<w:tc><w:tcPr><w:tcW w:w="9000" w:type="dxa"/></w:tcPr>
+<w:p><w:r><w:t>host cell</w:t></w:r></w:p>
+<w:tbl>
+<w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr>
+<w:tblGrid><w:gridCol w:w="4000"/></w:tblGrid>
+<w:tr>
+<w:tc><w:tcPr><w:tcW w:w="4000" w:type="dxa"/></w:tcPr>
+<w:p><w:r><w:t>level1 cell</w:t></w:r></w:p>
+<w:tbl>
+<w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr>
+<w:tblGrid><w:gridCol w:w="2000"/></w:tblGrid>
+<w:tr>
+<w:tc><w:tcPr><w:tcW w:w="2000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>level2 cell</w:t></w:r></w:p></w:tc>
+</w:tr>
+</w:tbl>
+</w:tc>
 </w:tr>
 </w:tbl>
 </w:tc>
