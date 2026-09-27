@@ -11413,6 +11413,33 @@ actor WordMCPServer {
         return try LaTeXMathParser.parse(latex)
     }
 
+    /// #139: `setParagraphBorder`/`setParagraphShading`/`setCharacterSpacing`/
+    /// `setTextEffect` (ooxml-swift, `.build/checkouts/ooxml-swift/`) each
+    /// bounds-check `paragraph_index` against `getParagraphs().count` — the
+    /// readback family, which recurses into block-level SDTs — but the
+    /// mutation loop right below that check walks `body.children` counting
+    /// only TOP-LEVEL `.paragraph` children (silently skipping
+    /// `.contentControl` SDT wrappers without incrementing its own
+    /// counter). In a document with a block-level SDT, an index that is
+    /// in-bounds for the readback count but at/past the top-level count
+    /// makes the mutation loop walk off the end and return having changed
+    /// nothing — `storeDocument` still runs, so the call reports success.
+    /// An index in-bounds for BOTH families still targets whichever
+    /// top-level paragraph the mutation loop's own counter lands on, which
+    /// may not be the paragraph the caller meant by that index under the
+    /// readback numbering.
+    ///
+    /// che-word-mcp cannot modify ooxml-swift (read-only dependency), so the
+    /// fix is a STRICTER pre-check on this side, using the exact same
+    /// counting model the mutation loop uses, before ever calling into the
+    /// library function at all.
+    private func topLevelParagraphCount(_ doc: WordDocument) -> Int {
+        doc.body.children.reduce(0) { count, child in
+            if case .paragraph = child { return count + 1 }
+            return count
+        }
+    }
+
     private func setParagraphBorder(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -11422,6 +11449,9 @@ actor WordMCPServer {
         }
         guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
+        }
+        guard paragraphIndex >= 0, paragraphIndex < topLevelParagraphCount(doc) else {
+            throw WordError.invalidIndex(paragraphIndex)
         }
 
         let typeStr = args["type"]?.stringValue ?? "single"
@@ -11479,6 +11509,9 @@ actor WordMCPServer {
         guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
+        guard paragraphIndex >= 0, paragraphIndex < topLevelParagraphCount(doc) else {
+            throw WordError.invalidIndex(paragraphIndex)
+        }
         guard let fill = args["fill"]?.stringValue else {
             throw WordError.missingParameter("fill")
         }
@@ -11503,6 +11536,9 @@ actor WordMCPServer {
         }
         guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
+        }
+        guard paragraphIndex >= 0, paragraphIndex < topLevelParagraphCount(doc) else {
+            throw WordError.invalidIndex(paragraphIndex)
         }
 
         let spacing = try optionalInt(args, "spacing")
@@ -11529,6 +11565,9 @@ actor WordMCPServer {
         }
         guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
+        }
+        guard paragraphIndex >= 0, paragraphIndex < topLevelParagraphCount(doc) else {
+            throw WordError.invalidIndex(paragraphIndex)
         }
         guard let effectType = args["effect"]?.stringValue else {
             throw WordError.missingParameter("effect")
