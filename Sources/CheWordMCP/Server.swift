@@ -10762,28 +10762,67 @@ actor WordMCPServer {
         // which produces broken plain-text OOXML — see Insert step below for
         // full rationale. Path origin is preserved in error messages but the
         // insertion mechanic is unified.
-        // #122 / #125: presence is type-filtered (`.objectValue` / `.stringValue`),
-        // not `!= nil` key-existence, matching the `anchorPresence` convention
-        // (`Self.anchorPresence`, near the top of this file). A caller sending
-        // `{components: {...}, latex: null}` — some JSON-RPC clients populate
-        // every schema field, `null` for the ones they left blank — has not
-        // actually passed "both"; the old key-existence check rejected them
-        // anyway with a message that named a conflict they never created.
-        // `latex: null` / `components: null` now behave like an absent key on
-        // both sides of this check, matching the `display_mode: null` ≡
-        // absent decision already shipped for #232 R1. (#122 was filed under
-        // a title copied from a different issue in this batch — its actual
-        // body is this exact problem, and it is the same fix as #125's
-        // `latex` half; both are closed by this change.)
-        let componentsPresent = args["components"]?.objectValue != nil
-        let latexPresent = args["latex"]?.stringValue != nil
+        // #122 / #125 (R2 revision — see #232's design comment above
+        // `optionalInt`/`optionalBool` for the principle this now follows):
+        // presence is "key exists and is not JSON null" — NOT "key exists
+        // and happens to decode to the expected type". Those are two
+        // different questions with two different answers:
+        //   (a) absent-or-null  → this side simply wasn't provided; try the
+        //       other side, or fall through to "either ... required".
+        //   (b) present-but-wrong-type → the caller DID provide this side,
+        //       just with the wrong JSON shape. That must throw a named,
+        //       value-echoing error (same #129 `formatReceivedValue`
+        //       convention as everywhere else in this function) — it must
+        //       NEVER be silently treated as "not provided", because that
+        //       either (i) produces a false "you gave neither" message when
+        //       the caller plainly gave one, or (ii) silently drops the
+        //       malformed side and proceeds on the other, which is even
+        //       worse when both were given (see R1's `[1,2,3]` + real
+        //       `latex` regression: R1's `.objectValue != nil` check made
+        //       the array-typed `components` invisible to the conflict
+        //       check, so it silently lost and the call "succeeded" using
+        //       only `latex`).
+        //
+        // R1 used `.objectValue != nil` / `.stringValue != nil` as the
+        // presence test itself, which conflates (a) and (b) exactly the way
+        // the `optionalInt`/`optionalBool` comment describes as the original
+        // #232 bug: "a wrong JSON type... OR a JSON null OR an absent key
+        // all fall through to nil identically". This revision separates
+        // them: `componentsRaw`/`latexRaw` capture "present and non-null"
+        // (mirrors `display_mode`'s existing `!= .null` pattern below), and
+        // each branch below validates ITS OWN type and throws its own named
+        // error rather than falling through.
+        //
+        // (#122 was filed under a title copied from a different issue in
+        // this batch — its actual body is this exact null-sentinel problem,
+        // and it is the same fix as #125's `latex` half; both are closed by
+        // this change, together with the R1 regression flagged in review.)
+        let componentsRaw: Value? = {
+            if let v = args["components"], v != .null { return v }
+            return nil
+        }()
+        let latexRaw: Value? = {
+            if let v = args["latex"], v != .null { return v }
+            return nil
+        }()
+        let componentsPresent = componentsRaw != nil
+        let latexPresent = latexRaw != nil
         if componentsPresent && latexPresent,
-           let componentsValue = args["components"], let latexValue = args["latex"] {
+           let componentsValue = componentsRaw, let latexValue = latexRaw {
             throw ToolRefusal("insert_equation: pass either 'components' (JSON tree) OR 'latex' (LaTeX subset), not both (received components: \(WordMCPServer.formatReceivedValue(componentsValue)), latex: \(WordMCPServer.formatReceivedValue(latexValue)))")
         }
 
         let components: [MathComponent]
-        if componentsPresent, let componentsValue = args["components"] {
+        if componentsPresent, let componentsValue = componentsRaw {
+            // Type check happens HERE, named and value-echoing, before
+            // parsing — not left to `parseMathComponent`'s generic nested-
+            // component message (that message is still correct for a
+            // non-object found *inside* a components tree, e.g. a bad
+            // `numerator[]` entry; this guard is specifically for the
+            // top-level `components:` argument itself).
+            guard componentsValue.objectValue != nil else {
+                throw ToolRefusal("insert_equation: components must be a JSON object (received \(WordMCPServer.formatReceivedValue(componentsValue)))")
+            }
             do {
                 components = [try parseMathComponent(from: componentsValue)]
             } catch MathParseError.unknownType(let t) {
@@ -10793,7 +10832,10 @@ actor WordMCPServer {
             } catch MathParseError.invalidStructure(let msg) {
                 throw ToolRefusal("insert_equation: invalid components structure: \(msg)")
             }
-        } else if latexPresent, let latex = args["latex"]?.stringValue {
+        } else if latexPresent, let latexValue = latexRaw {
+            guard let latex = latexValue.stringValue else {
+                throw ToolRefusal("insert_equation: latex must be a string (received \(WordMCPServer.formatReceivedValue(latexValue)))")
+            }
             do {
                 components = try parseLatex(latex)
             } catch LaTeXParseError.unrecognizedToken(let tok) {
