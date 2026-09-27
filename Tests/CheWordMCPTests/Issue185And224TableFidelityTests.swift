@@ -68,12 +68,40 @@ final class Issue185And224TableFidelityTests: XCTestCase {
                        "a height rule the source never had was added:\n\(saved)")
     }
 
+    // MARK: - PsychQuant/ooxml-swift#182
+
+    /// A cell with more than one paragraph: `update_cell` replaces the text of
+    /// the first paragraph and keeps the others, instead of silently dropping
+    /// them. Callers that want to address a later paragraph use
+    /// `update_cell_paragraph`.
+    func testUpdateCellReplacesFirstParagraphAndKeepsTheOthers() async throws {
+        let saved = try await editAndSave(row: 0, col: 0, text: "new first",
+                                          documentXML: multiParagraphCellDocumentXML)
+
+        XCTAssertTrue(saved.contains("new first"), saved)
+        XCTAssertFalse(saved.contains("old first"), "the first paragraph's old text is still there:\n\(saved)")
+        XCTAssertTrue(saved.contains("second line"), "the second paragraph was dropped:\n\(saved)")
+        XCTAssertTrue(saved.contains("third line"), "the third paragraph was dropped:\n\(saved)")
+    }
+
+    /// The tool description states the multi-paragraph behaviour, so a caller
+    /// expecting "replace the whole cell" is told before it happens.
+    func testUpdateCellDescriptionStatesMultiParagraphBehaviour() async throws {
+        let server = await WordMCPServer()
+        let tools = await server.toolsForTesting()
+        let tool = try XCTUnwrap(tools.first { $0.name == "update_cell" })
+        let description = tool.description ?? ""
+        XCTAssertTrue(description.contains("第一段"), description)
+        XCTAssertTrue(description.contains("update_cell_paragraph"), description)
+    }
+
     // MARK: - Helpers
 
-    private func editAndSave(row: Int, col: Int, text: String) async throws -> String {
+    private func editAndSave(row: Int, col: Int, text: String,
+                             documentXML: String = tableDocumentXML) async throws -> String {
         let source = scratch.appendingPathComponent("source.docx")
         let output = scratch.appendingPathComponent("saved.docx")
-        try Self.writePackage(documentXML: tableDocumentXML, to: source)
+        try Self.writePackage(documentXML: documentXML, to: source)
 
         let server = await WordMCPServer()
         let docId = "t185-224-\(UUID().uuidString)"
@@ -166,6 +194,24 @@ private let tableDocumentXML = """
 <w:tr>
 <w:tc><w:tcPr><w:tcW w:w="2000" w:type="dxa"/><w:vMerge/></w:tcPr><w:p/></w:tc>
 <w:tc><w:tcPr><w:tcW w:w="2000" w:type="dxa"/></w:tcPr><w:p><w:pPr><w:spacing w:line="240" w:lineRule="exact"/><w:jc w:val="right"/></w:pPr></w:p></w:tc>
+</w:tr>
+</w:tbl>
+<w:p/>
+<w:sectPr></w:sectPr>
+</w:body>
+</w:document>
+"""
+
+/// Row 0, column 0: a cell with three paragraphs.
+private let multiParagraphCellDocumentXML = """
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<w:body>
+<w:tbl>
+<w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr>
+<w:tblGrid><w:gridCol w:w="4000"/></w:tblGrid>
+<w:tr>
+<w:tc><w:tcPr><w:tcW w:w="4000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>old first</w:t></w:r></w:p><w:p><w:r><w:t>second line</w:t></w:r></w:p><w:p><w:r><w:t>third line</w:t></w:r></w:p></w:tc>
 </w:tr>
 </w:tbl>
 <w:p/>
