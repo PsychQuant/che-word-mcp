@@ -2975,7 +2975,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "list_comments",
-                description: "列出文件中所有註解（支援 Direct Mode）",
+                description: "列出文件中所有註解（支援 Direct Mode）。預設只列 thread roots，include_replies=true 才一併列 reply（reply 的 anchor 欄位皆為 null，但會有 parent_id）。include_context=true 時回傳 JSON，並以 {total, offset, returned, truncated, comments} 包裝，避免大文件靜默截斷；純文字模式（include_context=false）超過 limit 時也會在文字裡明講還有幾筆沒顯示。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -2994,13 +2994,29 @@ actor WordMCPServer {
                         "context_chars": .object([
                             "type": .string("integer"),
                             "description": .string("include_context=true 時，anchor 前後各回傳多少字（預設 50）")
+                        ]),
+                        "include_replies": .object([
+                            "type": .string("boolean"),
+                            "description": .string("是否連同 reply 一併列出（預設 false，只列 thread roots；reply 的 anchor 欄位固定為 null）")
+                        ]),
+                        "summarize": .object([
+                            "type": .string("boolean"),
+                            "description": .string("true 時 flattened_text 超過 5000 字會被省略為頭尾各 30 字（預設 false，回傳完整文字）")
+                        ]),
+                        "limit": .object([
+                            "type": .string("integer"),
+                            "description": .string("最多回傳幾筆（預設 200，上限 2000）")
+                        ]),
+                        "offset": .object([
+                            "type": .string("integer"),
+                            "description": .string("跳過前幾筆（預設 0，用於分頁）")
                         ])
                     ])
                 ])
             ),
             Tool(
                 name: "find_unresolved_comments",
-                description: "列出尚未 resolved 的頂層註解（支援 Direct Mode，可包含 anchor context）",
+                description: "列出尚未 resolved 的頂層註解（支援 Direct Mode，可包含 anchor context）。預設不含 reply，include_replies=true 時額外列出尚未 resolved 的 reply。回傳 JSON 一律以 {total, offset, returned, truncated, comments} 包裝，避免大文件靜默截斷。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -3015,6 +3031,22 @@ actor WordMCPServer {
                         "context_chars": .object([
                             "type": .string("integer"),
                             "description": .string("anchor 前後各回傳多少字（預設 50）")
+                        ]),
+                        "include_replies": .object([
+                            "type": .string("boolean"),
+                            "description": .string("是否連同尚未 resolved 的 reply 一併列出（預設 false，只列 thread roots）")
+                        ]),
+                        "summarize": .object([
+                            "type": .string("boolean"),
+                            "description": .string("true 時 flattened_text 超過 5000 字會被省略為頭尾各 30 字（預設 false，回傳完整文字）")
+                        ]),
+                        "limit": .object([
+                            "type": .string("integer"),
+                            "description": .string("最多回傳幾筆（預設 200，上限 2000）")
+                        ]),
+                        "offset": .object([
+                            "type": .string("integer"),
+                            "description": .string("跳過前幾筆（預設 0，用於分頁）")
                         ])
                     ])
                 ])
@@ -3511,7 +3543,7 @@ actor WordMCPServer {
             // 8.1 註解回覆
             Tool(
                 name: "add_comment_reply",
-                description: "回覆現有註解；支援 template/vars 與 resolve=true 一次完成回覆加標記已解決",
+                description: "回覆現有註解（僅限 thread root，回覆 reply 或對 reply 設 resolve=true 會被拒絕，#137）；支援 template/vars 與 resolve=true 一次完成回覆加標記已解決。comment_id / parent_comment_id 兩個名字擇一必填（與 reply_to_comment 對稱，#133）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -3521,7 +3553,11 @@ actor WordMCPServer {
                         ]),
                         "comment_id": .object([
                             "type": .string("integer"),
-                            "description": .string("要回覆的註解 ID")
+                            "description": .string("要回覆的註解 ID（必須是 thread root，不能是另一則 reply）；與 parent_comment_id 擇一必填")
+                        ]),
+                        "parent_comment_id": .object([
+                            "type": .string("integer"),
+                            "description": .string("comment_id 的 alias（與 reply_to_comment 共用同一 handler）；與 comment_id 擇一必填")
                         ]),
                         "reply_text": .object([
                             "type": .string("string"),
@@ -3541,19 +3577,23 @@ actor WordMCPServer {
                         ]),
                         "resolve": .object([
                             "type": .string("boolean"),
-                            "description": .string("true 時新增 reply 後同步標記該 comment resolved")
+                            "description": .string("true 時新增 reply 後同步標記該 comment resolved（target 必須是 thread root）")
                         ]),
                         "author": .object([
                             "type": .string("string"),
                             "description": .string("回覆者名稱（預設 'User'）")
                         ])
                     ]),
-                    "required": .array([.string("doc_id"), .string("comment_id")])
+                    "required": .array([.string("doc_id")]),
+                    "oneOf": .array([
+                        .object(["required": .array([.string("comment_id")])]),
+                        .object(["required": .array([.string("parent_comment_id")])])
+                    ])
                 ])
             ),
             Tool(
                 name: "reply_to_comment",
-                description: "回覆現有的註解（舊名；同 add_comment_reply，保留 parent_comment_id/text alias）",
+                description: "回覆現有的註解（舊名；同 add_comment_reply，僅限 thread root，#137）。comment_id / parent_comment_id 兩個名字擇一必填（與 add_comment_reply 對稱，#133）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -3563,7 +3603,11 @@ actor WordMCPServer {
                         ]),
                         "parent_comment_id": .object([
                             "type": .string("integer"),
-                            "description": .string("要回覆的註解 ID")
+                            "description": .string("要回覆的註解 ID（必須是 thread root，不能是另一則 reply）；與 comment_id 擇一必填")
+                        ]),
+                        "comment_id": .object([
+                            "type": .string("integer"),
+                            "description": .string("parent_comment_id 的 alias（與 add_comment_reply 共用同一 handler）；與 parent_comment_id 擇一必填")
                         ]),
                         "text": .object([
                             "type": .string("string"),
@@ -3583,10 +3627,14 @@ actor WordMCPServer {
                         ]),
                         "resolve": .object([
                             "type": .string("boolean"),
-                            "description": .string("true 時新增 reply 後同步標記該 comment resolved")
+                            "description": .string("true 時新增 reply 後同步標記該 comment resolved（target 必須是 thread root）")
                         ])
                     ]),
-                    "required": .array([.string("doc_id")])
+                    "required": .array([.string("doc_id")]),
+                    "oneOf": .array([
+                        .object(["required": .array([.string("comment_id")])]),
+                        .object(["required": .array([.string("parent_comment_id")])])
+                    ])
                 ])
             ),
             Tool(
@@ -3613,7 +3661,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "bulk_resolve_comments",
-                description: "批次標記多個註解為 resolved；不中斷於單筆失敗，回傳成功數與 failed 清單",
+                description: "批次標記多個註解為 resolved；不中斷於單筆失敗，回傳成功數與 failed 清單。重複的 ID 只計為一筆 resolved（#132）；單次最多 1000 筆，超過會直接拒絕整個呼叫（isError），不會只處理前 1000 筆",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -3623,7 +3671,7 @@ actor WordMCPServer {
                         ]),
                         "comment_ids": .object([
                             "type": .string("array"),
-                            "description": .string("要標記為 resolved 的註解 ID 陣列")
+                            "description": .string("要標記為 resolved 的註解 ID 陣列（重複值會被去重；單次最多 1000 筆）")
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("comment_ids")])
@@ -4559,7 +4607,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "find_inline_math_gaps",
-                description: "掃描段落中疑似遺失 inline math symbol 的連續空白 gap，回傳位置與前後文（支援 Direct Mode）",
+                description: "掃描段落中疑似遺失 inline math symbol 的連續空白 gap，回傳位置與前後文（支援 Direct Mode）。回傳一律以 {total, offset, returned, truncated, gaps} 包裝，避免大文件（如千頁 RTF 學位論文）靜默截斷",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -4582,6 +4630,18 @@ actor WordMCPServer {
                         "exclude_table_captions": .object([
                             "type": .string("boolean"),
                             "description": .string("是否排除表格 caption 樣式段落（預設 true）")
+                        ]),
+                        "summarize": .object([
+                            "type": .string("boolean"),
+                            "description": .string("true 時 flattened_text 超過 5000 字會被省略為頭尾各 30 字（預設 false，回傳完整文字）")
+                        ]),
+                        "limit": .object([
+                            "type": .string("integer"),
+                            "description": .string("最多回傳幾筆 gap（預設 500，上限 5000）")
+                        ]),
+                        "offset": .object([
+                            "type": .string("integer"),
+                            "description": .string("跳過前幾筆（預設 0，用於分頁）")
                         ])
                     ])
                 ])
@@ -10385,22 +10445,49 @@ actor WordMCPServer {
         // to close, just reached via a different code path.
         let includeContext = try optionalBool(args, "include_context") ?? false
         let contextChars = max(0, try optionalInt(args, "context_chars") ?? 50)
+        // #178 truncation policy: full text by default, opt in to elide.
+        let summarize = try optionalBool(args, "summarize") ?? false
+        // #135: `getCommentsFull()` used to be listed unfiltered here while
+        // `find_unresolved_comments` always dropped replies — a reply then
+        // showed every anchor field as null with no way to tell "this is a
+        // reply" from "the anchor didn't resolve". Default now matches
+        // `find_unresolved_comments`: thread roots only, opt in per call.
+        let includeReplies = try optionalBool(args, "include_replies") ?? false
+        // #131: unbounded result count was a DoS amplifier (500-comment doc
+        // × unbounded flattened_text). Default window is generous enough
+        // that a caller never notices unless the document is pathological.
+        let (limit, offset) = try resolveLimitOffset(args, defaultLimit: 200, maxLimit: 2000)
 
-        let comments = doc.getCommentsFull()
+        let allComments = doc.getCommentsFull()
+        let comments = includeReplies ? allComments : allComments.filter { $0.parentId == nil }
         if comments.isEmpty {
             return "No comments in document"
         }
 
+        let total = comments.count
+        let startIndex = min(offset, total)
+        let endIndex = min(startIndex + limit, total)
+        let window = Array(comments[startIndex..<endIndex])
+
         if includeContext {
-            return commentJSON(comments: comments, in: doc, contextChars: contextChars)
+            let arrayJSON = commentJSON(comments: window, in: doc, contextChars: contextChars, summarize: summarize)
+            return paginationEnvelope(total: total, offset: startIndex, returned: window.count, arrayKey: "comments", arrayJSON: arrayJSON)
         }
 
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM-dd HH:mm"
 
-        var result = "Comments (\(comments.count)):\n"
-        for comment in comments {
+        var result: String
+        if startIndex > 0 || endIndex < total {
+            result = "Comments (total \(total), showing \(window.isEmpty ? 0 : startIndex + 1)-\(endIndex)):\n"
+        } else {
+            result = "Comments (\(total)):\n"
+        }
+        for comment in window {
             result += "- [ID: \(comment.id)] \(comment.author) (\(dateFormatter.string(from: comment.date))): \"\(comment.text)\" (para \(comment.paragraphIndex))\n"
+        }
+        if endIndex < total {
+            result += "... and \(total - endIndex) more comment(s) not shown (limited by limit=\(limit)); pass offset=\(endIndex) to continue.\n"
         }
 
         return result
@@ -10409,11 +10496,47 @@ actor WordMCPServer {
     private func findUnresolvedComments(args: [String: Value]) async throws -> String {
         let (doc, _) = try await resolveDocument(args: args)
         let contextChars = max(0, try optionalInt(args, "context_chars") ?? 50)
-        let unresolved = doc.getCommentsFull().filter { !$0.done && $0.parentId == nil }
-        return commentJSON(comments: unresolved, in: doc, contextChars: contextChars)
+        let summarize = try optionalBool(args, "summarize") ?? false
+        // #135: same default/opt-in shape as list_comments — see comment there.
+        let includeReplies = try optionalBool(args, "include_replies") ?? false
+        let (limit, offset) = try resolveLimitOffset(args, defaultLimit: 200, maxLimit: 2000)
+
+        let unresolved = doc.getCommentsFull().filter { !$0.done && (includeReplies || $0.parentId == nil) }
+        let total = unresolved.count
+        let startIndex = min(offset, total)
+        let endIndex = min(startIndex + limit, total)
+        let window = Array(unresolved[startIndex..<endIndex])
+        let arrayJSON = commentJSON(comments: window, in: doc, contextChars: contextChars, summarize: summarize)
+        return paginationEnvelope(total: total, offset: startIndex, returned: window.count, arrayKey: "comments", arrayJSON: arrayJSON)
     }
 
-    private func commentJSON(comments: [Comment], in doc: WordDocument, contextChars: Int) -> String {
+    /// Parses/validates the shared `limit`/`offset` pagination pair (#131,
+    /// #132's size-cap sibling for the read-only comment/gap review tools).
+    /// `limit` defaults to `defaultLimit` and is clamped to `maxLimit` rather
+    /// than rejected when a caller asks for more than the ceiling — only a
+    /// non-positive `limit` or a negative `offset` is a hard error, since
+    /// those values can never denote a valid window.
+    private func resolveLimitOffset(_ args: [String: Value], defaultLimit: Int, maxLimit: Int) throws -> (limit: Int, offset: Int) {
+        let rawLimit = try optionalInt(args, "limit") ?? defaultLimit
+        guard rawLimit > 0 else {
+            throw WordError.invalidParameter("limit", "必須是正整數（收到 \(rawLimit)）")
+        }
+        let rawOffset = try optionalInt(args, "offset") ?? 0
+        guard rawOffset >= 0 else {
+            throw WordError.invalidParameter("offset", "必須是不小於 0 的整數（收到 \(rawOffset)）")
+        }
+        return (min(rawLimit, maxLimit), rawOffset)
+    }
+
+    /// Wraps a paginated JSON array with explicit disclosure of how much was
+    /// left out — #131's "不要靜默截斷": every caller can see `total` vs
+    /// `returned` and a `truncated` flag instead of guessing from array length.
+    private func paginationEnvelope(total: Int, offset: Int, returned: Int, arrayKey: String, arrayJSON: String) -> String {
+        let truncated = offset + returned < total
+        return "{\"total\":\(total),\"offset\":\(offset),\"returned\":\(returned),\"truncated\":\(truncated),\"\(arrayKey)\":\(arrayJSON)}"
+    }
+
+    private func commentJSON(comments: [Comment], in doc: WordDocument, contextChars: Int, summarize: Bool = false) -> String {
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM-dd HH:mm"
 
@@ -10421,6 +10544,10 @@ actor WordMCPServer {
             let context = commentContext(for: comment, in: doc, contextChars: contextChars)
             let fields = [
                 "\"id\":\(comment.id)",
+                // #135: expose parent_id so a caller can tell "this is a
+                // reply, its anchor fields are null by design" from "the
+                // anchor genuinely failed to resolve" without guessing.
+                "\"parent_id\":\(comment.parentId.map { String($0) } ?? "null")",
                 "\"author\":\"\(Self.jsonEscape(comment.author))\"",
                 "\"date\":\"\(Self.jsonEscape(dateFormatter.string(from: comment.date)))\"",
                 "\"text\":\"\(Self.jsonEscape(comment.text))\"",
@@ -10429,7 +10556,10 @@ actor WordMCPServer {
                 "\"anchored_run_text\":\(jsonOptional(context.anchoredRunText))",
                 "\"context_before\":\(jsonOptional(context.contextBefore))",
                 "\"context_after\":\(jsonOptional(context.contextAfter))",
-                "\"flattened_text\":\(jsonOptional(context.flattenedText))"
+                // #131/#178: per-entry cap follows the project's opt-in
+                // truncation policy (truncateText) rather than a silent
+                // hardcoded prefix — full text unless `summarize: true`.
+                "\"flattened_text\":\(jsonOptional(context.flattenedText.map { truncateText($0, summarize: summarize) }))"
             ]
             return "{\(fields.joined(separator: ","))}"
         }
@@ -11688,6 +11818,20 @@ actor WordMCPServer {
         let author = args["author"]?.stringValue ?? "User"
         let shouldResolve = try optionalBool(args, "resolve") ?? false
 
+        // #137: `CommentsCollection.addReply` only checks that the parent id
+        // exists, not that it's a thread root — replying to a reply builds an
+        // in-memory parentId chain that commentsExtended.xml's single
+        // `paraIdParent` attribute cannot represent, so Word's thread view
+        // would disagree with the model. Reject before mutating, and name
+        // the reason (not just "not found") so a caller who typed a reply's
+        // own id understands why.
+        guard let target = doc.comments.comments.first(where: { $0.id == commentId }) else {
+            throw WordError.invalidParameter("comment_id", "Comment with ID \(commentId) not found")
+        }
+        guard target.parentId == nil else {
+            throw WordError.invalidParameter("comment_id", "cannot reply to a reply (comment_id \(commentId) has parent_id \(target.parentId!)); reply to the thread root instead")
+        }
+
         // 使用 CommentsCollection.addReply 方法
         guard let reply = doc.comments.addReply(to: commentId, author: author, text: replyText) else {
             throw WordError.invalidParameter("comment_id", "Comment with ID \(commentId) not found")
@@ -11696,7 +11840,7 @@ actor WordMCPServer {
             doc.comments.markAsDone(commentId, done: true)
         }
         doc.markPartDirty("word/comments.xml")
-        doc.markPartDirty("word/commentsExtended.xml")
+        markCommentsExtendedTypedPartsDirtyIfNeeded(&doc)
 
         try await storeDocument(doc, for: docId)
         let resolvedSuffix = shouldResolve ? " and resolved comment \(commentId)" : ""
@@ -11717,10 +11861,30 @@ actor WordMCPServer {
 
         // 使用 CommentsCollection.markAsDone 方法
         doc.comments.markAsDone(commentId, done: resolved)
-        doc.markPartDirty("word/commentsExtended.xml")
+        markCommentsExtendedTypedPartsDirtyIfNeeded(&doc)
         try await storeDocument(doc, for: docId)
 
         return "Comment \(commentId) \(resolved ? "resolved" : "reopened")"
+    }
+
+    /// #134 workaround (che-word-mcp side; root cause is cross-repo in
+    /// ooxml-swift's `DocxWriter.hasNewTypedParts`/`hasNewTypedRelationships`
+    /// — see report). Neither helper checks `comments.hasExtendedComments`,
+    /// so in overlay mode a document that never had `word/commentsExtended.xml`
+    /// before this call gets the part's bytes written to the archive without
+    /// a matching `[Content_Types].xml` Override or
+    /// `word/_rels/document.xml.rels` relationship — Word then ignores the
+    /// done/reply state the part encodes. `markPartDirty` is the public API
+    /// ooxml-swift documents exactly for this ("external consumers... that
+    /// write directly to `archiveTempDir` bypassing the typed mutation
+    /// methods"): marking these two dirty makes the overlay writer recompute
+    /// both through `ContentTypesOverlay`/`RelationshipsOverlay`, which merge
+    /// with (not replace) whatever the source document already declared.
+    private func markCommentsExtendedTypedPartsDirtyIfNeeded(_ doc: inout WordDocument) {
+        guard doc.comments.hasExtendedComments else { return }
+        doc.markPartDirty("word/commentsExtended.xml")
+        doc.markPartDirty("[Content_Types].xml")
+        doc.markPartDirty("word/_rels/document.xml.rels")
     }
 
     private func bulkResolveComments(args: [String: Value]) async throws -> String {
@@ -11733,9 +11897,23 @@ actor WordMCPServer {
         guard let ids = args["comment_ids"]?.arrayValue else {
             throw WordError.missingParameter("comment_ids")
         }
+        // #132: reject an oversized batch outright instead of silently
+        // processing only the first N — a caller who asked to resolve
+        // 100,000 ids should learn the call was refused, not that it
+        // "succeeded" having quietly dropped 99,000 of them.
+        let maxBulkResolveIds = 1000
+        guard ids.count <= maxBulkResolveIds else {
+            throw WordError.invalidParameter("comment_ids", "最多一次處理 \(maxBulkResolveIds) 筆，收到 \(ids.count) 筆")
+        }
 
-        var resolvedCount = 0
         var failed: [String] = []
+        // #132: dedupe by parsed id before touching the document — `[5, 5, 5]`
+        // used to call `markAsDone` three times (idempotent on state) but
+        // still incremented `resolvedCount` three times, so the response
+        // claimed 3 resolved comments when only 1 comment was ever resolved.
+        // `Set.insert` keeps first-seen order via `uniqueIds`.
+        var uniqueIds: [Int] = []
+        var seenIds = Set<Int>()
         // #232 R7 (`rev232b` review LOW-3): `value.intValue` only matches the
         // `.int` JSON case — the same inconsistency `anchorPresence` had
         // before R6's `looksLikeIntAnchor` fix, just for a batch tool
@@ -11759,16 +11937,35 @@ actor WordMCPServer {
                 failed.append("{\"index\":\(index),\"comment_id\":null,\"error\":\"invalid_id\"}")
                 continue
             }
-            guard doc.comments.comments.contains(where: { $0.id == id }) else {
+            if seenIds.insert(id).inserted {
+                uniqueIds.append(id)
+            }
+        }
+
+        // #132: O(M+N) — one pass over the document builds an id→index map,
+        // then each of the (now-deduped) requested ids is an O(1) dictionary
+        // lookup + direct mutation, instead of the old `contains(where:)` /
+        // `markAsDone` pair which each re-scanned the whole comment array
+        // (O(M×N), the "100k IDs × mid-size document blocks the actor for
+        // tens of seconds" case the issue named).
+        var indexById: [Int: Int] = [:]
+        indexById.reserveCapacity(doc.comments.comments.count)
+        for (i, comment) in doc.comments.comments.enumerated() {
+            indexById[comment.id] = i
+        }
+
+        var resolvedCount = 0
+        for id in uniqueIds {
+            guard let index = indexById[id] else {
                 failed.append("{\"comment_id\":\(id),\"error\":\"not_found\"}")
                 continue
             }
-            doc.comments.markAsDone(id, done: true)
+            doc.comments.comments[index].done = true
             resolvedCount += 1
         }
 
         if resolvedCount > 0 {
-            doc.markPartDirty("word/commentsExtended.xml")
+            markCommentsExtendedTypedPartsDirtyIfNeeded(&doc)
             try await storeDocument(doc, for: docId)
         }
 
@@ -13007,6 +13204,13 @@ actor WordMCPServer {
         let minGapChars = min(max(1, try optionalInt(args, "min_gap_chars") ?? 2), 1024)
         let contextChars = min(max(0, try optionalInt(args, "context_chars") ?? 30), 4096)
         let excludeTableCaptions = try optionalBool(args, "exclude_table_captions") ?? true
+        // #178 truncation policy: full text by default, opt in to elide.
+        let summarize = try optionalBool(args, "summarize") ?? false
+        // #131: a 1000-page document can produce tens of thousands of gaps,
+        // each carrying its own paragraph's full flattened text — bound the
+        // returned window the same way list_comments/find_unresolved_comments
+        // do, with the same non-silent disclosure envelope.
+        let (limit, offset) = try resolveLimitOffset(args, defaultLimit: 500, maxLimit: 5000)
 
         struct Gap {
             let paragraphIndex: Int
@@ -13106,7 +13310,12 @@ actor WordMCPServer {
 
         walk(doc.body.children)
 
-        let entries = gaps.map { gap in
+        let total = gaps.count
+        let startIndex = min(offset, total)
+        let endIndex = min(startIndex + limit, total)
+        let window = gaps[startIndex..<endIndex]
+
+        let entries = window.map { gap in
             [
                 "\"paragraph_index\":\(gap.paragraphIndex)",
                 "\"location\":\"\(Self.jsonEscape(gap.location))\"",
@@ -13114,11 +13323,12 @@ actor WordMCPServer {
                 "\"gap_length\":\(gap.gapLength)",
                 "\"context_before\":\"\(Self.jsonEscape(gap.contextBefore))\"",
                 "\"context_after\":\"\(Self.jsonEscape(gap.contextAfter))\"",
-                "\"flattened_text\":\"\(Self.jsonEscape(gap.flattenedText))\""
+                // #131/#178: opt-in elision, not a silent hardcoded prefix.
+                "\"flattened_text\":\"\(Self.jsonEscape(truncateText(gap.flattenedText, summarize: summarize)))\""
             ].joined(separator: ",")
         }.map { "{\($0)}" }
 
-        return "[\(entries.joined(separator: ","))]"
+        return paginationEnvelope(total: total, offset: startIndex, returned: entries.count, arrayKey: "gaps", arrayJSON: "[\(entries.joined(separator: ","))]")
     }
 
     /// Detects whether a paragraph is likely a Word caption (Table / Figure / 表 / 圖 / etc.).
