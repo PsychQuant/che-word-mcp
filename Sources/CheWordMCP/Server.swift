@@ -5263,7 +5263,7 @@ actor WordMCPServer {
             // 10.4 set_page_borders - 頁面邊框
             Tool(
                 name: "set_page_borders",
-                description: "設定頁面邊框（四邊可獨立設定）",
+                description: "設定頁面邊框（四邊可獨立設定）。目前未實作，呼叫會回 isError 並具名缺少的 OOXML（#245——ooxml-swift 的 SectionProperties 沒有 <w:pgBorders> 對應欄位，非本堆疊觸及範圍）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -6424,7 +6424,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("get_paragraphs readback index（從 0 開始；top-level paragraphs + block-level SDT 內段落，不含 table-cell paragraphs）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs——#245 起改為與實際 mutation 一致的 top-level-only 邊界，同 #139）")
                         ]),
                         "position": .object([
                             "type": .string("integer"),
@@ -6456,7 +6456,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("get_paragraphs readback index（從 0 開始；top-level paragraphs + block-level SDT 內段落，不含 table-cell paragraphs）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs——#245 起改為與實際 mutation 一致的 top-level-only 邊界，同 #139）")
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("paragraph_index")])
@@ -6500,7 +6500,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("get_paragraphs readback index（從 0 開始；top-level paragraphs + block-level SDT 內段落，不含 table-cell paragraphs）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs——#245 起改為與實際 mutation 一致的 top-level-only 邊界，同 #139）")
                         ]),
                         "level": .object([
                             "type": .string("integer"),
@@ -15217,12 +15217,21 @@ actor WordMCPServer {
         let _ = try optionalBool(args, "equal_width") ?? true  // equalWidth - 保留以備將來擴展
         let separator = try optionalBool(args, "separator") ?? false
 
-        // 更新文件的 sectionProperties
+        // #245: 過去只改了 `doc.sectionProperties.columns`（且從未寫
+        // `columnSpacing`）。ooxml-swift 開啟既有文件時走 overlay
+        // 模式——`word/document.xml` 只有在 `modifiedParts` 含這個 part
+        // 時才會從 typed model 重新產生，否則原樣搬運原始位元組；沒有任何
+        // 公開 API 直接呼叫，這個修改就在存檔時被丟棄。新建文件沒有原始
+        // archive，一律重新產生，所以過去 columns 部分生效、space 從未
+        // 生效。`markPartDirty("word/document.xml")`（ooxml-swift
+        // v0.13.0+ 公開的 `markTypedDirty` 包裝，README 明講是給
+        // che-word-mcp 這類外部呼叫端用的）讓兩種模式都從 typed model
+        // 重新產生 `<w:cols w:num="…" w:space="…"/>`（`SectionProperties
+        // .toXML()` 本來就會輸出 columnSpacing，只是沒被標記為需要重新
+        // 產生）。
         doc.sectionProperties.columns = numCols
-
-        // 由於 OOXMLSwift 的 SectionProperties 只有 columns 屬性
-        // 我們需要透過自訂 XML 來設定更多細節
-        // 這裡先更新基本的 columns 數量
+        doc.sectionProperties.columnSpacing = space
+        doc.markPartDirty("word/document.xml")
         try await storeDocument(doc, for: docId)
 
         var result = "Set document to \(numCols) column(s)"
@@ -15324,20 +15333,22 @@ actor WordMCPServer {
             throw ToolRefusal("Invalid border style. Valid options: \(validStyles.joined(separator: ", "))")
         }
 
-        // 頁面邊框需要在 sectPr 中設定 <w:pgBorders>
-        // 目前 OOXMLSwift 的 SectionProperties 沒有直接支援
-
-        var borders: [String] = []
-        if showTop { borders.append("top") }
-        if showBottom { borders.append("bottom") }
-        if showLeft { borders.append("left") }
-        if showRight { borders.append("right") }
-
-        if style == "none" {
-            return "Page borders removed"
-        }
-
-        return "Page borders set: style=\(style), color=#\(color), size=\(size), offset from \(offsetFrom), borders: \(borders.joined(separator: ", "))"
+        // #245: 這個函式驗證參數後直接回一句描述成功的字串，從未寫任何
+        // OOXML——`_ = color/size/offsetFrom/showTop/showBottom/showLeft/
+        // showRight` 全部只是拼字串用。跟 #245 表格裡其他工具不同的是，
+        // 這裡不是「公開 API 沒被呼叫」，而是 ooxml-swift 的
+        // `SectionProperties` 根本沒有 `<w:pgBorders>` 對應欄位（#245 判讀
+        // 時已核對 `.build/checkouts/ooxml-swift/Sources/OOXMLSwift/Models/
+        // Section.swift`）——沒有公開路徑可以真的寫入，依 #201 的慣例回
+        // isError 並具名缺少的 OOXML，而不是繼續回報成功。
+        _ = color; _ = size; _ = offsetFrom
+        _ = showTop; _ = showBottom; _ = showLeft; _ = showRight
+        throw ToolNotImplemented(
+            tool: "set_page_borders", issue: "#245",
+            missing: "a <w:pgBorders w:offsetFrom=\"…\"><w:top w:val=\"…\" w:sz=\"…\" w:color=\"…\"/>"
+                + "<w:left .../><w:bottom .../><w:right .../></w:pgBorders> child of <w:sectPr> — "
+                + "ooxml-swift's SectionProperties has no field for it at all (not merely an unmarked-dirty "
+                + "typed mutation), so there is no public API this tool can call")
     }
 
     /// 插入特殊符號
@@ -16318,6 +16329,68 @@ actor WordMCPServer {
     }
 
     /// 設定定位點
+    /// #245: `<w:tab>` entries carried inside a paragraph's `rawChildren`
+    /// under the `"tabs"` name. `tabs`/`outlineLvl` are both in ooxml-swift's
+    /// `ParagraphProperties.canonicalPPrPosition` (so `toXML()` slots them
+    /// into the correct `<w:pPr>` schema position) but deliberately NOT in
+    /// `DocxReader.recognizedPPrChildNames` (there is no typed field for
+    /// either) — so a source document's own `<w:tabs>`/`<w:outlineLvl>`
+    /// round-trips verbatim through `rawChildren`, and `RawElement(name:
+    /// xml:)`'s public initializer lets che-word-mcp construct new ones the
+    /// same way. This is the one public path available; there is no
+    /// ooxml-swift API for tab stops or outline level at all.
+    private struct TabStopEntry {
+        let position: Int
+        let alignment: String
+        /// `nil` means "no leader" (`w:leader` omitted — matches Word's own
+        /// output for the default `none`).
+        let leader: String?
+    }
+
+    /// Extracts every `<w:tab .../>` self-closing element from a `<w:tabs>
+    /// ...</w:tabs>` raw XML string. Order-independent, attribute-order-
+    /// independent (handles both this tool's own previously-written output
+    /// and a real Word document's `<w:tabs>`, which is never guaranteed to
+    /// list `val` before `pos`). A `<w:tab>` with no `w:pos` (schema-invalid,
+    /// should not occur) is skipped rather than crashing.
+    private func parseExistingTabStops(fromTabsXML xml: String) -> [TabStopEntry] {
+        guard let tabRegex = try? NSRegularExpression(pattern: "<w:tab\\b([^>]*)/>") else { return [] }
+        let ns = xml as NSString
+        func attr(_ name: String, in attrsXML: String) -> String? {
+            guard let regex = try? NSRegularExpression(pattern: "\(name)=\"([^\"]*)\"") else { return nil }
+            let attrsNS = attrsXML as NSString
+            guard let match = regex.firstMatch(in: attrsXML, range: NSRange(location: 0, length: attrsNS.length))
+            else { return nil }
+            return attrsNS.substring(with: match.range(at: 1))
+        }
+        var results: [TabStopEntry] = []
+        for match in tabRegex.matches(in: xml, range: NSRange(location: 0, length: ns.length)) {
+            let attrsXML = ns.substring(with: match.range(at: 1))
+            guard let posStr = attr("w:pos", in: attrsXML), let pos = Int(posStr) else { continue }
+            let val = attr("w:val", in: attrsXML) ?? "left"
+            let leader = attr("w:leader", in: attrsXML)
+            results.append(TabStopEntry(position: pos, alignment: val, leader: leader))
+        }
+        return results
+    }
+
+    /// Builds a `<w:tabs>...</w:tabs>` raw XML string from a set of tab
+    /// stops, sorted by position ascending (Word's own convention; multiple
+    /// tabs at the same position are meaningless and the caller-facing
+    /// insert/replace logic never produces duplicates).
+    private func buildTabsXML(_ stops: [TabStopEntry]) -> String {
+        let sorted = stops.sorted { $0.position < $1.position }
+        let inner = sorted.map { stop -> String in
+            var attrs = "w:val=\"\(stop.alignment)\""
+            if let leader = stop.leader {
+                attrs += " w:leader=\"\(leader)\""
+            }
+            attrs += " w:pos=\"\(stop.position)\""
+            return "<w:tab \(attrs)/>"
+        }.joined()
+        return "<w:tabs>\(inner)</w:tabs>"
+    }
+
     private func insertTabStop(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -16328,25 +16401,64 @@ actor WordMCPServer {
         guard let position = try optionalInt(args, "position") else {
             throw WordError.missingParameter("position")
         }
-        guard let doc = openDocuments[docId] else {
+        guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
 
         let alignment = args["alignment"]?.stringValue ?? "left"
-        let leader = args["leader"]?.stringValue ?? "none"
-
-        let paragraphs = doc.getParagraphs()
-        guard paragraphIndex >= 0 && paragraphIndex < paragraphs.count else {
-            throw WordError.invalidIndex(paragraphIndex)
-        }
+        let leaderArg = args["leader"]?.stringValue ?? "none"
 
         let validAlignments = ["left", "center", "right", "decimal"]
         guard validAlignments.contains(alignment) else {
             throw ToolRefusal("Invalid alignment. Valid options: \(validAlignments.joined(separator: ", "))")
         }
+        let validLeaders = ["none", "dot", "hyphen", "underscore"]
+        guard validLeaders.contains(leaderArg) else {
+            throw ToolRefusal("Invalid leader. Valid options: \(validLeaders.joined(separator: ", "))")
+        }
+        let leader: String? = leaderArg == "none" ? nil : leaderArg
 
-        // 定位點需要在段落屬性中設定 <w:tabs>
-        return "Tab stop added at position \(position) twips (alignment: \(alignment), leader: \(leader)) for paragraph \(paragraphIndex)"
+        // #245 (#139-style fix): bounds-check against the SAME top-level
+        // `.paragraph` walk the mutation below uses — not
+        // `doc.getParagraphs()` (which also recurses into block-level
+        // SDTs) — so an index that only makes sense under the SDT-
+        // recursive readback numbering is rejected here instead of
+        // silently mutating the wrong paragraph or no paragraph at all.
+        guard paragraphIndex >= 0 && paragraphIndex < topLevelParagraphCount(doc) else {
+            throw WordError.invalidIndex(paragraphIndex)
+        }
+        let paragraphIndices = doc.body.children.enumerated().compactMap { (i, child) -> Int? in
+            if case .paragraph = child { return i }
+            return nil
+        }
+        let actualIndex = paragraphIndices[paragraphIndex]
+        guard case .paragraph(var para) = doc.body.children[actualIndex] else {
+            throw WordError.invalidIndex(paragraphIndex)
+        }
+
+        var stops: [TabStopEntry]
+        let existingTabsIndex = para.properties.rawChildren.firstIndex { $0.name == "tabs" }
+        if let existingTabsIndex {
+            stops = parseExistingTabStops(fromTabsXML: para.properties.rawChildren[existingTabsIndex].xml)
+            // Word replaces any existing tab stop at the same position
+            // rather than stacking two on top of each other.
+            stops.removeAll { $0.position == position }
+        } else {
+            stops = []
+        }
+        stops.append(TabStopEntry(position: position, alignment: alignment, leader: leader))
+        let newTabsXML = buildTabsXML(stops)
+        if let existingTabsIndex {
+            para.properties.rawChildren[existingTabsIndex] = RawElement(name: "tabs", xml: newTabsXML)
+        } else {
+            para.properties.rawChildren.append(RawElement(name: "tabs", xml: newTabsXML))
+        }
+
+        doc.body.children[actualIndex] = .paragraph(para)
+        doc.markPartDirty("word/document.xml")
+        try await storeDocument(doc, for: docId)
+
+        return "Tab stop added at position \(position) twips (alignment: \(alignment), leader: \(leaderArg)) for paragraph \(paragraphIndex)"
     }
 
     /// 清除定位點
@@ -16357,14 +16469,26 @@ actor WordMCPServer {
         guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
-        guard let doc = openDocuments[docId] else {
+        guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
 
-        let paragraphs = doc.getParagraphs()
-        guard paragraphIndex >= 0 && paragraphIndex < paragraphs.count else {
+        guard paragraphIndex >= 0 && paragraphIndex < topLevelParagraphCount(doc) else {
             throw WordError.invalidIndex(paragraphIndex)
         }
+        let paragraphIndices = doc.body.children.enumerated().compactMap { (i, child) -> Int? in
+            if case .paragraph = child { return i }
+            return nil
+        }
+        let actualIndex = paragraphIndices[paragraphIndex]
+        guard case .paragraph(var para) = doc.body.children[actualIndex] else {
+            throw WordError.invalidIndex(paragraphIndex)
+        }
+
+        para.properties.rawChildren.removeAll { $0.name == "tabs" }
+        doc.body.children[actualIndex] = .paragraph(para)
+        doc.markPartDirty("word/document.xml")
+        try await storeDocument(doc, for: docId)
 
         return "Tab stops cleared for paragraph \(paragraphIndex)"
     }
@@ -16414,7 +16538,7 @@ actor WordMCPServer {
         guard let level = try optionalInt(args, "level") else {
             throw WordError.missingParameter("level")
         }
-        guard let doc = openDocuments[docId] else {
+        guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
 
@@ -16422,12 +16546,37 @@ actor WordMCPServer {
             throw ToolRefusal("Outline level must be between 0 (body text) and 9")
         }
 
-        let paragraphs = doc.getParagraphs()
-        guard paragraphIndex >= 0 && paragraphIndex < paragraphs.count else {
+        // #245 (#139-style fix): same top-level-only bounds check as
+        // `insertTabStop`/`clearTabStops` above, matching the mutation
+        // walk this function actually performs.
+        guard paragraphIndex >= 0 && paragraphIndex < topLevelParagraphCount(doc) else {
+            throw WordError.invalidIndex(paragraphIndex)
+        }
+        let paragraphIndices = doc.body.children.enumerated().compactMap { (i, child) -> Int? in
+            if case .paragraph = child { return i }
+            return nil
+        }
+        let actualIndex = paragraphIndices[paragraphIndex]
+        guard case .paragraph(var para) = doc.body.children[actualIndex] else {
             throw WordError.invalidIndex(paragraphIndex)
         }
 
-        // 大綱層級需要在段落屬性中設定 <w:outlineLvl>
+        // Schema's own documented contract is "1-9, or 0 for body text"
+        // (see the tool's `level` schema description) — matching Word's UI
+        // outline-level dropdown (本文／第 1 階…第 9 階), which maps
+        // 1-9 to `<w:outlineLvl w:val="0"/>`..`val="8"` (ECMA-376
+        // ST_DecimalNumber, 0-based) and "body text" to omitting the
+        // element entirely (no ambient outline level assigned).
+        para.properties.rawChildren.removeAll { $0.name == "outlineLvl" }
+        if level > 0 {
+            para.properties.rawChildren.append(
+                RawElement(name: "outlineLvl", xml: "<w:outlineLvl w:val=\"\(level - 1)\"/>"))
+        }
+
+        doc.body.children[actualIndex] = .paragraph(para)
+        doc.markPartDirty("word/document.xml")
+        try await storeDocument(doc, for: docId)
+
         let levelDesc = level == 0 ? "body text" : "level \(level)"
         return "Outline level set to \(levelDesc) for paragraph \(paragraphIndex)"
     }
@@ -16700,18 +16849,42 @@ actor WordMCPServer {
         guard let width = try optionalInt(args, "width") else {
             throw WordError.missingParameter("width")
         }
-        guard let doc = openDocuments[docId] else {
+        guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
 
-        let widthType = args["width_type"]?.stringValue ?? "dxa"
-
-        let tables = doc.getTables()
-        guard tableIndex >= 0 && tableIndex < tables.count else {
-            throw WordError.invalidIndex(tableIndex)
+        let widthTypeStr = args["width_type"]?.stringValue ?? "dxa"
+        guard let widthType = WidthType(rawValue: widthTypeStr) else {
+            throw ToolRefusal("Invalid width_type. Valid options: dxa, pct, auto")
         }
 
-        let table = tables[tableIndex]
+        // #245: `doc.getTables()`/`table_index` never located the underlying
+        // `body.children` slot, and nothing here ever mutated `doc` at all —
+        // this used to just validate and return a descriptive string. There
+        // is no `setCellWidth`-equivalent public ooxml-swift API, but the
+        // same `body.children[actualIndex] = .table(table)` +
+        // `markPartDirty` pattern `setTableBorders`/`setCellShading` use
+        // internally (ooxml-swift Document.swift) is fully reachable from
+        // here: `TableCellProperties.width`/`widthType` are plain stored
+        // properties (not the tree-backed-mode `xmlNode` computed
+        // indirection some other model types have), and DocxReader parses
+        // tables into legacy/detached mode exclusively (`var table =
+        // Table()`, never `Table(xmlNode:)`), so this round-trips exactly
+        // like the other table-mutating tools that already work.
+        // `getTableIndices()` itself is `private` to ooxml-swift, so the
+        // top-level `.table` walk below replicates its exact logic instead
+        // of calling it.
+        let tableIndices = doc.body.children.enumerated().compactMap { (i, child) -> Int? in
+            if case .table = child { return i }
+            return nil
+        }
+        guard tableIndex >= 0 && tableIndex < tableIndices.count else {
+            throw WordError.invalidIndex(tableIndex)
+        }
+        let actualIndex = tableIndices[tableIndex]
+        guard case .table(var table) = doc.body.children[actualIndex] else {
+            throw WordError.invalidIndex(tableIndex)
+        }
         guard row >= 0 && row < table.rows.count else {
             throw WordError.invalidIndex(row)
         }
@@ -16719,8 +16892,16 @@ actor WordMCPServer {
             throw WordError.invalidIndex(col)
         }
 
-        // 儲存格寬度需要在 <w:tcPr> 中設定 <w:tcW>
-        return "Cell width set to \(width) \(widthType) for table \(tableIndex), row \(row), col \(col)"
+        table.rows[row].cells[col].properties.width = width
+        table.rows[row].cells[col].properties.widthType = widthType
+        doc.body.children[actualIndex] = .table(table)
+        if tableIndex < doc.body.tables.count {
+            doc.body.tables[tableIndex] = table
+        }
+        doc.markPartDirty("word/document.xml")
+        try await storeDocument(doc, for: docId)
+
+        return "Cell width set to \(width) \(widthTypeStr) for table \(tableIndex), row \(row), col \(col)"
     }
 
     /// 設定列高
@@ -16737,24 +16918,44 @@ actor WordMCPServer {
         guard let height = try optionalInt(args, "height") else {
             throw WordError.missingParameter("height")
         }
-        guard let doc = openDocuments[docId] else {
+        guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
 
-        let heightRule = args["height_rule"]?.stringValue ?? "atLeast"
-
-        let tables = doc.getTables()
-        guard tableIndex >= 0 && tableIndex < tables.count else {
-            throw WordError.invalidIndex(tableIndex)
+        let heightRuleStr = args["height_rule"]?.stringValue ?? "atLeast"
+        guard let heightRule = HeightRule(rawValue: heightRuleStr) else {
+            throw ToolRefusal("Invalid height_rule. Valid options: auto, atLeast, exact")
         }
 
-        let table = tables[tableIndex]
+        // #245: same shape as `setCellWidth` above — `TableRowProperties
+        // .height`/`heightRule` are plain stored properties, mutated via
+        // the same top-level `.table` body.children walk +
+        // `markPartDirty("word/document.xml")`.
+        let tableIndices = doc.body.children.enumerated().compactMap { (i, child) -> Int? in
+            if case .table = child { return i }
+            return nil
+        }
+        guard tableIndex >= 0 && tableIndex < tableIndices.count else {
+            throw WordError.invalidIndex(tableIndex)
+        }
+        let actualIndex = tableIndices[tableIndex]
+        guard case .table(var table) = doc.body.children[actualIndex] else {
+            throw WordError.invalidIndex(tableIndex)
+        }
         guard rowIndex >= 0 && rowIndex < table.rows.count else {
             throw WordError.invalidIndex(rowIndex)
         }
 
-        // 列高需要在 <w:trPr> 中設定 <w:trHeight>
-        return "Row height set to \(height) twips (\(heightRule)) for table \(tableIndex), row \(rowIndex)"
+        table.rows[rowIndex].properties.height = height
+        table.rows[rowIndex].properties.heightRule = heightRule
+        doc.body.children[actualIndex] = .table(table)
+        if tableIndex < doc.body.tables.count {
+            doc.body.tables[tableIndex] = table
+        }
+        doc.markPartDirty("word/document.xml")
+        try await storeDocument(doc, for: docId)
+
+        return "Row height set to \(height) twips (\(heightRuleStr)) for table \(tableIndex), row \(rowIndex)"
     }
 
     /// 設定表格對齊
