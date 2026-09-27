@@ -15312,10 +15312,31 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let paragraphs = doc.getParagraphs()
-        guard paragraphIndex >= 0 && paragraphIndex < paragraphs.count else {
-            throw WordError.invalidIndex(paragraphIndex)
+        // #251: this used to bounds-check `paragraphIndex` against
+        // `doc.getParagraphs()` (the readback family, which recurses into
+        // block-level SDTs but skips tables) and then insert at
+        // `body.children[paragraphIndex + 1]` — a `body.children` position,
+        // a DIFFERENT index family. In a document with a table or
+        // block-level SDT before the target paragraph, the two counting
+        // schemes diverge: a readback-in-range index could land the break
+        // BEFORE the intended paragraph instead of after it, or target a
+        // position that isn't even adjacent to a paragraph at all. Both
+        // steps must use the SAME family — top-level paragraph ordinal,
+        // matching `insert_horizontal_line`/`insert_symbol`/
+        // `insert_drop_cap` and `docs/paragraph-index-conventions.md`: find
+        // the target top-level paragraph's actual `body.children` position,
+        // then insert one past THAT.
+        let topLevelBodyIndices = doc.body.children.enumerated().compactMap { (i, child) -> Int? in
+            if case .paragraph = child { return i }
+            return nil
         }
+        guard paragraphIndex >= 0 && paragraphIndex < topLevelBodyIndices.count else {
+            throw WordError.invalidParameter(
+                "paragraph_index",
+                "超出頂層段落範圍（頂層段落數：\(topLevelBodyIndices.count)）"
+            )
+        }
+        let actualIndex = topLevelBodyIndices[paragraphIndex]
 
         // 在指定段落後插入一個包含分欄符的段落
         var columnBreakPara = Paragraph()
@@ -15326,8 +15347,8 @@ actor WordMCPServer {
         columnBreakPara.runs = [columnBreakRun]
         columnBreakPara.properties.pageBreakBefore = false
 
-        // 插入到指定段落之後
-        doc.insertParagraph(columnBreakPara, at: paragraphIndex + 1)
+        // 插入到指定段落之後（body.children 的實際位置，不是讀取回報的索引）
+        doc.insertParagraph(columnBreakPara, at: actualIndex + 1)
         try await storeDocument(doc, for: docId)
 
         return "Inserted column break after paragraph \(paragraphIndex)"
