@@ -123,6 +123,41 @@ final class Issue187WhitespaceRunSearchTests: XCTestCase {
         XCTAssertFalse(message.contains("normalized"), message)
     }
 
+    // MARK: - R2 review Finding 3: search_text／replace_text fallback consistency
+
+    /// The document's whitespace here is REAL and correctly parsed (`<w:t
+    /// xml:space="preserve"> </w:t>`, a single space, nothing lost) — the
+    /// caller simply typed one extra space in the query. Neither tool
+    /// should report a match: `search_text` must NOT show a misleading
+    /// "(normalized match)" for a difference that has nothing to do with
+    /// parser data loss, and `replace_text` must agree (0 replaced) rather
+    /// than the two tools disagreeing on the same input.
+    func testSearchAndReplaceAgreeWhenQueryHasExtraWhitespaceButDocumentDidNotLoseAny() async throws {
+        let searchOutput = try await search(query: "否  □是", documentXML: realPreservedSpaceDocumentXML)
+        XCTAssertEqual(searchOutput, "No matches found for '否  □是'",
+                       "a query with the wrong whitespace COUNT (not a parser loss) must not produce a normalized hit: \(searchOutput)")
+
+        let (_, replaceMessage) = try await replaceAndSave(
+            find: "否  □是", replace: "否  ■是", documentXML: realPreservedSpaceDocumentXML)
+        XCTAssertTrue(replaceMessage.contains("Replaced 0"),
+                      "replace_text must agree with search_text that nothing matched: \(replaceMessage)")
+        XCTAssertFalse(replaceMessage.contains("normalized"), replaceMessage)
+    }
+
+    /// The mirror case: the document genuinely lost a whitespace-only run
+    /// during parsing (the bare-`<w:t>` reproducer). Both tools must agree
+    /// that a normalized match DOES exist, for the identical query text.
+    func testSearchAndReplaceAgreeWhenDocumentGenuinelyLostWhitespace() async throws {
+        let searchOutput = try await search(query: "否   □是", documentXML: bareWhitespaceRunDocumentXML)
+        XCTAssertTrue(searchOutput.contains("Found 1 match"), searchOutput)
+        XCTAssertTrue(searchOutput.contains("normalized match"), searchOutput)
+
+        let (_, replaceMessage) = try await replaceAndSave(
+            find: "否   □是", replace: "否   ■是", documentXML: bareWhitespaceRunDocumentXML)
+        XCTAssertTrue(replaceMessage.contains("Replaced 1"), replaceMessage)
+        XCTAssertTrue(replaceMessage.contains("normalized"), replaceMessage)
+    }
+
     private func replaceAndSave(find: String, replace: String, documentXML: String) async throws -> (saved: String, message: String) {
         let source = scratch.appendingPathComponent("source-\(UUID().uuidString).docx")
         let output = scratch.appendingPathComponent("saved-\(UUID().uuidString).docx")
@@ -192,6 +227,29 @@ final class Issue187WhitespaceRunSearchTests: XCTestCase {
 }
 
 // MARK: - Fixture
+
+/// One table cell, three runs: "否", a whitespace-only run holding a SINGLE
+/// space WITH `xml:space="preserve"` (correctly parsed, nothing lost —
+/// unlike `bareWhitespaceRunDocumentXML` below), "□是". Used to prove
+/// `search_text` does not report a "(normalized match)" for a query whose
+/// whitespace amount simply doesn't match a document that never lost any
+/// (R2 review Finding 3).
+private let realPreservedSpaceDocumentXML = """
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<w:body>
+<w:tbl>
+<w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr>
+<w:tblGrid><w:gridCol w:w="4000"/></w:tblGrid>
+<w:tr>
+<w:tc><w:tcPr><w:tcW w:w="4000" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>否</w:t></w:r><w:r><w:t xml:space="preserve"> </w:t></w:r><w:r><w:t>□是</w:t></w:r></w:p></w:tc>
+</w:tr>
+</w:tbl>
+<w:p/>
+<w:sectPr></w:sectPr>
+</w:body>
+</w:document>
+"""
 
 /// One table cell, four runs: "否", a bare (no `xml:space="preserve"`)
 /// whitespace-only run "   ", "□", "是" — matches the exact pattern
