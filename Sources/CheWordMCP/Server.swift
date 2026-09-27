@@ -8163,7 +8163,20 @@ actor WordMCPServer {
         if FileManager.default.fileExists(atPath: lockFile.path) {
             throw WordError.invalidFormat("File is open in Microsoft Word. Please save and close it first: \(sourceURL.lastPathComponent)")
         }
-        let document = try DocxReader.read(from: sourceURL)
+        var document = try DocxReader.read(from: sourceURL)
+        // #244 (sister leak to #221): `get_text`/`get_document_text` are
+        // source_path-only (Tier 1, no `doc_id` branch at all — see their
+        // Tool schemas) and never route through `resolveDocument`, so
+        // #221's fix at that shared choke point never covered this
+        // hand-written Direct Mode open. `document.getText()` below only
+        // walks the already-materialized typed `body` — it never touches
+        // `archiveTempDir` — so releasing the extracted tempDir right here,
+        // before reading the text out, is safe, same as #221 H2's
+        // `exportMarkdown.archiveExtracted` fix.
+        logDebug(event: "getText.archiveExtracted", [
+            ("archive_temp_dir", document.archiveTempDir?.path ?? "nil"),
+        ])
+        document.close()
         return document.getText()
     }
 
