@@ -8526,6 +8526,42 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
+        // #238: ooxml-swift's WordDocument.deleteTextAsRevision guards
+        // `start >= 0, end >= start, end <= totalLength` as one compound
+        // condition and always throws `WordError.invalidIndex(end)` — so
+        // `start: -1, end: 3` and `start: 1000, end: 3` both say "Invalid
+        // index: 3", blaming `end` when `start` is what is actually out of
+        // range. Pre-validate ourselves and name the true culprit — but
+        // only once track-changes-off and an out-of-range paragraph_index
+        // have already had their chance to fire exactly as before (same
+        // precondition order the library checks internally), so this only
+        // changes which value gets named for a bad start/end, not which
+        // error fires first for the other cases.
+        if doc.isTrackChangesEnabled() {
+            var bodyChildIdx: Int? = nil
+            var seen = 0
+            for (i, child) in doc.body.children.enumerated() {
+                if case .paragraph = child {
+                    if seen == paragraphIndex { bodyChildIdx = i; break }
+                    seen += 1
+                }
+            }
+            if let bodyChildIdx, case .paragraph(let paragraph) = doc.body.children[bodyChildIdx] {
+                let totalLength = paragraph.runs.reduce(0) { $0 + $1.text.count }
+                if start < 0 {
+                    throw ToolRefusal("delete_text_as_revision: start must be >= 0, got start=\(start)")
+                }
+                if end < start {
+                    throw ToolRefusal("delete_text_as_revision: start must be <= end (end=\(end)), got start=\(start)")
+                }
+                if end > totalLength {
+                    throw ToolRefusal("delete_text_as_revision: end must be <= paragraph length \(totalLength), got end=\(end)")
+                }
+            }
+            // else: paragraph_index itself is out of range — fall through
+            // to the library call, which reports that correctly already.
+        }
+
         let author = args["author"]?.stringValue
         let date = parseISODate(args["date"]?.stringValue)
         let revId = try doc.deleteTextAsRevision(
@@ -17265,7 +17301,19 @@ actor WordMCPServer {
             try await storeDocument(doc, for: docId)
             return "{ \"num_id\": \(numId) }"
         } catch WordError.invalidIndex(let count) {
-            return "{ \"error\": \"invalid_levels\", \"count\": \(count) }"
+            // #238: this used to `return` a `{ "error": "invalid_levels", ... }`
+            // string as if it were a normal successful result — `isError` was
+            // never set, so a caller that only checks `isError` (rather than
+            // parsing the body as JSON looking for an "error" key) believed
+            // the call had succeeded. `count` is 0 when every item in
+            // `levels` was missing a required field (ilvl/num_format/
+            // lvl_text) and therefore skipped above; otherwise it is
+            // `levels.count` when ooxml-swift's own upper bound (max 9
+            // levels) was exceeded.
+            let reason = count == 0
+                ? "no valid level entries (each requires 'ilvl', 'num_format', 'lvl_text')"
+                : "\(count) levels given, but at most 9 are allowed"
+            throw ToolRefusal("create_numbering_definition: invalid 'levels' — \(reason)")
         }
     }
 
