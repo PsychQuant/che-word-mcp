@@ -10940,9 +10940,34 @@ actor WordMCPServer {
         case invalidStructure(String)
     }
 
+    /// #116/#117 — `parseMathComponent` recurses into `numerator`/
+    /// `denominator`/`radicand`/`base`/`sub`/`sup` with no depth counter.
+    /// The `components` argument is caller-supplied JSON, not hand-typed
+    /// LaTeX — a fuzzer or an AI-agent caller can trivially construct a
+    /// tree thousands of levels deep, and each recursive call consumes a
+    /// non-trivial slice of the Swift call stack. Stack overflow is
+    /// uncatchable in Swift: it kills the whole MCP server process (SIGBUS/
+    /// SIGSEGV/SIGTRAP depending on platform), taking every other open
+    /// document session down with it — not just this one tool call.
+    ///
+    /// 64 is the cap: #117's own suggested fix used the same number, and it
+    /// is generous by a wide margin — Word's own equation editor UI does
+    /// not let a human author nest fractions/radicals/scripts anywhere near
+    /// this deep (a double-digit nesting depth is already an extreme,
+    /// unreadable equation in practice), while staying far below any
+    /// plausible Swift stack budget (the issue's own estimate: ~3,000
+    /// levels exhausts a 512 KB stack at ~160 bytes/frame; 64 levels is two
+    /// orders of magnitude under that).
+    private static let maxMathComponentDepth = 64
+
     /// Parse an MCP Value (JSON) into a MathComponent tree.
     /// Supported types: `run`, `fraction`, `radical`, `subSuperScript`, `nary`.
-    private func parseMathComponent(from value: Value) throws -> MathComponent {
+    private func parseMathComponent(from value: Value, depth: Int = 0) throws -> MathComponent {
+        guard depth <= Self.maxMathComponentDepth else {
+            throw MathParseError.invalidStructure(
+                "components tree exceeds max nesting depth \(Self.maxMathComponentDepth)"
+            )
+        }
         guard case .object(let obj) = value else {
             throw MathParseError.invalidStructure("expected object, got non-object value")
         }
@@ -10966,8 +10991,8 @@ actor WordMCPServer {
                 throw MathParseError.missingField(field: "denominator", forType: type)
             }
             return MathFraction(
-                numerator: try num.map { try parseMathComponent(from: $0) },
-                denominator: try den.map { try parseMathComponent(from: $0) }
+                numerator: try num.map { try parseMathComponent(from: $0, depth: depth + 1) },
+                denominator: try den.map { try parseMathComponent(from: $0, depth: depth + 1) }
             )
 
         case "radical":
@@ -10976,10 +11001,10 @@ actor WordMCPServer {
             }
             var degree: [MathComponent]?
             if case .array(let d)? = obj["degree"] {
-                degree = try d.map { try parseMathComponent(from: $0) }
+                degree = try d.map { try parseMathComponent(from: $0, depth: depth + 1) }
             }
             return MathRadical(
-                radicand: try radicand.map { try parseMathComponent(from: $0) },
+                radicand: try radicand.map { try parseMathComponent(from: $0, depth: depth + 1) },
                 degree: degree
             )
 
@@ -10989,14 +11014,14 @@ actor WordMCPServer {
             }
             var sub: [MathComponent]?
             if case .array(let s)? = obj["sub"] {
-                sub = try s.map { try parseMathComponent(from: $0) }
+                sub = try s.map { try parseMathComponent(from: $0, depth: depth + 1) }
             }
             var sup: [MathComponent]?
             if case .array(let s)? = obj["sup"] {
-                sup = try s.map { try parseMathComponent(from: $0) }
+                sup = try s.map { try parseMathComponent(from: $0, depth: depth + 1) }
             }
             return MathSubSuperScript(
-                base: try base.map { try parseMathComponent(from: $0) },
+                base: try base.map { try parseMathComponent(from: $0, depth: depth + 1) },
                 sub: sub,
                 sup: sup
             )
@@ -11008,8 +11033,8 @@ actor WordMCPServer {
             }
             var sub: [MathComponent]?
             var sup: [MathComponent]?
-            if case .array(let s)? = obj["sub"] { sub = try s.map { try parseMathComponent(from: $0) } }
-            if case .array(let s)? = obj["sup"] { sup = try s.map { try parseMathComponent(from: $0) } }
+            if case .array(let s)? = obj["sub"] { sub = try s.map { try parseMathComponent(from: $0, depth: depth + 1) } }
+            if case .array(let s)? = obj["sup"] { sup = try s.map { try parseMathComponent(from: $0, depth: depth + 1) } }
             guard case .array(let base)? = obj["base"] else {
                 throw MathParseError.missingField(field: "base", forType: type)
             }
@@ -11017,7 +11042,7 @@ actor WordMCPServer {
                 op: op,
                 sub: sub,
                 sup: sup,
-                base: try base.map { try parseMathComponent(from: $0) }
+                base: try base.map { try parseMathComponent(from: $0, depth: depth + 1) }
             )
 
         default:
