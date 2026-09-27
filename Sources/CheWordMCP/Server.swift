@@ -958,7 +958,7 @@ actor WordMCPServer {
     /// the tooling expected this constant to exist before it actually did.
     /// `Issue211VersionConsistencyTests` locks this against
     /// `mcpb/manifest.json` going forward.
-    static let serverVersion = "4.7.0"
+    static let serverVersion = "4.8.0"
 
     init(forceDebugLogging: Bool = false, documentConfigURL: URL? = nil) async {
         self.documentProfileStore = DocumentProfileStore(configURL: documentConfigURL ?? DocumentProfileStore.defaultConfigURL)
