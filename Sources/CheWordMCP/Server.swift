@@ -3607,11 +3607,21 @@ actor WordMCPServer {
                             "description": .string("回覆者名稱（預設 'User'）")
                         ])
                     ]),
-                    "required": .array([.string("doc_id")]),
-                    "oneOf": .array([
-                        .object(["required": .array([.string("comment_id")])]),
-                        .object(["required": .array([.string("parent_comment_id")])])
-                    ])
+                    "required": .array([.string("doc_id")])
+                    // R2 (independent review F2): a top-level "oneOf" used to
+                    // enforce "comment_id or parent_comment_id, exactly one"
+                    // here. `oneOf` is valid JSON Schema / OpenAPI 3.0, but
+                    // is NOT in Gemini's `Schema` field list (same #236
+                    // concern as `additionalProperties`), so a client that
+                    // converts this tool's schema into that shape could
+                    // reject this tool, or the whole tools/list response.
+                    // Removed — the runtime "at least one of the two" check
+                    // in `replyToComment` (`commentIdArg ?? parentCommentIdArg`,
+                    // erroring with `missingParameter("comment_id")` when
+                    // both are absent) already enforces this independently
+                    // of the schema, so no behavior changes: a caller who
+                    // provides neither still gets rejected, just without a
+                    // schema-level hint before the call is even attempted.
                 ])
             ),
             Tool(
@@ -3653,11 +3663,10 @@ actor WordMCPServer {
                             "description": .string("true 時新增 reply 後同步標記該 comment resolved（target 必須是 thread root）")
                         ])
                     ]),
-                    "required": .array([.string("doc_id")]),
-                    "oneOf": .array([
-                        .object(["required": .array([.string("comment_id")])]),
-                        .object(["required": .array([.string("parent_comment_id")])])
-                    ])
+                    "required": .array([.string("doc_id")])
+                    // R2 (F2): same removal as `add_comment_reply` above —
+                    // see that tool's comment for the full rationale. Same
+                    // runtime enforcement applies here (shared handler).
                 ])
             ),
             Tool(

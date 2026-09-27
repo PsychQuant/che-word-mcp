@@ -558,6 +558,16 @@ final class CommentReviewWorkflowToolsTests: XCTestCase {
 
     // MARK: - Issue #133 — add_comment_reply / reply_to_comment schema symmetry
 
+    /// R2 (independent review F2, #236): a top-level `oneOf` is not in
+    /// Gemini's `Schema` field list (the same OpenAPI 3.0 subset concern
+    /// #236 fixed for `additionalProperties` and the 14 missing `items`).
+    /// This test used to assert the schema DECLARED `oneOf` (#133's
+    /// original contract); it now asserts the opposite — both properties
+    /// still exist and are still individually optional (neither is in
+    /// `required`), but nothing at the schema level enforces "exactly one".
+    /// The "at least one of the two" contract still holds, just enforced at
+    /// RUNTIME instead — see `testReplyToCommentRejectsWhenNeitherIdAliasProvided`
+    /// below, which is unchanged by this edit and still passes.
     func testAddCommentReplyAndReplyToCommentSchemasAreSymmetric() async throws {
         let server = await WordMCPServer()
         let tools = await server.toolsForTesting()
@@ -575,14 +585,13 @@ final class CommentReviewWorkflowToolsTests: XCTestCase {
             }
             XCTAssertNotNil(properties["comment_id"], "\(tool.name) SHALL accept comment_id")
             XCTAssertNotNil(properties["parent_comment_id"], "\(tool.name) SHALL accept parent_comment_id")
-            guard let oneOf = schema["oneOf"]?.arrayValue else {
-                XCTFail("\(tool.name) SHALL declare oneOf requiring comment_id or parent_comment_id")
-                continue
-            }
-            let requiredNames = oneOf.compactMap { $0.objectValue?["required"]?.arrayValue }
-                .flatMap { $0.compactMap(\.stringValue) }
-            XCTAssertTrue(requiredNames.contains("comment_id"), "\(tool.name): \(requiredNames)")
-            XCTAssertTrue(requiredNames.contains("parent_comment_id"), "\(tool.name): \(requiredNames)")
+            XCTAssertNil(
+                schema["oneOf"],
+                "\(tool.name) SHALL NOT declare a top-level oneOf (not in Gemini's Schema field list, #236 F2); the at-least-one contract is enforced at runtime instead"
+            )
+            let requiredNames = schema["required"]?.arrayValue?.compactMap(\.stringValue) ?? []
+            XCTAssertFalse(requiredNames.contains("comment_id"), "\(tool.name): comment_id must stay individually optional in schema")
+            XCTAssertFalse(requiredNames.contains("parent_comment_id"), "\(tool.name): parent_comment_id must stay individually optional in schema")
         }
     }
 
