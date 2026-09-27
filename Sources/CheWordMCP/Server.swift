@@ -3639,7 +3639,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "resolve_comment",
-                description: "將註解標記為已解決或未解決",
+                description: "將註解標記為已解決或未解決（僅限 thread root；對回覆的 id 呼叫會被拒絕並指名應改用哪一則根留言，與 add_comment_reply/reply_to_comment 的 #137 規則一致，#252）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -3661,7 +3661,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "bulk_resolve_comments",
-                description: "批次標記多個註解為 resolved；不中斷於單筆失敗，回傳成功數與 failed 清單。重複的 ID 只計為一筆 resolved（#132）；上限是對**去重後**的不重複 ID 數量檢查（最多 1000 筆），超過才拒絕整個呼叫（isError）——重複值不會被算進這個上限，不會只處理前 1000 筆",
+                description: "批次標記多個註解為 resolved；不中斷於單筆失敗，回傳成功數與 failed 清單。重複的 ID 只計為一筆 resolved（#132）；上限是對**去重後**的不重複 ID 數量檢查（最多 1000 筆），超過才拒絕整個呼叫（isError）——重複值不會被算進這個上限，不會只處理前 1000 筆。回覆（reply）的 id 一律列入 failed（error: is_reply，並附 parent_id），與單筆 resolve_comment 一致，不會把回覆單獨標記為已解決（#252）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -11932,6 +11932,32 @@ actor WordMCPServer {
         }
         let resolved = try optionalBool(args, "resolved") ?? true
 
+        // #252: consistent with #137's `add_comment_reply`/`reply_to_comment`
+        // rejection — Word's "done" state is a THREAD-ROOT-level flag
+        // (`w15:done` on `commentEx`, keyed by the root's `paraId`), not a
+        // per-comment one. Marking a reply done alone produces a state Word
+        // itself cannot display consistently (the thread's done indicator is
+        // read from the root, not from whichever reply happened to be
+        // marked). Reject before mutating and name the thread root the
+        // caller should target instead, the same shape #137 already
+        // established for the write side of a reply.
+        // #252: consistent with #137's `add_comment_reply`/`reply_to_comment`
+        // rejection — Word's "done" state is a THREAD-ROOT-level flag
+        // (`w15:done` on `commentEx`, keyed by the root's `paraId`), not a
+        // per-comment one. Marking a reply done alone produces a state Word
+        // itself cannot display consistently (the thread's done indicator is
+        // read from the root, not from whichever reply happened to be
+        // marked). Reject before mutating and name the thread root the
+        // caller should target instead, the same shape #137 already
+        // established for the write side of a reply.
+        if let target = doc.comments.comments.first(where: { $0.id == commentId }),
+           let parentId = target.parentId {
+            throw WordError.invalidParameter(
+                "comment_id",
+                "cannot resolve a reply (comment_id \(commentId) has parent_id \(parentId)); resolve the thread root instead"
+            )
+        }
+
         // 使用 CommentsCollection.markAsDone 方法
         doc.comments.markAsDone(commentId, done: resolved)
         markCommentsExtendedTypedPartsDirtyIfNeeded(&doc)
@@ -12044,6 +12070,22 @@ actor WordMCPServer {
         for id in uniqueIds {
             guard let index = indexById[id] else {
                 failed.append("{\"comment_id\":\(id),\"error\":\"not_found\"}")
+                continue
+            }
+            // #252: same rejection `resolveComment` now applies for a
+            // single id (see its #137-consistency comment above) — Word's
+            // "done" state is a thread-root-level flag, and this tool's own
+            // documented contract is "不中斷於單筆失敗": a reply id fails
+            // THAT entry via `failed`, it does not abort the whole batch or
+            // silently mark the reply done.
+            // #252: same rejection `resolveComment` now applies for a
+            // single id (see its #137-consistency comment above) — Word's
+            // "done" state is a thread-root-level flag, and this tool's own
+            // documented contract is "不中斷於單筆失敗": a reply id fails
+            // THAT entry via `failed`, it does not abort the whole batch or
+            // silently mark the reply done.
+            if let parentId = doc.comments.comments[index].parentId {
+                failed.append("{\"comment_id\":\(id),\"error\":\"is_reply\",\"parent_id\":\(parentId)}")
                 continue
             }
             doc.comments.comments[index].done = true
