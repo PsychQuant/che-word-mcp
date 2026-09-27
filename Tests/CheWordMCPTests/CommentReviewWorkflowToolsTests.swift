@@ -291,6 +291,105 @@ final class CommentReviewWorkflowToolsTests: XCTestCase {
                       "past the shared 5000-char threshold, summarize:true SHALL elide, got: \(summarized.prefix(200))")
     }
 
+    // MARK: - Issue #131 R2 — offset coverage + plain-text pagination (review findings 1/DEFECT-A)
+
+    func testListCommentsJSONModeOffsetAdvancesTheWindow() async throws {
+        let url = try writeCommentFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("offsetjson")]
+        )
+        let result = await server.invokeToolForTesting(
+            name: "list_comments",
+            arguments: ["doc_id": .string("offsetjson"), "include_context": .bool(true), "limit": .int(1), "offset": .int(1)]
+        )
+        let out = textOf(result)
+        XCTAssertTrue(out.contains(#""id":2"#), "offset:1 SHALL skip comment 1 and land on comment 2, got: \(out)")
+        XCTAssertFalse(out.contains(#""id":1"#), out)
+        XCTAssertTrue(out.contains(#""total":2"#), out)
+        XCTAssertTrue(out.contains(#""returned":1"#), out)
+        XCTAssertTrue(out.contains(#""truncated":false"#),
+                     "offset:1 + limit:1 exhausts the remaining comment; nothing left to disclose, got: \(out)")
+    }
+
+    func testListCommentsJSONModeOffsetBeyondTotalReturnsEmptyNotTruncated() async throws {
+        let url = try writeCommentFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("offsetjsonbeyond")]
+        )
+        let result = await server.invokeToolForTesting(
+            name: "list_comments",
+            arguments: ["doc_id": .string("offsetjsonbeyond"), "include_context": .bool(true), "offset": .int(5)]
+        )
+        let out = textOf(result)
+        XCTAssertTrue(out.contains(#""total":2"#), out)
+        XCTAssertTrue(out.contains(#""returned":0"#), out)
+        XCTAssertTrue(out.contains(#""truncated":false"#),
+                     "offset past total leaves nothing beyond what was returned (0 of 0 remaining), got: \(out)")
+        XCTAssertTrue(out.contains(#""comments":[]"#), out)
+    }
+
+    func testListCommentsPlainTextModeIsPaginated() async throws {
+        let url = try writeCommentFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("plaintextpage")]
+        )
+
+        let page1 = textOf(await server.invokeToolForTesting(
+            name: "list_comments",
+            arguments: ["doc_id": .string("plaintextpage"), "limit": .int(1)]
+        ))
+        XCTAssertTrue(page1.contains("total 2, showing 1-1"), page1)
+        XCTAssertTrue(page1.contains("[ID: 1]"), page1)
+        XCTAssertFalse(page1.contains("[ID: 2]"), page1)
+        XCTAssertTrue(page1.contains("1 more comment"), page1)
+
+        let page2 = textOf(await server.invokeToolForTesting(
+            name: "list_comments",
+            arguments: ["doc_id": .string("plaintextpage"), "limit": .int(1), "offset": .int(1)]
+        ))
+        XCTAssertTrue(page2.contains("total 2, showing 2-2"), page2)
+        XCTAssertTrue(page2.contains("[ID: 2]"), page2)
+        XCTAssertFalse(page2.contains("[ID: 1]"), page2)
+        XCTAssertFalse(page2.contains("more comment"),
+                       "the last page SHALL NOT claim more comments remain, got: \(page2)")
+    }
+
+    /// Review finding 1 / DEFECT-A: an `offset` past the end used to print a
+    /// header claiming a real range ("showing 0-2") while the body printed
+    /// nothing — pairing an empty-window sentinel with `total` as if they
+    /// described the same range. `comments.isEmpty` above already rules out
+    /// "the document itself has zero comments", so an empty `window` here
+    /// can only mean the offset landed past the end; the message SHALL say
+    /// that plainly instead of a `showing A-B` range that never existed.
+    func testListCommentsPlainTextModeOffsetBeyondTotalIsUnambiguous() async throws {
+        let url = try writeCommentFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("plaintextbeyond")]
+        )
+        let out = textOf(await server.invokeToolForTesting(
+            name: "list_comments",
+            arguments: ["doc_id": .string("plaintextbeyond"), "offset": .int(5)]
+        ))
+        XCTAssertFalse(out.contains("showing"),
+                       "an out-of-range offset SHALL NOT be described as a showing-A-B range, got: \(out)")
+        XCTAssertFalse(out.contains("[ID:"), out)
+        XCTAssertTrue(out.contains("total 2"), out)
+        XCTAssertTrue(out.contains("offset 5"), out)
+        XCTAssertTrue(out.contains("beyond"), out)
+    }
+
     // MARK: - Issue #132 — bulk_resolve_comments dedupe + size cap + O(M+N)
 
     func testBulkResolveCommentsDedupesRepeatedIds() async throws {
@@ -349,6 +448,71 @@ final class CommentReviewWorkflowToolsTests: XCTestCase {
         let out = textOf(result)
         XCTAssertTrue(out.contains(#""resolved":2"#), out)
         XCTAssertTrue(out.contains(#""error":"not_found""#), out)
+    }
+
+    // MARK: - Issue #132 R2 — cap checked post-dedup (review finding 2 / DEFECT-B)
+
+    /// Exactly at the cap, all distinct — the boundary the cap is meant to
+    /// allow through. Most are `not_found` against the 2-comment fixture;
+    /// that's fine, this test is about the guard, not the resolve outcome.
+    func testBulkResolveCommentsAcceptsExactlyOneThousandUniqueIds() async throws {
+        let url = try writeCommentFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("cap1000")]
+        )
+        let ids: [Value] = (1...1000).map { .int($0) }
+        let result = await server.invokeToolForTesting(
+            name: "bulk_resolve_comments",
+            arguments: ["doc_id": .string("cap1000"), "comment_ids": .array(ids)]
+        )
+        XCTAssertNotEqual(result.isError, true,
+                          "1000 distinct ids SHALL NOT be rejected, got: \(textOf(result))")
+        XCTAssertTrue(textOf(result).contains(#""resolved":2"#), textOf(result))
+    }
+
+    /// One past the cap, all distinct after dedup (they already were
+    /// distinct) — the case the cap SHALL still refuse.
+    func testBulkResolveCommentsRejectsWhenUniqueCountExceedsCapAfterDedup() async throws {
+        let url = try writeCommentFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("cap1001unique")]
+        )
+        let ids: [Value] = (1...1001).map { .int($0) }
+        let result = await server.invokeToolForTesting(
+            name: "bulk_resolve_comments",
+            arguments: ["doc_id": .string("cap1001unique"), "comment_ids": .array(ids)]
+        )
+        XCTAssertEqual(result.isError, true, textOf(result))
+        XCTAssertTrue(textOf(result).contains("1000"), textOf(result))
+    }
+
+    /// Review finding 2 / DEFECT-B: 1001 *copies of the same id* dedupe down
+    /// to 1 unique id and SHALL succeed — the cap is on real work
+    /// (post-dedup), not on how long the caller's literal array happened
+    /// to be. Pre-fix, this was rejected outright even though resolving it
+    /// costs the same as `comment_ids: [1]`.
+    func testBulkResolveCommentsAcceptsManyDuplicatesOfTheSameId() async throws {
+        let url = try writeCommentFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("cap1001dupe")]
+        )
+        let ids: [Value] = Array(repeating: .int(1), count: 1001)
+        let result = await server.invokeToolForTesting(
+            name: "bulk_resolve_comments",
+            arguments: ["doc_id": .string("cap1001dupe"), "comment_ids": .array(ids)]
+        )
+        XCTAssertNotEqual(result.isError, true,
+                          "1001 copies of one id dedupe to 1 and SHALL succeed, got: \(textOf(result))")
+        XCTAssertTrue(textOf(result).contains(#""resolved":1"#), textOf(result))
     }
 
     // MARK: - Issue #133 — add_comment_reply / reply_to_comment schema symmetry

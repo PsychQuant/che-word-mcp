@@ -3661,7 +3661,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "bulk_resolve_comments",
-                description: "批次標記多個註解為 resolved；不中斷於單筆失敗，回傳成功數與 failed 清單。重複的 ID 只計為一筆 resolved（#132）；單次最多 1000 筆，超過會直接拒絕整個呼叫（isError），不會只處理前 1000 筆",
+                description: "批次標記多個註解為 resolved；不中斷於單筆失敗，回傳成功數與 failed 清單。重複的 ID 只計為一筆 resolved（#132）；上限是對**去重後**的不重複 ID 數量檢查（最多 1000 筆），超過才拒絕整個呼叫（isError）——重複值不會被算進這個上限，不會只處理前 1000 筆",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -3671,7 +3671,7 @@ actor WordMCPServer {
                         ]),
                         "comment_ids": .object([
                             "type": .string("array"),
-                            "description": .string("要標記為 resolved 的註解 ID 陣列（重複值會被去重；單次最多 1000 筆）")
+                            "description": .string("要標記為 resolved 的註解 ID 陣列（重複值會被去重；去重後最多 1000 筆不重複的 ID）")
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("comment_ids")])
@@ -10477,9 +10477,21 @@ actor WordMCPServer {
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM-dd HH:mm"
 
+        // R2 fix (review finding 1 / DEFECT-A): `comments.isEmpty` above only
+        // catches a *document* with zero (filtered) comments; a `total > 0`
+        // document with `offset` past the end also produces an empty
+        // `window`, and the old header still printed "showing 0-\(total)" —
+        // pairing a "nothing to show" sentinel (0) with `total` (not
+        // `startIndex`) as if a real range existed. Once `comments.isEmpty`
+        // above has passed, `window.isEmpty` can only mean `offset` landed
+        // at or past `total` (limit is already guaranteed positive by
+        // `resolveLimitOffset`), so this is an unambiguous, dedicated case —
+        // not a "showing A-B" range with A==B==something.
         var result: String
-        if startIndex > 0 || endIndex < total {
-            result = "Comments (total \(total), showing \(window.isEmpty ? 0 : startIndex + 1)-\(endIndex)):\n"
+        if window.isEmpty {
+            result = "Comments (total \(total)): offset \(offset) is beyond the available range; returned 0.\n"
+        } else if startIndex > 0 || endIndex < total {
+            result = "Comments (total \(total), showing \(startIndex + 1)-\(endIndex)):\n"
         } else {
             result = "Comments (\(total)):\n"
         }
@@ -11897,14 +11909,14 @@ actor WordMCPServer {
         guard let ids = args["comment_ids"]?.arrayValue else {
             throw WordError.missingParameter("comment_ids")
         }
-        // #132: reject an oversized batch outright instead of silently
-        // processing only the first N — a caller who asked to resolve
-        // 100,000 ids should learn the call was refused, not that it
-        // "succeeded" having quietly dropped 99,000 of them.
+        // R2 fix (review finding 2 / DEFECT-B): the cap used to be checked
+        // against `ids.count` (the raw, pre-dedup array), so 1001 copies of
+        // the same id — which resolve exactly one comment — were rejected
+        // outright even though the actual work is trivial. Issue #132's own
+        // Strategy dedupes first and only then checks `uniqueIds.count`;
+        // the cap now applies there instead (see below, after the dedup
+        // loop), so it bounds real work, not array literal length.
         let maxBulkResolveIds = 1000
-        guard ids.count <= maxBulkResolveIds else {
-            throw WordError.invalidParameter("comment_ids", "最多一次處理 \(maxBulkResolveIds) 筆，收到 \(ids.count) 筆")
-        }
 
         var failed: [String] = []
         // #132: dedupe by parsed id before touching the document — `[5, 5, 5]`
@@ -11940,6 +11952,16 @@ actor WordMCPServer {
             if seenIds.insert(id).inserted {
                 uniqueIds.append(id)
             }
+        }
+
+        // R2 fix (review finding 2 / DEFECT-B): checked here, against the
+        // deduped count, not against `ids.count` above — matches issue
+        // #132's own Strategy (`let uniqueIds = Array(Set(...))` THEN
+        // `guard uniqueIds.count <= MAX_BULK`). `[<id>, <id>, ...]` repeated
+        // 1001+ times is exactly one id's worth of real work and SHALL NOT
+        // be refused; 1001+ genuinely distinct ids SHALL be.
+        guard uniqueIds.count <= maxBulkResolveIds else {
+            throw WordError.invalidParameter("comment_ids", "去重後最多一次處理 \(maxBulkResolveIds) 筆，收到 \(uniqueIds.count) 筆不重複的 ID")
         }
 
         // #132: O(M+N) — one pass over the document builds an id→index map,
