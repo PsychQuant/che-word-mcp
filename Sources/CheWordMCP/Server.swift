@@ -78,6 +78,22 @@ protocol StructuredToolFailure: Error {
     var jsonPayload: String { get }
 }
 
+/// #214 — 32 write-side handlers built a `{ "error": … }` JSON literal and
+/// `return`ed it before ever calling `storeDocument`: the document was never
+/// touched, but nothing was thrown, so `isError` was never set — the same
+/// defect #202 fixed for `return "Error: …"`, different string shape, so
+/// #202's sweep never caught it.
+///
+/// `StructuredRefusal` rides the #182 `StructuredToolFailure` mechanism: the
+/// exact same JSON text that used to be `return`ed is now thrown instead, so
+/// `handleToolCall` sets `isError: true` while the body stays byte-for-byte
+/// what callers already parse. Nothing about the JSON shape changes — only
+/// the protocol-level success/failure flag does.
+struct StructuredRefusal: StructuredToolFailure {
+    let jsonPayload: String
+    init(_ jsonPayload: String) { self.jsonPayload = jsonPayload }
+}
+
 actor WordMCPServer {
     private let server: Server
     /// R2 (#116 follow-up): wraps `StdioTransport` with a depth check on
@@ -14130,9 +14146,9 @@ actor WordMCPServer {
         do {
             try doc.updateContentControl(id: id, newText: text)
         } catch WordError.unsupportedSDTType(let type) {
-            return "{ \"error\": \"unsupported_type\", \"type\": \"\(type.rawValue)\" }"
+            throw StructuredRefusal("{ \"error\": \"unsupported_type\", \"type\": \"\(type.rawValue)\" }")
         } catch WordError.contentControlNotFound(let nid) {
-            return "{ \"error\": \"not_found\", \"id\": \(nid) }"
+            throw StructuredRefusal("{ \"error\": \"not_found\", \"id\": \(nid) }")
         }
 
         try await storeDocument(doc, for: docId)
@@ -14157,9 +14173,9 @@ actor WordMCPServer {
         do {
             try doc.replaceContentControlContent(id: id, contentXML: xml)
         } catch WordError.disallowedElement(let name) {
-            return "{ \"error\": \"disallowed_element\", \"element\": \"\(name)\" }"
+            throw StructuredRefusal("{ \"error\": \"disallowed_element\", \"element\": \"\(name)\" }")
         } catch WordError.contentControlNotFound(let nid) {
-            return "{ \"error\": \"not_found\", \"id\": \(nid) }"
+            throw StructuredRefusal("{ \"error\": \"not_found\", \"id\": \(nid) }")
         }
 
         try await storeDocument(doc, for: docId)
@@ -14182,7 +14198,7 @@ actor WordMCPServer {
         do {
             try doc.deleteContentControl(id: id, keepContent: keepContent)
         } catch WordError.contentControlNotFound(let nid) {
-            return "{ \"error\": \"not_found\", \"id\": \(nid) }"
+            throw StructuredRefusal("{ \"error\": \"not_found\", \"id\": \(nid) }")
         }
 
         try await storeDocument(doc, for: docId)
@@ -14223,7 +14239,7 @@ actor WordMCPServer {
 
                 let items = Self.parseRepeatingSectionItems(rawXML: raw)
                 guard itemIndex >= 0 && itemIndex < items.count else {
-                    return "{ \"error\": \"out_of_bounds\", \"index\": \(itemIndex), \"count\": \(items.count) }"
+                    throw StructuredRefusal("{ \"error\": \"out_of_bounds\", \"index\": \(itemIndex), \"count\": \(items.count) }")
                 }
                 let updated = Self.updateRepeatingSectionItemXML(
                     rawXML: raw, itemIndex: itemIndex, newText: text
@@ -14236,7 +14252,7 @@ actor WordMCPServer {
             if found { break }
         }
         guard found else {
-            return "{ \"error\": \"not_found\", \"parent_id\": \(parentId) }"
+            throw StructuredRefusal("{ \"error\": \"not_found\", \"parent_id\": \(parentId) }")
         }
 
         try await storeDocument(doc, for: docId)
@@ -20110,9 +20126,9 @@ actor WordMCPServer {
         do {
             try doc.linkStyles(paragraphStyleId: pId, characterStyleId: cId)
         } catch WordError.styleNotFound(let id) {
-            return "{ \"error\": \"not_found\", \"style_id\": \"\(Self.jsonEscape(id))\" }"
+            throw StructuredRefusal("{ \"error\": \"not_found\", \"style_id\": \"\(Self.jsonEscape(id))\" }")
         } catch WordError.typeMismatch(let exp, let act) {
-            return "{ \"error\": \"type_mismatch\", \"expected\": \"\(exp)\", \"actual\": \"\(act)\" }"
+            throw StructuredRefusal("{ \"error\": \"type_mismatch\", \"expected\": \"\(exp)\", \"actual\": \"\(act)\" }")
         }
         try await storeDocument(doc, for: docId)
         return "Linked styles \(pId) ↔ \(cId)"
@@ -20160,7 +20176,7 @@ actor WordMCPServer {
         do {
             try doc.addStyleNameAlias(styleId: styleId, lang: lang, name: name)
         } catch WordError.styleNotFound(let id) {
-            return "{ \"error\": \"not_found\", \"style_id\": \"\(Self.jsonEscape(id))\" }"
+            throw StructuredRefusal("{ \"error\": \"not_found\", \"style_id\": \"\(Self.jsonEscape(id))\" }")
         }
         try await storeDocument(doc, for: docId)
         return "Added alias for style=\(styleId) lang=\(lang)"
@@ -20249,7 +20265,7 @@ actor WordMCPServer {
         do {
             try doc.overrideNumberingLevel(numId: numId, level: ilvl, startValue: startValue)
         } catch WordError.numIdNotFound(let id) {
-            return "{ \"error\": \"not_found\", \"num_id\": \(id) }"
+            throw StructuredRefusal("{ \"error\": \"not_found\", \"num_id\": \(id) }")
         }
         try await storeDocument(doc, for: docId)
         return "Override numId=\(numId) ilvl=\(ilvl) start=\(startValue)"
@@ -20265,9 +20281,9 @@ actor WordMCPServer {
         do {
             try doc.assignNumberingToParagraph(paragraphIndex: paraIndex, numId: numId, level: level)
         } catch WordError.numIdNotFound(let id) {
-            return "{ \"error\": \"not_found\", \"num_id\": \(id) }"
+            throw StructuredRefusal("{ \"error\": \"not_found\", \"num_id\": \(id) }")
         } catch WordError.invalidIndex(let i) {
-            return "{ \"error\": \"out_of_bounds\", \"paragraph_index\": \(i) }"
+            throw StructuredRefusal("{ \"error\": \"out_of_bounds\", \"paragraph_index\": \(i) }")
         }
         try await storeDocument(doc, for: docId)
         return "Assigned numId=\(numId) level=\(level) to paragraph \(paraIndex)"
@@ -20282,9 +20298,9 @@ actor WordMCPServer {
         do {
             try doc.continueList(paragraphIndex: paraIndex, previousListNumId: prevNum)
         } catch WordError.numIdNotFound(let id) {
-            return "{ \"error\": \"not_found\", \"num_id\": \(id) }"
+            throw StructuredRefusal("{ \"error\": \"not_found\", \"num_id\": \(id) }")
         } catch WordError.invalidIndex(let i) {
-            return "{ \"error\": \"out_of_bounds\", \"paragraph_index\": \(i) }"
+            throw StructuredRefusal("{ \"error\": \"out_of_bounds\", \"paragraph_index\": \(i) }")
         }
         try await storeDocument(doc, for: docId)
         return "Continued list num_id=\(prevNum) at paragraph \(paraIndex)"
@@ -20301,9 +20317,9 @@ actor WordMCPServer {
             try await storeDocument(doc, for: docId)
             return "{ \"num_id\": \(newNumId) }"
         } catch WordError.abstractNumIdNotFound(let id) {
-            return "{ \"error\": \"not_found\", \"abstract_num_id\": \(id) }"
+            throw StructuredRefusal("{ \"error\": \"not_found\", \"abstract_num_id\": \(id) }")
         } catch WordError.invalidIndex(let i) {
-            return "{ \"error\": \"out_of_bounds\", \"paragraph_index\": \(i) }"
+            throw StructuredRefusal("{ \"error\": \"out_of_bounds\", \"paragraph_index\": \(i) }")
         }
     }
 
@@ -20345,7 +20361,7 @@ actor WordMCPServer {
         do {
             try doc.setSectionLineNumbers(sectionIndex: sectionIndex, countBy: countBy, start: start, restart: restart)
         } catch WordError.invalidIndex(let i) {
-            return "{ \"error\": \"out_of_bounds\", \"section_index\": \(i) }"
+            throw StructuredRefusal("{ \"error\": \"out_of_bounds\", \"section_index\": \(i) }")
         }
         try await storeDocument(doc, for: docId)
         return "Set line numbers section=\(sectionIndex) count_by=\(countBy)"
@@ -20363,7 +20379,7 @@ actor WordMCPServer {
         do {
             try doc.setSectionVerticalAlignment(sectionIndex: sectionIndex, alignment: alignment)
         } catch WordError.invalidIndex(let i) {
-            return "{ \"error\": \"out_of_bounds\", \"section_index\": \(i) }"
+            throw StructuredRefusal("{ \"error\": \"out_of_bounds\", \"section_index\": \(i) }")
         }
         try await storeDocument(doc, for: docId)
         return "Set vertical_alignment=\(alignment.rawValue) on section \(sectionIndex)"
@@ -20382,7 +20398,7 @@ actor WordMCPServer {
         do {
             try doc.setSectionPageNumberFormat(sectionIndex: sectionIndex, start: start, format: format)
         } catch WordError.invalidIndex(let i) {
-            return "{ \"error\": \"out_of_bounds\", \"section_index\": \(i) }"
+            throw StructuredRefusal("{ \"error\": \"out_of_bounds\", \"section_index\": \(i) }")
         }
         try await storeDocument(doc, for: docId)
         return "Set page_number_format=\(format.rawValue) on section \(sectionIndex)"
@@ -20400,7 +20416,7 @@ actor WordMCPServer {
         do {
             try doc.setSectionBreakType(sectionIndex: sectionIndex, type: type)
         } catch WordError.invalidIndex(let i) {
-            return "{ \"error\": \"out_of_bounds\", \"section_index\": \(i) }"
+            throw StructuredRefusal("{ \"error\": \"out_of_bounds\", \"section_index\": \(i) }")
         }
         try await storeDocument(doc, for: docId)
         return "Set section_break_type=\(type.rawValue) on section \(sectionIndex)"
@@ -20414,7 +20430,7 @@ actor WordMCPServer {
         do {
             try doc.setTitlePageDistinct(sectionIndex: sectionIndex, enabled: enabled)
         } catch WordError.invalidIndex(let i) {
-            return "{ \"error\": \"out_of_bounds\", \"section_index\": \(i) }"
+            throw StructuredRefusal("{ \"error\": \"out_of_bounds\", \"section_index\": \(i) }")
         }
         try await storeDocument(doc, for: docId)
         return "Set title_page_distinct=\(enabled) on section \(sectionIndex)"
@@ -20437,7 +20453,7 @@ actor WordMCPServer {
                 footerEven: refs["footer_even"]?.stringValue
             )
         } catch WordError.invalidIndex(let i) {
-            return "{ \"error\": \"out_of_bounds\", \"section_index\": \(i) }"
+            throw StructuredRefusal("{ \"error\": \"out_of_bounds\", \"section_index\": \(i) }")
         }
         try await storeDocument(doc, for: docId)
         return "Set header/footer references on section \(sectionIndex)"
@@ -20494,7 +20510,7 @@ actor WordMCPServer {
         do {
             try doc.setTableConditionalStyle(tableIndex: tableIndex, type: type, properties: props)
         } catch WordError.invalidIndex(let i) {
-            return "{ \"error\": \"out_of_bounds\", \"table_index\": \(i) }"
+            throw StructuredRefusal("{ \"error\": \"out_of_bounds\", \"table_index\": \(i) }")
         }
         try await storeDocument(doc, for: docId)
         return "Set conditional style \(type.rawValue) on table \(tableIndex)"
@@ -20515,9 +20531,9 @@ actor WordMCPServer {
         do {
             try doc.insertNestedTable(parentTableIndex: parentIndex, rowIndex: rowIndex, colIndex: colIndex, rows: rows, cols: cols)
         } catch WordError.nestedTooDeep(let depth, let max) {
-            return "{ \"error\": \"nested_too_deep\", \"depth\": \(depth), \"max\": \(max) }"
+            throw StructuredRefusal("{ \"error\": \"nested_too_deep\", \"depth\": \(depth), \"max\": \(max) }")
         } catch WordError.invalidIndex(let i) {
-            return "{ \"error\": \"out_of_bounds\", \"index\": \(i) }"
+            throw StructuredRefusal("{ \"error\": \"out_of_bounds\", \"index\": \(i) }")
         }
         try await storeDocument(doc, for: docId)
         return "Inserted \(rows)x\(cols) nested table in cell (\(rowIndex), \(colIndex)) of table \(parentIndex)"
@@ -20533,7 +20549,7 @@ actor WordMCPServer {
         do {
             try doc.setTableLayout(tableIndex: tableIndex, type: type)
         } catch WordError.invalidIndex(let i) {
-            return "{ \"error\": \"out_of_bounds\", \"table_index\": \(i) }"
+            throw StructuredRefusal("{ \"error\": \"out_of_bounds\", \"table_index\": \(i) }")
         }
         try await storeDocument(doc, for: docId)
         return "Set table_layout=\(type.rawValue) on table \(tableIndex)"
@@ -20559,7 +20575,7 @@ actor WordMCPServer {
         if let rowCount = rowCountArg {
             let tables = doc.getTables()
             guard tableIndex >= 0 && tableIndex < tables.count else {
-                return "{ \"error\": \"out_of_bounds\", \"index\": \(tableIndex) }"
+                throw StructuredRefusal("{ \"error\": \"out_of_bounds\", \"index\": \(tableIndex) }")
             }
             let table = tables[tableIndex]
             guard rowCount > 0 && rowCount <= table.rows.count else {
@@ -20576,7 +20592,7 @@ actor WordMCPServer {
         do {
             try doc.setHeaderRow(tableIndex: tableIndex, rowIndex: rowIndex)
         } catch WordError.invalidIndex(let i) {
-            return "{ \"error\": \"out_of_bounds\", \"index\": \(i) }"
+            throw StructuredRefusal("{ \"error\": \"out_of_bounds\", \"index\": \(i) }")
         }
         try await storeDocument(doc, for: docId)
         return "Marked row \(rowIndex) as header on table \(tableIndex)"
@@ -20590,7 +20606,7 @@ actor WordMCPServer {
         do {
             try doc.setTableIndent(tableIndex: tableIndex, value: value)
         } catch WordError.invalidIndex(let i) {
-            return "{ \"error\": \"out_of_bounds\", \"table_index\": \(i) }"
+            throw StructuredRefusal("{ \"error\": \"out_of_bounds\", \"table_index\": \(i) }")
         }
         try await storeDocument(doc, for: docId)
         return "Set table_indent=\(value) twips on table \(tableIndex)"
@@ -20717,7 +20733,7 @@ actor WordMCPServer {
             throw WordError.invalidParameter("type", "Must be one of: default / first / even")
         }
         guard sectionIndex >= 1 else {
-            return "{ \"error\": \"out_of_bounds\", \"section_index\": \(sectionIndex), \"detail\": \"must be >= 1\" }"
+            throw StructuredRefusal("{ \"error\": \"out_of_bounds\", \"section_index\": \(sectionIndex), \"detail\": \"must be >= 1\" }")
         }
         // R2 (LOW-MEDIUM, independent review of #138/#139/#140/#141/#235):
         // `insert_cross_reference`/`set_text_direction` are the other two
@@ -20749,7 +20765,7 @@ actor WordMCPServer {
         }
         // Find the matching header to clone — first one of matching type.
         guard let source = doc.headers.first(where: { $0.type == type }) else {
-            return "{ \"error\": \"not_found\", \"type\": \"\(type.rawValue)\" }"
+            throw StructuredRefusal("{ \"error\": \"not_found\", \"type\": \"\(type.rawValue)\" }")
         }
         let cloned = try doc.cloneHeaderForSection(
             sourceFileName: source.fileName,
