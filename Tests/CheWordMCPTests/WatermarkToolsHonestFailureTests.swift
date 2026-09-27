@@ -435,6 +435,115 @@ final class WatermarkToolsHonestFailureTests: XCTestCase {
         await closeDiscarding(server)
     }
 
+    // MARK: - #470-img R2 F1: same-session reads must not be stale
+
+    /// Insert a text watermark and query it in the SAME session, with no
+    /// save in between — R1's tests all routed every read-side assertion
+    /// through `saveReopenAndRun`, which masked exactly this: pre-R2,
+    /// `readHeaderFooterXML` read `archiveTempDir` bytes on disk, populated
+    /// only at `open_document` time and re-synced only by an actual save —
+    /// never by `storeDocument` alone (what every mutating tool goes
+    /// through). `list_watermarks`/`get_watermark`/`list_headers` therefore
+    /// silently reported "no watermark" for the single most natural call
+    /// sequence: insert, then check.
+    func testListWatermarksSeesAnInsertInTheSameSessionWithoutSaving() async throws {
+        let fixture = try makePlainHeaderFixture()
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let server = await WordMCPServer()
+        await openFixture(server, fixture)
+
+        _ = await server.invokeToolForTesting(
+            name: "insert_watermark", arguments: ["doc_id": .string("wm"), "text": .string("NOSAVE")])
+
+        let list = resultText(await server.invokeToolForTesting(
+            name: "list_watermarks", arguments: ["doc_id": .string("wm")]))
+        XCTAssertTrue(list.contains("NOSAVE"), "Got: \(list)")
+
+        let one = resultText(await server.invokeToolForTesting(
+            name: "get_watermark", arguments: ["doc_id": .string("wm"), "header_id": .string("rId4")]))
+        XCTAssertTrue(one.contains("NOSAVE"), "Got: \(one)")
+
+        let headers = resultText(await server.invokeToolForTesting(
+            name: "list_headers", arguments: ["doc_id": .string("wm")]))
+        XCTAssertTrue(headers.contains("\"has_watermark\":true"), "Got: \(headers)")
+
+        await closeDiscarding(server)
+    }
+
+    /// `create_document` sessions never have an `archiveTempDir` at all
+    /// (scratch mode, forever — not just "until the first save"). Pre-R2,
+    /// `readHeaderFooterXML`'s `guard let archiveTempDir = doc.archiveTempDir`
+    /// failed unconditionally for these, so even a `save_document` that
+    /// genuinely wrote a correct watermark to disk left the SAME session's
+    /// reads permanently blind unless the caller closed and reopened the
+    /// file it just wrote.
+    func testListWatermarksSeesAnInsertOnACreateDocumentSessionEvenAfterSaving() async throws {
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(name: "create_document", arguments: ["doc_id": .string("scratch")])
+        _ = await server.invokeToolForTesting(
+            name: "insert_watermark", arguments: ["doc_id": .string("scratch"), "text": .string("SCRATCH-DRAFT")])
+
+        let outPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wm208-r2f1-\(UUID().uuidString).docx").path
+        let save = await server.invokeToolForTesting(
+            name: "save_document", arguments: ["doc_id": .string("scratch"), "path": .string(outPath)])
+        XCTAssertNotEqual(save.isError, true, "Got: \(resultText(save))")
+        defer { try? FileManager.default.removeItem(atPath: outPath) }
+
+        // Same session, same doc_id, no close/reopen.
+        let list = resultText(await server.invokeToolForTesting(
+            name: "list_watermarks", arguments: ["doc_id": .string("scratch")]))
+        XCTAssertTrue(list.contains("SCRATCH-DRAFT"), "Got: \(list)")
+
+        await closeDiscarding(server, docId: "scratch")
+    }
+
+    /// Remove, then query in the same session — the mirror image of insert:
+    /// a stale read after `remove_watermark` must not still show the
+    /// (removed) watermark.
+    func testListWatermarksSeesARemovalInTheSameSessionWithoutSaving() async throws {
+        let fixture = try makeWatermarkFixture()
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let server = await WordMCPServer()
+        await openFixture(server, fixture)
+
+        let before = resultText(await server.invokeToolForTesting(
+            name: "list_watermarks", arguments: ["doc_id": .string("wm")]))
+        XCTAssertTrue(before.contains("機密"), "fixture must start with the seeded watermark")
+
+        _ = await server.invokeToolForTesting(name: "remove_watermark", arguments: ["doc_id": .string("wm")])
+
+        let after = resultText(await server.invokeToolForTesting(
+            name: "list_watermarks", arguments: ["doc_id": .string("wm")]))
+        XCTAssertEqual(after, "[]", "same-session read after remove must not still show the removed watermark: \(after)")
+
+        let one = resultText(await server.invokeToolForTesting(
+            name: "get_watermark", arguments: ["doc_id": .string("wm"), "header_id": .string("rId10")]))
+        XCTAssertEqual(one, "null", "Got: \(one)")
+
+        await closeDiscarding(server)
+    }
+
+    /// `get_header`'s embedded `xml`/`text` fields must also reflect the
+    /// current session, not stale disk bytes — a caller reading `get_header`
+    /// right after `insert_watermark` should see the shape in the raw XML.
+    func testGetHeaderXMLReflectsSameSessionInsert() async throws {
+        let fixture = try makePlainHeaderFixture()
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let server = await WordMCPServer()
+        await openFixture(server, fixture)
+
+        _ = await server.invokeToolForTesting(
+            name: "insert_watermark", arguments: ["doc_id": .string("wm"), "text": .string("GETHEADER")])
+
+        let header = resultText(await server.invokeToolForTesting(
+            name: "get_header", arguments: ["doc_id": .string("wm"), "header_id": .string("rId4")]))
+        XCTAssertTrue(header.contains("PowerPlusWaterMarkObject"), "Got: \(header)")
+        XCTAssertTrue(header.contains("\"type\":\"text\""), "Got: \(header)")
+
+        await closeDiscarding(server)
+    }
+
     // MARK: - Transport contract (verify DA D4, #201 legacy — still true for a thrown error)
 
     /// `save_document` on a nonexistent doc_id still throws (not a returned

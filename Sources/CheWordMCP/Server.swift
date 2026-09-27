@@ -18107,13 +18107,54 @@ actor WordMCPServer {
 
     // MARK: - v3.3.0: Phase 2A — Headers/Footers/Watermarks (#26 #27)
 
-    /// Read original XML for a header/footer file from preserved archive.
-    /// `kind`: "header" or "footer". `fileName`: e.g. "header1.xml".
+    /// Read original XML for a header/footer file from the preserved
+    /// archive on disk. `fileName`: e.g. "header1.xml".
+    ///
+    /// #470-img R2 F1: this is stale by construction — `archiveTempDir` is
+    /// only re-synced to the typed model by an actual save
+    /// (`save_document`/`finalize_document`/autosave), never by
+    /// `storeDocument` alone (what every mutating tool call goes through).
+    /// It also `nil`s out for every `create_document` session, forever (that
+    /// mode never has an `archiveTempDir` at all — see
+    /// `documentMayCarryImages`'s doc comment for the same scratch-mode
+    /// distinction elsewhere in this file). Kept ONLY as the fallback
+    /// `currentHeaderFooterXML` uses when a fresh in-memory serialization
+    /// cannot be produced; every caller that wants "what would a caller see
+    /// right now" (`list_headers`/`get_header`/`list_watermarks`/
+    /// `get_watermark`) SHALL go through `currentHeaderFooterXML` instead.
     private func readHeaderFooterXML(docId: String, fileName: String) -> String? {
         guard let doc = openDocuments[docId],
               let archiveTempDir = doc.archiveTempDir else { return nil }
         let url = archiveTempDir.appendingPathComponent("word/\(fileName)")
         return try? String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// #470-img R2 F1: serializes the CURRENT typed model once (not once per
+    /// header — `DocxWriter.writeData` is a full-document call) via the same
+    /// public entry point `list_images`/`get_document_info` already use for
+    /// the identical staleness problem (`imageConsistencyInspection`), then
+    /// unzips it (`ZipHelper.unzip(data:)`, the public entry point
+    /// `PackageInspector` itself uses) into a throwaway directory this
+    /// function owns end to end. Returns `nil` only when serialization or
+    /// extraction itself fails (caller falls back to
+    /// `readHeaderFooterXML` — better a stale answer than none, but this
+    /// path should not normally trigger for an open session).
+    private func currentPackageSnapshot(_ doc: WordDocument) -> URL? {
+        guard let data = try? DocxWriter.writeData(doc) else { return nil }
+        return try? ZipHelper.unzip(data: data)
+    }
+
+    /// Read `word/<fileName>` from `snapshot` (a `currentPackageSnapshot`
+    /// result) if available; otherwise the stale on-disk archive via
+    /// `readHeaderFooterXML`. Never returns nil to a caller that expects a
+    /// string — an unreadable part reads as "" (empty XML), same as the
+    /// pre-R2 behavior when `readHeaderFooterXML` itself returned nil.
+    private func headerFooterXML(docId: String, fileName: String, snapshot: URL?) -> String {
+        if let snapshot,
+           let xml = try? String(contentsOf: snapshot.appendingPathComponent("word/\(fileName)"), encoding: .utf8) {
+            return xml
+        }
+        return readHeaderFooterXML(docId: docId, fileName: fileName) ?? ""
     }
 
     /// Detect VML watermark shape ID (PowerPlusWaterMarkObject) or sentinel.
@@ -18239,9 +18280,16 @@ actor WordMCPServer {
         guard let doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
+        // #470-img R2 F1: one snapshot for every header in this call, not
+        // one per header — `DocxWriter.writeData` is a full-document
+        // serialization. `nil` (no snapshot needed) for a headerless
+        // document; `headerFooterXML` falls back to disk if the snapshot
+        // itself could not be produced.
+        let snapshot = doc.headers.isEmpty ? nil : currentPackageSnapshot(doc)
+        defer { if let snapshot { ZipHelper.cleanup(snapshot) } }
         var entries: [String] = []
         for header in doc.headers {
-            let xml = readHeaderFooterXML(docId: docId, fileName: header.fileName) ?? ""
+            let xml = headerFooterXML(docId: docId, fileName: header.fileName, snapshot: snapshot)
             let hasWM = headerHasWatermark(xml)
             entries.append("{\"header_id\":\"\(header.id)\",\"type\":\"\(header.type.rawValue)\",\"section_id\":\(headerSectionId(of: header, in: doc)),\"has_watermark\":\(hasWM)}")
         }
@@ -18261,7 +18309,9 @@ actor WordMCPServer {
         guard let header = doc.headers.first(where: { $0.id == headerId }) else {
             throw ToolRefusal("header not found: \(headerId)")
         }
-        let xml = readHeaderFooterXML(docId: docId, fileName: header.fileName) ?? ""
+        let snapshot = currentPackageSnapshot(doc)
+        defer { if let snapshot { ZipHelper.cleanup(snapshot) } }
+        let xml = headerFooterXML(docId: docId, fileName: header.fileName, snapshot: snapshot)
         let text = extractTextRuns(xml)
         let watermarkJSON: String
         if let wmText = extractWatermarkText(xml) {
@@ -18312,9 +18362,11 @@ actor WordMCPServer {
         guard let doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
+        let snapshot = doc.headers.isEmpty ? nil : currentPackageSnapshot(doc)
+        defer { if let snapshot { ZipHelper.cleanup(snapshot) } }
         var entries: [String] = []
         for header in doc.headers {
-            let xml = readHeaderFooterXML(docId: docId, fileName: header.fileName) ?? ""
+            let xml = headerFooterXML(docId: docId, fileName: header.fileName, snapshot: snapshot)
             guard headerHasWatermark(xml) else { continue }
             if let wmText = extractWatermarkText(xml) {
                 entries.append("{\"header_id\":\"\(header.id)\",\"type\":\"text\",\"text\":\"\(jsonEscape(wmText))\"}")
@@ -18338,7 +18390,9 @@ actor WordMCPServer {
         guard let header = doc.headers.first(where: { $0.id == headerId }) else {
             throw ToolRefusal("header not found: \(headerId)")
         }
-        let xml = readHeaderFooterXML(docId: docId, fileName: header.fileName) ?? ""
+        let snapshot = currentPackageSnapshot(doc)
+        defer { if let snapshot { ZipHelper.cleanup(snapshot) } }
+        let xml = headerFooterXML(docId: docId, fileName: header.fileName, snapshot: snapshot)
         guard headerHasWatermark(xml) else { return "null" }
         if let wmText = extractWatermarkText(xml) {
             return "{\"header_id\":\"\(headerId)\",\"type\":\"text\",\"text\":\"\(jsonEscape(wmText))\"}"
