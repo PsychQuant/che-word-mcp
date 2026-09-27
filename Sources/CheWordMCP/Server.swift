@@ -2540,7 +2540,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "insert_image_from_path",
-                description: "從檔案路徑插入圖片。v2.1+ width/height 為可選（auto-aspect：擇一 → 另一邊按原圖比例算；全省略 → 用原始像素）。v3.15.1+ 新增 after_image_id anchor。anchor priority: into_table_cell > after_image_id > after_text > before_text > index > append。v3.16.0+ 同時傳多個 anchor 會 return 「Error: insert_image_from_path: received conflicting anchors: ...」（先前版本是 silent priority winner）。支援 PNG / JPEG，以及 PDF（#16：用原生 PDFKit／CoreGraphics 把 `page` 指定的那一頁點陣化成 150dpi PNG 再嵌入——不呼叫外部 CLI，但仍是點陣化，向量品質與可縮放性會遺失；需要保留向量可先用 pdftocairo -emf 轉 EMF 再插入）。（需先 open_document）",
+                description: "從檔案路徑插入圖片。v2.1+ width/height 為可選（auto-aspect：擇一 → 另一邊按原圖比例算；全省略 → 用原始像素）。v3.15.1+ 新增 after_image_id anchor。anchor priority: into_table_cell > after_image_id > after_text > before_text > index > append。v3.16.0+ 同時傳多個 anchor 會 return 「Error: insert_image_from_path: received conflicting anchors: ...」（先前版本是 silent priority winner）。支援 PNG / JPEG，以及 PDF（#16：用原生 PDFKit／CoreGraphics 把 `page` 指定的那一頁點陣化成 150dpi PNG 再嵌入——不呼叫外部 CLI，但仍是點陣化，向量品質與可縮放性會遺失；需要保留向量可先用 pdftocairo -emf 轉 EMF 再插入）。加密（需要密碼）的 PDF 會明確拒絕，不會靜默內嵌全白圖片（R2 F3）。（需先 open_document）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -2646,7 +2646,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "list_images",
-                description: "列出文件中的圖片：word/document.xml 的 body 圖片（含尺寸）＋ 每個 header/footer 的圖片關係（#199/#219）。每列帶 `referenced: yes|NO (orphan)|unknown` —— 以序列化後的 package 用 PackageInspector 實際掃描為準（與 save_document 的 E_IMAGE_CONSISTENCY 閘門同一份真相），relationship 存在但該 part 沒有 <w:drawing>／<v:imagedata> 引用的孤兒會被具名標示，不會被當成「存在」。孤兒會讓下次 save_document 拒絕（除非 allow_orphan_images: true）。支援 Direct Mode",
+                description: "列出文件中的圖片：word/document.xml 的 body 圖片（含尺寸）＋ 每個 header/footer 的圖片關係（#199/#219）。每列帶 `referenced: yes|NO (orphan)|unknown` —— 以序列化後的 package 用 PackageInspector 實際掃描為準（與 save_document 的 E_IMAGE_CONSISTENCY 閘門同一份真相），relationship 存在但該 part 沒有 <w:drawing>／<v:imagedata> 引用的孤兒會被具名標示，不會被當成「存在」。孤兒會讓下次 save_document 拒絕（除非 allow_orphan_images: true）。另外會具名列出 word/media/ 裡沒有任何 relationship 指向的殘留檔案（反方向的孤兒——relationship 已不存在、只剩檔案，例如浮水印圖片移除後的遺留，R2 F2）。支援 Direct Mode",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
