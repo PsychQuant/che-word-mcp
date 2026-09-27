@@ -251,10 +251,14 @@ final class Issue227ScriptCoverageReasonsTests: XCTestCase {
                        "a paragraphs-only rebuild must fail byte-equal verification: \(resultText(verified))")
         // The error must be the comparison's verdict (ScriptVerificationFailure),
         // not some other failure such as a rejected parameter or unreadable
-        // reference — and it must name the part that differs.
-        XCTAssertTrue(resultText(verified).contains("byte-equal 驗證失敗"),
-                      "must be a completed-but-unequal verdict: \(resultText(verified))")
-        XCTAssertTrue(resultText(verified).contains("word/document.xml"),
+        // reference — and it must name the part that differs. #182: the body
+        // is now structured JSON (verified:false / broken_parts), the same
+        // schema a passing verification uses, rather than "Error: " prose.
+        let json = try jsonObject(verified)
+        XCTAssertEqual(json["verified"] as? Bool, false,
+                       "must be a completed-but-unequal verdict: \(resultText(verified))")
+        let brokenParts = try XCTUnwrap(json["broken_parts"] as? [String])
+        XCTAssertTrue(brokenParts.contains("word/document.xml"),
                       "the differing part must be named: \(resultText(verified))")
         XCTAssertFalse(FileManager.default.fileExists(
             atPath: dir.appendingPathComponent("verified.docx").path),

@@ -103,17 +103,29 @@ struct ParagraphsOnlySidecarConflict: LocalizedError {
 /// The old shape returned `verified: false` inside a normal result, so a
 /// caller that branched only on call success read a failed rebuild as a pass.
 ///
-/// The differing parts travel in the message rather than as a structured
-/// list: `handleToolCall` renders a thrown error as plain text and returns a
-/// JSON body only on success, so carrying both would mean changing the shape
-/// every tool handler returns. That restructuring is tracked separately; the
-/// information is destructured here, not lost.
-struct ScriptVerificationFailure: LocalizedError {
+/// #182: the differing parts now travel as the `broken_parts` array in a JSON
+/// body — the same shape a passing verification uses — rather than folded
+/// into prose. `ScriptVerificationFailure` conforms to `StructuredToolFailure`
+/// (Server.swift), which `handleToolCall` renders verbatim with `isError: true`.
+struct ScriptVerificationFailure: LocalizedError, StructuredToolFailure {
     let brokenParts: [String]
 
     var errorDescription: String? {
         let parts = brokenParts.map { "  - \($0)" }.joined(separator: "\n")
         return "byte-equal 驗證失敗，未寫出任何檔案。以下 part 與參考檔不符：\n\(parts)"
+    }
+
+    /// Same field names and encoding options (`sortedKeys`,
+    /// `withoutEscapingSlashes`) as `scriptPipelineJSON` uses for a PASSING
+    /// verification (`executeScriptTool`'s payload) — a caller parses both
+    /// outcomes the same way, branching only on `isError` / `verified`.
+    /// `try!` is safe here: the object is a fixed `[String: Any]` of only
+    /// `Bool` and `[String]`, both always-encodable JSON types.
+    var jsonPayload: String {
+        let data = try! JSONSerialization.data(
+            withJSONObject: ["verified": false, "broken_parts": brokenParts] as [String: Any],
+            options: [.sortedKeys, .withoutEscapingSlashes])
+        return String(decoding: data, as: UTF8.self)
     }
 }
 

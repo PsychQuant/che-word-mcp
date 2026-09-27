@@ -513,6 +513,21 @@ final class ScriptPipelineParityTests: XCTestCase {
                       "the error must name the differing part; got: \(resultText(result))")
         XCTAssertFalse(FileManager.default.fileExists(atPath: output.path),
                        "a failed verification must publish nothing")
+
+        // #182: isError:true no longer forces the body into "Error: " prose —
+        // a Stage-B failure carries the same JSON shape a successful
+        // verification would have used (`verified` / `broken_parts`), just
+        // with isError set instead of unset.
+        let body = resultText(result)
+        XCTAssertFalse(body.hasPrefix("Error: "),
+                       "a structured refusal must not carry the plain-text 'Error: ' prefix: \(body)")
+        let json = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any],
+            "the body must be parseable JSON, matching the success-path schema: \(body)")
+        XCTAssertEqual(json["verified"] as? Bool, false)
+        let brokenParts = try XCTUnwrap(json["broken_parts"] as? [String])
+        XCTAssertTrue(brokenParts.contains("customXml/extra.xml"),
+                      "broken_parts must name the differing part; got \(brokenParts)")
     }
 
     /// The overwrite gate reaches the MCP face. Default is refuse.
