@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.5.0] - 2026-09-27
+
+> 幾個過去回報成功、實際上什麼都沒做或做錯的呼叫，本版起回 `isError: true`（見文末「升級注意」）；其餘呼叫行為不變。依 4.4.0 的先例 bump minor。
+
 ### Fixed
 
 - **任何工具呼叫只要帶一個巢狀很深的 JSON 引數，就會讓整個 server 行程當掉——現在改回錯誤，不再當掉**（#116）。當機發生在 swift-sdk 解碼 JSON-RPC 訊息的階段，早於任何工具的處理，所以跟呼叫哪個工具無關。現在每則訊息在解碼之前，先用不遞迴、不建樹的方式掃描巢狀深度；深度以整則訊息的原始括號層數計算（含 JSON-RPC 外層與 `params`），超過 64 層就直接回 JSON-RPC 錯誤（`code: -32600`），訊息不交給解碼器，行程與其他 session 都不受影響。`insert_equation` 的 `components` 公式樹另有自己的上限，改為 24 層：這樣過深的公式樹會拿到指名 `components` 的具體錯誤，而不是被 transport 層的通用錯誤先擋下。
