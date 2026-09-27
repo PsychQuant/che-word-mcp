@@ -11670,6 +11670,54 @@ actor WordMCPServer {
         }
     }
 
+    /// #250: `insertFieldCode` (shared by `insertIfField`/
+    /// `insertCalculationField`/`insertDateField`/`insertPageField`/
+    /// `insertMergeField`/`insertSequenceField`) and `insertContentControl`
+    /// (ooxml-swift, `.build/checkouts/ooxml-swift/`) both bounds-check
+    /// `paragraph_index` against `getParagraphs().count` — the readback
+    /// family, which recurses into block-level SDTs — but their own
+    /// "not found" fallback walks only TOP-LEVEL `.paragraph` body children
+    /// (the exact same counting model `topLevelParagraphCount` above uses,
+    /// added for #139's identical shape). In a document with a table or
+    /// block-level SDT, an index at/past the top-level count but still
+    /// within the readback count falls through that fallback and silently
+    /// APPENDS a brand-new paragraph at the very end of the document,
+    /// reporting success — never targeting the paragraph the caller asked
+    /// for by `paragraph_index`.
+    ///
+    /// `insertFieldCode` always targets an EXISTING top-level paragraph (it
+    /// appends a run to it) — there is no legitimate "append" use of an
+    /// out-of-range index, so the valid range is `0..<topLevelParagraphCount`.
+    private func requireExistingTopLevelParagraphIndex(_ paragraphIndex: Int, in doc: WordDocument) throws {
+        let count = topLevelParagraphCount(doc)
+        guard paragraphIndex >= 0, paragraphIndex < count else {
+            throw WordError.invalidParameter(
+                "paragraph_index",
+                "超出頂層段落範圍（頂層段落數：\(count)）；index \(paragraphIndex) 沒有對應到任何既有頂層段落"
+            )
+        }
+    }
+
+    /// `insertContentControl` is different from `insertFieldCode`:
+    /// `paragraph_index == topLevelParagraphCount` is an established, tested
+    /// convention meaning "insert as the new last top-level paragraph" (see
+    /// `ContentControlToolsTests` / `InvoiceTemplateE2ETests`, which
+    /// sequentially call this tool with `paragraph_index` equal to the
+    /// CURRENT top-level paragraph count to append one control after
+    /// another). So its valid range is inclusive of that one extra
+    /// position — only an index STRICTLY PAST it (the gap opened up by
+    /// SDT-inner / table-cell paragraphs in the readback count, or anything
+    /// further still) is rejected.
+    private func requireContentControlParagraphIndex(_ paragraphIndex: Int, in doc: WordDocument) throws {
+        let count = topLevelParagraphCount(doc)
+        guard paragraphIndex >= 0, paragraphIndex <= count else {
+            throw WordError.invalidParameter(
+                "paragraph_index",
+                "超出頂層段落範圍（頂層段落數：\(count)；合法範圍 0...\(count)，\(count) 代表附加為新的最後一個段落）"
+            )
+        }
+    }
+
     private func setParagraphBorder(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -12261,6 +12309,7 @@ actor WordMCPServer {
         guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
+        try requireExistingTopLevelParagraphIndex(paragraphIndex, in: doc)
         guard let leftOperand = args["left_operand"]?.stringValue else {
             throw WordError.missingParameter("left_operand")
         }
@@ -12313,6 +12362,7 @@ actor WordMCPServer {
         guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
+        try requireExistingTopLevelParagraphIndex(paragraphIndex, in: doc)
         guard let expression = args["expression"]?.stringValue else {
             throw WordError.missingParameter("expression")
         }
@@ -12340,6 +12390,7 @@ actor WordMCPServer {
         guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
+        try requireExistingTopLevelParagraphIndex(paragraphIndex, in: doc)
         let format = args["format"]?.stringValue ?? "yyyy-MM-dd"
         let typeStr = args["type"]?.stringValue ?? "DATE"
 
@@ -12372,6 +12423,7 @@ actor WordMCPServer {
         guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
+        try requireExistingTopLevelParagraphIndex(paragraphIndex, in: doc)
         let typeStr = args["type"]?.stringValue ?? "PAGE"
 
         let infoType: DocumentInfoFieldType
@@ -12405,6 +12457,7 @@ actor WordMCPServer {
         guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
+        try requireExistingTopLevelParagraphIndex(paragraphIndex, in: doc)
         guard let fieldName = args["field_name"]?.stringValue else {
             throw WordError.missingParameter("field_name")
         }
@@ -12433,6 +12486,7 @@ actor WordMCPServer {
         guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
+        try requireExistingTopLevelParagraphIndex(paragraphIndex, in: doc)
         guard let identifier = args["identifier"]?.stringValue else {
             throw WordError.missingParameter("identifier")
         }
@@ -12467,6 +12521,7 @@ actor WordMCPServer {
         guard let paragraphIndex = try optionalInt(args, "paragraph_index") else {
             throw WordError.missingParameter("paragraph_index")
         }
+        try requireContentControlParagraphIndex(paragraphIndex, in: doc)
         guard let typeStr = args["type"]?.stringValue else {
             throw WordError.missingParameter("type")
         }
