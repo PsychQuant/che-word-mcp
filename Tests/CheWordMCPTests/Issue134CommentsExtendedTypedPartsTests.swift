@@ -152,6 +152,44 @@ final class Issue134CommentsExtendedTypedPartsTests: XCTestCase {
                      "got: \(parts.documentRels)")
     }
 
+    /// R2 coverage gap (review item 4): `resolve_comment` (single-id path)
+    /// calls the same `markCommentsExtendedTypedPartsDirtyIfNeeded` helper
+    /// as `bulk_resolve_comments`/`add_comment_reply`, but until now no
+    /// dedicated unit test exercised it — only the shared binary
+    /// verification script did. Same shape as
+    /// `testBulkResolveCommentsDeclaresCommentsExtendedInContentTypesAndRels`,
+    /// just through `resolve_comment` instead of the bulk tool.
+    func testResolveCommentSingleDeclaresCommentsExtendedInContentTypesAndRels() async throws {
+        let url = try writeBaselineFixture()
+        let server = await WordMCPServer()
+
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("d134single")]
+        )
+        let resolved = await server.invokeToolForTesting(
+            name: "resolve_comment",
+            arguments: ["doc_id": .string("d134single"), "comment_id": .int(1)]
+        )
+        XCTAssertTrue(text(resolved).contains("resolved"), text(resolved))
+
+        let outPath = tempDir.appendingPathComponent("single-resolved.docx").path
+        let saved = await server.invokeToolForTesting(
+            name: "save_document",
+            arguments: ["doc_id": .string("d134single"), "path": .string(outPath)]
+        )
+        XCTAssertFalse(text(saved).lowercased().contains("error"), text(saved))
+
+        let parts = try readParts(of: outPath)
+        XCTAssertTrue(parts.hasCommentsExtendedFile, "the part itself SHALL be written")
+        XCTAssertTrue(parts.commentsExtended.contains(#"w15:done="1""#),
+                     "got: \(parts.commentsExtended)")
+        XCTAssertTrue(parts.contentTypes.contains("/word/commentsExtended.xml"),
+                     "got: \(parts.contentTypes)")
+        XCTAssertTrue(parts.documentRels.contains("commentsExtended"),
+                     "got: \(parts.documentRels)")
+    }
+
     /// Unrelated parts (theme, webSettings, etc.) that overlay mode normally
     /// preserves verbatim must survive the workaround too — marking
     /// `[Content_Types].xml` dirty routes through `ContentTypesOverlay`,
