@@ -435,7 +435,7 @@ final class WatermarkToolsHonestFailureTests: XCTestCase {
         await closeDiscarding(server)
     }
 
-    // MARK: - #470-img R2 F1: same-session reads must not be stale
+    // MARK: - #208 R2 F1: same-session reads must not be stale
 
     /// Insert a text watermark and query it in the SAME session, with no
     /// save in between — R1's tests all routed every read-side assertion
@@ -542,6 +542,89 @@ final class WatermarkToolsHonestFailureTests: XCTestCase {
         XCTAssertTrue(header.contains("\"type\":\"text\""), "Got: \(header)")
 
         await closeDiscarding(server)
+    }
+
+    // MARK: - #470-img R2 F2: no media file leak across insert/remove cycles
+
+    /// Three full insert_image_watermark → remove_watermark cycles on the
+    /// same document; the SAVED package must not accumulate an unreferenced
+    /// PNG per cycle (pre-R2: `stripWatermark` deleted the relationship but
+    /// never the media file, so `word/media/` grew by one file every cycle
+    /// forever, invisible to `list_images`/`get_document_info`/
+    /// `save_document`'s orphan detection — that detection is about a
+    /// relationship with no reference, not a media file with no
+    /// relationship at all).
+    func testThreeInsertRemoveCyclesLeaveNoLeftoverMediaFile() async throws {
+        let fixture = try makePlainHeaderFixture()
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let image = try makeThrowawayImage()
+        defer { try? FileManager.default.removeItem(at: image) }
+        let server = await WordMCPServer()
+        await openFixture(server, fixture)
+
+        for _ in 0..<3 {
+            let insertResult = await server.invokeToolForTesting(
+                name: "insert_image_watermark", arguments: ["doc_id": .string("wm"), "image_path": .string(image.path)])
+            XCTAssertNotEqual(insertResult.isError, true, "Got: \(resultText(insertResult))")
+            let removeResult = await server.invokeToolForTesting(
+                name: "remove_watermark", arguments: ["doc_id": .string("wm")])
+            XCTAssertNotEqual(removeResult.isError, true, "Got: \(resultText(removeResult))")
+        }
+
+        let outPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wm208-r2f2-\(UUID().uuidString).docx")
+        let save = await server.invokeToolForTesting(
+            name: "save_document", arguments: ["doc_id": .string("wm"), "path": .string(outPath.path)])
+        XCTAssertNotEqual(save.isError, true, "Got: \(resultText(save))")
+        defer { try? FileManager.default.removeItem(at: outPath) }
+        await closeDiscarding(server)
+
+        let unzipDir = FileManager.default.temporaryDirectory.appendingPathComponent("wm208-r2f2-unzip-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: unzipDir, withIntermediateDirectories: true)
+        defer { ZipHelper.cleanup(unzipDir) }
+        try FileManager.default.unzipItem(at: outPath, to: unzipDir)
+        let mediaDir = unzipDir.appendingPathComponent("word/media")
+        let mediaFiles = (try? FileManager.default.contentsOfDirectory(atPath: mediaDir.path)) ?? []
+        XCTAssertTrue(mediaFiles.isEmpty, "three insert/remove cycles must leave no leftover media file: \(mediaFiles)")
+
+        // list_images on the reopened file also has nothing to report and no
+        // unreferenced-media warning — confirms the cleanup, not just the
+        // absence of files on disk.
+        let reopenServer = await WordMCPServer()
+        _ = await reopenServer.invokeToolForTesting(name: "open_document", arguments: ["path": .string(outPath.path), "doc_id": .string("verify")])
+        let list = resultText(await reopenServer.invokeToolForTesting(name: "list_images", arguments: ["doc_id": .string("verify")]))
+        XCTAssertFalse(list.contains("unreferenced"), "Got: \(list)")
+        _ = await reopenServer.invokeToolForTesting(name: "close_document", arguments: ["doc_id": .string("verify"), "discard_changes": .bool(true)])
+    }
+
+    /// The detection mechanism itself (`list_images`'s "unreferenced media
+    /// file(s)" warning), independent of the cleanup fix above — a manually
+    /// crafted package with a stray file in `word/media/` that nothing
+    /// references must be surfaced, not silently invisible. This is the
+    /// safety net for any OTHER way a media file could end up unreferenced
+    /// (not just the watermark cycle the primary fix addresses).
+    func testListImagesSurfacesAManuallyPlacedUnreferencedMediaFile() async throws {
+        var doc = WordDocument()
+        doc.appendParagraph(Paragraph(text: "Body text, no images"))
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("wm208-strayed-\(UUID().uuidString).docx")
+        try DocxWriter.write(doc, to: base)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let staging = FileManager.default.temporaryDirectory.appendingPathComponent("wm208-strayed-staging-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { ZipHelper.cleanup(staging) }
+        try FileManager.default.unzipItem(at: base, to: staging)
+        let mediaDir = staging.appendingPathComponent("word/media")
+        try FileManager.default.createDirectory(at: mediaDir, withIntermediateDirectories: true)
+        try Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]).write(to: mediaDir.appendingPathComponent("stray-leftover.png"))
+
+        let fixture = FileManager.default.temporaryDirectory.appendingPathComponent("wm208-strayed-fixture-\(UUID().uuidString).docx")
+        try ZipHelper.zip(staging, to: fixture)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+
+        let list = resultText(await WordMCPServer().invokeToolForTesting(name: "list_images", arguments: ["source_path": .string(fixture.path)]))
+        XCTAssertTrue(list.contains("stray-leftover.png"), "Got: \(list)")
+        XCTAssertTrue(list.lowercased().contains("unreferenced"), "Got: \(list)")
     }
 
     // MARK: - Transport contract (verify DA D4, #201 legacy — still true for a thrown error)
