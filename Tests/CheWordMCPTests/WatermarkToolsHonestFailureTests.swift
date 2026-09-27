@@ -544,7 +544,7 @@ final class WatermarkToolsHonestFailureTests: XCTestCase {
         await closeDiscarding(server)
     }
 
-    // MARK: - #470-img R2 F2: no media file leak across insert/remove cycles
+    // MARK: - #208 R2 F2: no media file leak across insert/remove cycles
 
     /// Three full insert_image_watermark → remove_watermark cycles on the
     /// same document; the SAVED package must not accumulate an unreferenced
