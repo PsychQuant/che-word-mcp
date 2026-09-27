@@ -856,6 +856,34 @@ actor WordMCPServer {
         autosaveCounter.removeValue(forKey: docId)
     }
 
+    /// R2 (#221 H1, `review-cwm450.md` finding) — `revert_to_disk`,
+    /// `reload_from_disk`, and `recover_from_autosave` all re-read a fresh
+    /// `WordDocument` from disk and swap it into `openDocuments[docId]`,
+    /// discarding whatever was there before. The discarded copy owns its
+    /// own extracted tempDir (`DocxReader.read`'s `preservedArchive`,
+    /// same mechanism #221 fixed for `resolveDocument`'s Direct Mode
+    /// branch) — swapping the dictionary VALUE without first `.close()`ing
+    /// the old one leaks that tempDir permanently: no variable holds a
+    /// reference to it anymore, so nothing (not even a later
+    /// `close_document` on the SAME `docId`) can ever reach it again. Same
+    /// root cause as #221, same fix shape as `removeSession` above
+    /// (mutate a local copy — `WordDocument` is a value type, but the
+    /// underlying tempDir on disk is shared, so `close()` on the copy
+    /// still deletes the real directory).
+    ///
+    /// Callers MUST have already confirmed `openDocuments[docId] != nil`
+    /// AND already obtained `replacement` (i.e. the disk read that can
+    /// fail already succeeded) before calling this — the whole point is
+    /// that a failed disk read must leave the OLD document exactly as it
+    /// was, session intact, nothing closed. This function only ever runs
+    /// after that read has already succeeded.
+    private func replaceOpenDocument(docId: String, with replacement: WordDocument) {
+        if var old = openDocuments[docId] {
+            old.close()
+        }
+        openDocuments[docId] = replacement
+    }
+
     internal func isDirty(docId: String) -> Bool {
         documentDirtyState[docId] ?? false
     }
@@ -7754,7 +7782,13 @@ actor WordMCPServer {
         }
 
         let recoveredDoc = try DocxReader.read(from: URL(fileURLWithPath: autosavePath))
-        openDocuments[docId] = recoveredDoc
+        // R2 (#221 H1): mirrors `openDocument.archiveExtracted` — lets tests
+        // pin the exact tempDir THIS read extracted, the same "one specific
+        // path, not a namespace diff" technique #221's own tests use.
+        logDebug(event: "recoverFromAutosave.archiveExtracted", [
+            ("doc_id", docId), ("archive_temp_dir", recoveredDoc.archiveTempDir?.path ?? "nil"),
+        ])
+        replaceOpenDocument(docId: docId, with: recoveredDoc)
         documentDirtyState[docId] = true
         return "Recovered document '\(docId)' from autosave: \(autosavePath). Call save_document to persist."
     }
@@ -7839,7 +7873,11 @@ actor WordMCPServer {
 
         let url = URL(fileURLWithPath: path)
         let fresh = try DocxReader.read(from: url)
-        openDocuments[docId] = fresh
+        // R2 (#221 H1): see `recoverFromAutosave`'s matching comment.
+        logDebug(event: "revertToDisk.archiveExtracted", [
+            ("doc_id", docId), ("archive_temp_dir", fresh.archiveTempDir?.path ?? "nil"),
+        ])
+        replaceOpenDocument(docId: docId, with: fresh)
         documentDirtyState[docId] = false
         recordImageBaseline(docId: docId, path: path)
         if let hash = try? SessionState.computeSHA256(path: path) {
@@ -7874,7 +7912,11 @@ actor WordMCPServer {
         }
         let url = URL(fileURLWithPath: path)
         let fresh = try DocxReader.read(from: url)
-        openDocuments[docId] = fresh
+        // R2 (#221 H1): see `recoverFromAutosave`'s matching comment.
+        logDebug(event: "reloadFromDisk.archiveExtracted", [
+            ("doc_id", docId), ("archive_temp_dir", fresh.archiveTempDir?.path ?? "nil"),
+        ])
+        replaceOpenDocument(docId: docId, with: fresh)
         documentDirtyState[docId] = false
         recordImageBaseline(docId: docId, path: path)
         if let hash = try? SessionState.computeSHA256(path: path) {
@@ -9988,7 +10030,17 @@ actor WordMCPServer {
             throw WordError.invalidFormat("File is open in Microsoft Word. Please save and close it first: \(sourceURL.lastPathComponent)")
         }
 
-        let document = try DocxReader.read(from: sourceURL)
+        var document = try DocxReader.read(from: sourceURL)
+        // R2 (#221 H2, `review-cwm450.md` finding): `export_markdown` is
+        // read-only (`source_path` only, no `doc_id`/session persistence)
+        // and `wordConverter.convertToString` never touches
+        // `document.archiveTempDir` (checked against `word-to-md-swift`'s
+        // source) — safe to release the extracted tempDir right here,
+        // before conversion, same as #221's `resolveDocument` fix.
+        logDebug(event: "exportMarkdown.archiveExtracted", [
+            ("archive_temp_dir", document.archiveTempDir?.path ?? "nil"),
+        ])
+        document.close()
 
         // 圖片輸出目錄：預設與 .md 同層的 figures/
         let figuresDir: URL
@@ -10908,12 +10960,27 @@ actor WordMCPServer {
         guard let sourceParaIdx = try optionalInt(args, "source_paragraph_index") else {
             throw WordError.missingParameter("source_paragraph_index")
         }
-        let sourceDoc: WordDocument
+        var sourceDoc: WordDocument
+        // R2 (#221 H2, `review-cwm450.md` finding): only a `source_path`
+        // read creates a NEW extracted archive this function owns and must
+        // release. `source_doc_id`'s `sourceDoc = opened` is a COPY of an
+        // ALREADY-OPEN session document — closing it here would be wrong:
+        // ooxml-swift's `PreservedArchive` is a class (reference type), so
+        // every copy of that `WordDocument` shares the SAME underlying
+        // tempDir-cleanup state (see `removeSession`'s comment on the same
+        // mechanism). Calling `.close()` on this copy would delete the
+        // ACTIVE session's tempDir out from under it. Only the
+        // `source_path` branch's OWN, exclusively-held copy may be closed.
+        var isTemporary = false
         if let sourcePath = args["source_path"]?.stringValue {
             guard FileManager.default.fileExists(atPath: sourcePath) else {
                 throw WordError.fileNotFound(sourcePath)
             }
             sourceDoc = try DocxReader.read(from: URL(fileURLWithPath: sourcePath))
+            isTemporary = true
+            logDebug(event: "resolveSourceParagraph.archiveExtracted", [
+                ("archive_temp_dir", sourceDoc.archiveTempDir?.path ?? "nil"),
+            ])
         } else if let sourceDocId = args["source_doc_id"]?.stringValue {
             guard let opened = openDocuments[sourceDocId] else {
                 throw WordError.documentNotFound(sourceDocId)
@@ -10922,6 +10989,7 @@ actor WordMCPServer {
         } else {
             throw WordError.missingParameter("source_path or source_doc_id")
         }
+        defer { if isTemporary { sourceDoc.close() } }
 
         // Body-paragraph index (counts only `.paragraph` body children)
         var paraCounter = 0
@@ -12420,6 +12488,9 @@ actor WordMCPServer {
 
     /// Load the document either from openDocuments (doc_id) or by reading
     /// the source_path directly. Used by read-only tools that support both modes.
+    /// Shared by 7 read-only tools (`listContentControls`, `getContentControl`,
+    /// `getStyleInheritanceChain`, `listNumberingDefinitions`,
+    /// `getNumberingDefinition`, `getAllSections`, `getSectionHeaderMapTool`).
     private func loadDocumentFromArgs(_ args: [String: Value]) async throws -> WordDocument {
         if let docId = args["doc_id"]?.stringValue {
             guard let doc = openDocuments[docId] else {
@@ -12428,7 +12499,17 @@ actor WordMCPServer {
             return doc
         }
         if let path = args["source_path"]?.stringValue {
-            return try DocxReader.read(from: URL(fileURLWithPath: path))
+            // R2 (#221 H2, `review-cwm450.md` finding): every one of the 7
+            // callers above is read-only and none of them touches
+            // `archiveTempDir` afterward — safe to release the extracted
+            // tempDir right here, before returning, same shape as #221's
+            // `resolveDocument` Direct Mode fix.
+            var doc = try DocxReader.read(from: URL(fileURLWithPath: path))
+            logDebug(event: "loadDocumentFromArgs.archiveExtracted", [
+                ("archive_temp_dir", doc.archiveTempDir?.path ?? "nil"),
+            ])
+            doc.close()
+            return doc
         }
         throw WordError.missingParameter("doc_id or source_path")
     }
