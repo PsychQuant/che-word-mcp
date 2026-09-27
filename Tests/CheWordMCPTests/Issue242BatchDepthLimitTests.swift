@@ -9,63 +9,85 @@ import MCP
 /// JSON-RPC batch (top-level `[...]`), that means a single over-deep item
 /// anywhere in the batch rejected the entire message: the response was one
 /// bare error object (not the array shape a batch response takes), its
-/// `id` was always `null` (`scanJSONRPCEnvelope` only reads a depth-1 `id`
-/// key, and a batch item's own `id` sits at depth 2 in the WHOLE-message
-/// scan), and every other — otherwise perfectly legal — item in the same
-/// batch got no response at all.
+/// `id` was always `null`, and every other — otherwise perfectly legal —
+/// item in the same batch got no response at all.
 ///
-/// R1 fix (`splitTopLevelBatchElements`): reuse the same non-recursive,
-/// string-aware byte scanner to split a batch's top-level elements into
-/// their own raw byte ranges, then re-run `scanJSONRPCEnvelope` on EACH
-/// element standalone. Over-depth elements get a named error; the rest are
-/// reassembled into a smaller batch and handed to swift-sdk's own decode +
-/// `Server.handleBatch`.
+/// R1 tried per-item salvage: split the batch, forward the legal remainder
+/// to swift-sdk's own decode/dispatch, answer the illegal items directly.
+/// That produced TWO independent wire messages for one batch request
+/// (violating JSON-RPC 2.0's "respond with an Array", singular) — R2 fixed
+/// THAT by staging the illegal items' errors and merging them into
+/// swift-sdk's own later response, keyed by the forwarded sub-batch's
+/// expected id set.
 ///
-/// R2 fix (independent review, `review-cwm-misc.md` finding #242-1, HIGH):
-/// R1's illegal-item error array was sent IMMEDIATELY, and the legal
-/// sub-batch's response arrived LATER via swift-sdk's own `handleBatch` →
-/// `send(_:)` call — two independent wire messages for one batch request,
-/// violating JSON-RPC 2.0's "respond with an Array" (singular) contract.
-/// R2 defers the illegal-item error array instead: `pendingIllegalByIDSet`
-/// stages it keyed by the id set the forwarded legal sub-batch is expected
-/// to answer, and `send(_:)` merges it into that SAME response the first
-/// time an outgoing array's own id set matches. Sending immediately still
-/// happens in the two cases where nothing will ever call `send(_:)` on the
-/// batch's behalf: no legal sub-batch at all, or a legal sub-batch made
-/// entirely of notifications (no ids, `handleBatch` never reaches its own
-/// `connection.send`). R2 also excludes non-object batch items (bare
-/// scalars) from the "legal, forward it" bucket — see
-/// `isJSONObjectShaped`'s own doc comment for why a stray one there could
-/// poison a whole reconstructed sub-batch's decode and permanently strand
-/// a staged entry.
+/// Two independent-review rounds later, R3 throws the whole stateful
+/// merge mechanism out. Real binary testing found the R2 mechanism itself
+/// could (a) let an object-shaped-but-schema-invalid item (e.g. missing
+/// `method`) poison `Server.Batch.init(from:)`'s ATOMIC decode of the
+/// forwarded sub-batch, causing every id in that batch to get NO response
+/// at all AND leaking the staged entry forever, later corrupting a
+/// completely unrelated future response that happened to reuse the same
+/// id (CRITICAL); and (b) let two concurrent batches whose forwarded
+/// sub-batches shared the same id set silently overwrite each other's
+/// staged entry, losing one batch's error outright (HIGH). Two review
+/// rounds finding two different ways for that dictionary to go stale is
+/// itself the signal: no amount of narrower per-item validation closes
+/// every way `Server.Batch.init(from:)` can atomically fail without
+/// reimplementing swift-sdk's own decode.
+///
+/// R3's design is STATELESS: `DepthLimitedTransport` no longer keeps any
+/// information about a message once it has been forwarded or answered.
+/// Per-element depth scanning is kept (still needed so a batch whose items
+/// are all individually within cap isn't rejected merely because the
+/// wrapping `[` adds one to the whole-message scan), but the outcome is
+/// now binary and decided in a single pass with NO partial forwarding:
+///
+/// - No element is individually over depth → the ORIGINAL message is
+///   forwarded byte-for-byte, unmodified — exactly as if this guard did
+///   not exist, including swift-sdk's own handling of anything else wrong
+///   with the batch (non-object items, missing fields, etc. — genuinely
+///   out of this guard's scope, same as for a non-batch message).
+/// - At least one element IS over depth → the WHOLE batch is refused
+///   right here, nothing is ever forwarded to decode: one JSON array,
+///   built entirely from the elements' own (already-in-hand) scans, is
+///   sent directly. Every element that could carry an id gets an entry
+///   named by that id (the over-depth one(s) get a depth error; the
+///   rest get a "batch not executed" error naming which sibling index
+///   caused it); notifications (object-shaped, no id) get no entry;
+///   non-object elements get `id: null` (JSON-RPC's answer for an
+///   unidentifiable malformed item). Since nothing is ever forwarded in
+///   this branch, there is nothing for swift-sdk to atomically fail to
+///   decode, and nothing left over to stage, leak, or collide with a
+///   later message — there is no "later" for a refused batch at all.
 ///
 /// Reuses `MockTransport` from `DepthLimitedTransportTests.swift` (same
-/// target, no import needed). Because `MockTransport` has no real
-/// swift-sdk behind it, tests that exercise the DEFERRED path must
-/// manually simulate swift-sdk's later `send(_:)` call with a plausible
-/// response array for the forwarded sub-batch's ids (`simulateSDKResponse`
-/// below) — this is exactly the round trip the real binary test drives end
-/// to end (see the R2 report's binary section).
+/// target, no import needed).
 final class Issue242BatchDepthLimitTests: XCTestCase {
 
     // MARK: - Helpers
-
-    /// Builds a JSON-RPC batch response array for the given ids, the shape
-    /// swift-sdk's `handleBatch` would actually send — used to simulate
-    /// "swift-sdk finished dispatching the forwarded legal sub-batch and
-    /// is now calling `Transport.send(_:)`" without running a real server.
-    private func fakeSDKResponse(ids: [Int]) -> Data {
-        let items = ids.map { "{\"jsonrpc\":\"2.0\",\"id\":\($0),\"result\":{\"ok\":true}}" }
-        return Data(("[" + items.joined(separator: ",") + "]").utf8)
-    }
 
     private func jsonArray(_ data: Data) throws -> [[String: Any]] {
         try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
     }
 
-    // MARK: - Test 1: issue's own repro — one over-deep item + one normal item (id: 101)
+    /// Runs one batch through `sut`, returns (forwarded messages, sent
+    /// messages) after the stream drains.
+    private func run(_ sut: DepthLimitedTransport, _ mock: MockTransport, _ batch: Data) async throws -> (forwarded: [Data], sent: [Data]) {
+        await mock.enqueue(batch)
+        await mock.finishStream()
+        var forwarded: [Data] = []
+        for try await message in await sut.receive() {
+            forwarded.append(message)
+        }
+        return (forwarded, await mock.sentMessages)
+    }
 
-    func testBatchWithOneOverDeepItemStillAnswersTheOtherItsOwnId() async throws {
+    // MARK: - Test 1: issue's own repro — one over-deep item + one otherwise-legal item (id: 101)
+
+    /// R3: the batch is refused WHOLESALE — id 101 is never forwarded to
+    /// swift-sdk at all (unlike R1/R2, where it would have been). It gets
+    /// a "batch not executed" error naming its own id, not a real result.
+    func testBatchWithOneOverDeepItemRefusesWholeBatchInOneMessage() async throws {
         let mock = MockTransport()
         let sut = DepthLimitedTransport(wrapping: mock, maxRawJSONDepth: 4)
         try await sut.connect()
@@ -74,47 +96,30 @@ final class Issue242BatchDepthLimitTests: XCTestCase {
         let normalItem = #"{"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"a":1}}"#
         let batch = Data("[\(deepItem),\(normalItem)]".utf8)
 
-        // Sanity: the WHOLE message is over cap (this is what pre-R1-fix
-        // code rejected wholesale), even though the normal item alone is not.
         let wholeScan = DepthLimitedTransport.scanJSONRPCEnvelope(batch)
         XCTAssertGreaterThan(wholeScan.maxDepth, 4, "fixture must exercise the over-cap whole-message path")
 
-        await mock.enqueue(batch)
-        await mock.finishStream()
+        let (forwarded, sent) = try await run(sut, mock, batch)
 
-        var forwarded: [Data] = []
-        for try await message in await sut.receive() {
-            forwarded.append(message)
-        }
-        XCTAssertEqual(forwarded.count, 1, "the legal batch item must be forwarded, reassembled into its own batch")
-        let forwardedArray = try jsonArray(try XCTUnwrap(forwarded.first))
-        XCTAssertEqual(forwardedArray.count, 1)
-        XCTAssertEqual(forwardedArray.first?["id"] as? Int, 101, "the forwarded sub-batch must contain the legal item, unaltered")
-
-        // R2: nothing is sent yet — the illegal item's error is DEFERRED,
-        // waiting for swift-sdk's own response to the forwarded sub-batch.
-        var sent = await mock.sentMessages
-        XCTAssertTrue(sent.isEmpty, "the over-deep item's error must not go out before the legal sub-batch's own response does")
-
-        // Simulate swift-sdk finishing dispatch of the forwarded sub-batch.
-        try await sut.send(fakeSDKResponse(ids: [101]))
-
-        sent = await mock.sentMessages
-        XCTAssertEqual(sent.count, 1, "exactly ONE response message for the whole original batch (JSON-RPC 2.0: respond with an Array, singular)")
+        XCTAssertTrue(forwarded.isEmpty, "R3 never forwards anything from a refused batch")
+        XCTAssertEqual(sent.count, 1, "exactly ONE response message for the whole batch")
         let merged = try jsonArray(try XCTUnwrap(sent.first))
-        XCTAssertEqual(merged.count, 2, "the merged array must contain both the legal item's result AND the over-deep item's error")
+        XCTAssertEqual(merged.count, 2)
         let byID = Dictionary(uniqueKeysWithValues: merged.compactMap { entry -> (Int, [String: Any])? in
             guard let id = entry["id"] as? Int else { return nil }
             return (id, entry)
         })
-        XCTAssertNotNil(byID[101]?["result"], "id 101's legal result must be present")
-        let error1 = try XCTUnwrap(byID[1]?["error"] as? [String: Any], "id 1's over-deep error must be present, named by its own id")
+        let error1 = try XCTUnwrap(byID[1]?["error"] as? [String: Any], "the over-depth item's own id must be named")
         XCTAssertEqual(error1["code"] as? Int, -32600)
+        let error101 = try XCTUnwrap(byID[101]?["error"] as? [String: Any], "id 101 must get an error (batch not executed), not a real result")
+        XCTAssertEqual(error101["code"] as? Int, -32600)
+        let message101 = try XCTUnwrap(error101["message"] as? String)
+        XCTAssertTrue(message101.contains("not executed"), "must explain the batch as a whole did not run. got: \(message101)")
     }
 
     // MARK: - Test 2: two normal items + one over-deep item
 
-    func testBatchWithTwoNormalItemsAndOneOverDeepItem() async throws {
+    func testBatchWithTwoNormalItemsAndOneOverDeepItemAllAnsweredInOneMessage() async throws {
         let mock = MockTransport()
         let sut = DepthLimitedTransport(wrapping: mock, maxRawJSONDepth: 4)
         try await sut.connect()
@@ -124,30 +129,17 @@ final class Issue242BatchDepthLimitTests: XCTestCase {
         let deepItem = #"{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"a":[[[1]]]}}"#
         let batch = Data("[\(normalA),\(deepItem),\(normalB)]".utf8)
 
-        await mock.enqueue(batch)
-        await mock.finishStream()
-
-        var forwarded: [Data] = []
-        for try await message in await sut.receive() {
-            forwarded.append(message)
-        }
-        XCTAssertEqual(forwarded.count, 1)
-        let forwardedArray = try jsonArray(try XCTUnwrap(forwarded.first))
-        let forwardedIDs = Set(forwardedArray.compactMap { $0["id"] as? Int })
-        XCTAssertEqual(forwardedIDs, [10, 20], "both legal items — and only them — must be forwarded")
-
-        var sent = await mock.sentMessages
-        XCTAssertTrue(sent.isEmpty, "deferred until the legal sub-batch's own response arrives")
-
-        try await sut.send(fakeSDKResponse(ids: [10, 20]))
-
-        sent = await mock.sentMessages
-        XCTAssertEqual(sent.count, 1, "exactly one response message for the whole batch")
+        let (forwarded, sent) = try await run(sut, mock, batch)
+        XCTAssertTrue(forwarded.isEmpty)
+        XCTAssertEqual(sent.count, 1)
         let merged = try jsonArray(try XCTUnwrap(sent.first))
         XCTAssertEqual(Set(merged.compactMap { $0["id"] as? Int }), [10, 20, 30])
+        for entry in merged {
+            XCTAssertNotNil(entry["error"], "every id must be answered with an error — none of them actually ran")
+        }
     }
 
-    // MARK: - Test 3: every item in the batch is over-depth — nothing forwarded, all named, sent immediately
+    // MARK: - Test 3: every item in the batch is over-depth
 
     func testBatchWhereEveryItemIsOverDepth() async throws {
         let mock = MockTransport()
@@ -158,64 +150,35 @@ final class Issue242BatchDepthLimitTests: XCTestCase {
         let deepB = #"{"jsonrpc":"2.0","id":2,"method":"m","params":{"a":[[[2]]]}}"#
         let batch = Data("[\(deepA),\(deepB)]".utf8)
 
-        await mock.enqueue(batch)
-        await mock.finishStream()
-
-        var forwarded: [Data] = []
-        for try await message in await sut.receive() {
-            forwarded.append(message)
-        }
-        XCTAssertTrue(forwarded.isEmpty, "no item in this batch is legal — nothing should reach decode")
-
-        // No legal sub-batch was forwarded at all, so nothing will ever
-        // call send(_:) on this batch's behalf — the error array must go
-        // out RIGHT AWAY, not wait for a send() that will never come.
-        let sent = await mock.sentMessages
+        let (forwarded, sent) = try await run(sut, mock, batch)
+        XCTAssertTrue(forwarded.isEmpty)
         XCTAssertEqual(sent.count, 1)
         let errorArray = try jsonArray(try XCTUnwrap(sent.first))
-        let errorIDs = Set(errorArray.compactMap { $0["id"] as? Int })
-        XCTAssertEqual(errorIDs, [1, 2], "every over-depth item must be named in the combined error array")
+        XCTAssertEqual(Set(errorArray.compactMap { $0["id"] as? Int }), [1, 2])
     }
 
-    // MARK: - Test 4: legal sub-batch of ONLY notifications — must not wait forever for a send() that never comes
+    // MARK: - Test 4: legal sub-batch of ONLY a notification — no response for it, over-depth item still named
 
-    /// Required scenario per R2's review: a legal-by-depth sub-batch made
-    /// entirely of notifications never produces a `handleBatch` response
-    /// (`responses` stays empty, `connection.send` is never called for
-    /// it) — deferring the illegal item's error against THAT sub-batch's
-    /// (empty) id set would strand it forever. Must send immediately.
-    func testLegalSubBatchOfOnlyNotificationsSendsImmediatelyNotDeferred() async throws {
+    func testNotificationPlusOverDeepItemAnswersOnlyTheOverDeepID() async throws {
         let mock = MockTransport()
         let sut = DepthLimitedTransport(wrapping: mock, maxRawJSONDepth: 4)
         try await sut.connect()
 
         let deepItem = #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"a":[[[1]]]}}"#
-        // Legal by depth, but a NOTIFICATION (no "id" key at all).
         let legalNotification = #"{"jsonrpc":"2.0","method":"notifications/x","params":{"a":1}}"#
         let batch = Data("[\(deepItem),\(legalNotification)]".utf8)
 
-        await mock.enqueue(batch)
-        await mock.finishStream()
-
-        var forwarded: [Data] = []
-        for try await message in await sut.receive() {
-            forwarded.append(message)
-        }
-        XCTAssertEqual(forwarded.count, 1, "the notification is still forwarded — it IS legal by depth")
-
-        // No `sut.send(...)` simulation at all here — that's the point:
-        // a real swift-sdk would never call it for a notification-only
-        // sub-batch, so the error must already be out without one.
-        let sent = await mock.sentMessages
-        XCTAssertEqual(sent.count, 1, "must be sent immediately — deferring would wait for a send() that never arrives")
+        let (forwarded, sent) = try await run(sut, mock, batch)
+        XCTAssertTrue(forwarded.isEmpty, "R3 never forwards anything from a refused batch, notifications included")
+        XCTAssertEqual(sent.count, 1)
         let errorArray = try jsonArray(try XCTUnwrap(sent.first))
-        XCTAssertEqual(errorArray.count, 1)
+        XCTAssertEqual(errorArray.count, 1, "the notification gets no response entry at all")
         XCTAssertEqual(errorArray.first?["id"] as? Int, 1)
     }
 
-    // MARK: - Test 5: a notification that is ITSELF over-depth, alongside a legal item with an id — deferred, merges correctly
+    // MARK: - Test 5: notification + legal request + deep item (three-way mix, R1's original test shape)
 
-    func testOverDepthNotificationWithoutIDMergesIntoTheLegalItemsResponse() async throws {
+    func testNotificationPlusLegalRequestPlusDeepItemAnswersBothIDsInOneMessage() async throws {
         let mock = MockTransport()
         let sut = DepthLimitedTransport(wrapping: mock, maxRawJSONDepth: 4)
         try await sut.connect()
@@ -224,219 +187,188 @@ final class Issue242BatchDepthLimitTests: XCTestCase {
         let normalItem = #"{"jsonrpc":"2.0","id":5,"method":"m","params":{"a":1}}"#
         let batch = Data("[\(deepNotification),\(normalItem)]".utf8)
 
-        await mock.enqueue(batch)
-        await mock.finishStream()
-
-        var forwarded: [Data] = []
-        for try await message in await sut.receive() {
-            forwarded.append(message)
-        }
-        XCTAssertEqual(forwarded.count, 1)
-        let forwardedArray = try jsonArray(try XCTUnwrap(forwarded.first))
-        XCTAssertEqual(forwardedArray.first?["id"] as? Int, 5)
-
-        var sent = await mock.sentMessages
-        XCTAssertTrue(sent.isEmpty, "deferred — the legal item (id 5) DOES expect a response, so this waits for it")
-
-        try await sut.send(fakeSDKResponse(ids: [5]))
-
-        sent = await mock.sentMessages
+        let (forwarded, sent) = try await run(sut, mock, batch)
+        XCTAssertTrue(forwarded.isEmpty)
         XCTAssertEqual(sent.count, 1)
         let merged = try jsonArray(try XCTUnwrap(sent.first))
+        // The over-depth notification (no id at all) STILL gets an entry —
+        // same established precedent as the non-batch single-message path
+        // (an over-depth message always gets answered, notification or
+        // not) — plus id 5's "batch not executed" entry.
         XCTAssertEqual(merged.count, 2)
-        let nullIDError = merged.first { $0["id"] is NSNull }
-        XCTAssertNotNil(nullIDError, "the over-depth notification (no id at all) falls back to null, same as the single-message path")
+        let nullIDEntry = merged.first { $0["id"] is NSNull }
+        XCTAssertNotNil(nullIDEntry, "the over-depth notification falls back to a null-id entry")
+        XCTAssertTrue(merged.contains { $0["id"] as? Int == 5 })
     }
 
-    // MARK: - Test 6: whole-message depth inflated ONLY by the wrapping array — both items are individually legal
+    // MARK: - Test 6: whole-message depth inflated ONLY by the wrapping array — forwarded unchanged, untouched
 
     /// Regression guard for the exact mechanism #242 describes: scanning
     /// the WHOLE message always reads at least 1 deeper than scanning any
-    /// one element alone (the wrapping `[` itself). A batch whose items
-    /// are ALL individually within cap must still be salvaged in full —
-    /// not just "mostly" — even when the whole-message scan alone would
-    /// have said "over cap".
-    func testBatchWhereWholeMessageDepthExceedsCapButEveryItemAloneDoesNot() async throws {
+    /// one element alone. A batch whose items are ALL individually within
+    /// cap must be forwarded EXACTLY as received — R3 does not even
+    /// reconstruct it (no `continuation.yield` of a rebuilt array; the
+    /// original `Data` object is forwarded byte-for-byte).
+    func testBatchWhereWholeMessageDepthExceedsCapButEveryItemAloneDoesNotIsForwardedUnchanged() async throws {
         let itemA = #"{"jsonrpc":"2.0","id":1,"method":"m","params":{"a":1}}"#
         let itemB = #"{"jsonrpc":"2.0","id":2,"method":"m","params":{"a":2}}"#
         let itemScanA = DepthLimitedTransport.scanJSONRPCEnvelope(Data(itemA.utf8))
         let batch = Data("[\(itemA),\(itemB)]".utf8)
         let wholeScan = DepthLimitedTransport.scanJSONRPCEnvelope(batch)
-        // Confirm the fixture actually exercises the "+1 purely from the
-        // wrapping array" shape this test is pinning down.
-        XCTAssertEqual(wholeScan.maxDepth, itemScanA.maxDepth + 1)
+        XCTAssertEqual(wholeScan.maxDepth, itemScanA.maxDepth + 1, "fixture must exercise the +1-purely-from-the-wrapping-array shape")
 
         let mock = MockTransport()
         let sut = DepthLimitedTransport(wrapping: mock, maxRawJSONDepth: itemScanA.maxDepth)
         try await sut.connect()
-        await mock.enqueue(batch)
-        await mock.finishStream()
+        let (forwarded, sent) = try await run(sut, mock, batch)
 
-        var forwarded: [Data] = []
-        for try await message in await sut.receive() {
-            forwarded.append(message)
-        }
-        XCTAssertEqual(forwarded.count, 1, "both items are individually within cap; the batch must be salvaged in full, not rejected wholesale")
-        let forwardedArray = try jsonArray(try XCTUnwrap(forwarded.first))
-        XCTAssertEqual(Set(forwardedArray.compactMap { $0["id"] as? Int }), [1, 2])
-
-        let sent = await mock.sentMessages
-        XCTAssertTrue(sent.isEmpty, "no item was actually over its own cap — no error should be sent, and nothing was deferred either")
+        XCTAssertEqual(forwarded, [batch], "forwarded byte-for-byte, unmodified — not reconstructed, not even reordered")
+        XCTAssertTrue(sent.isEmpty, "nothing was over its own cap — no direct response, nothing to answer here at all")
     }
 
-    // MARK: - Test 7: two batches in flight simultaneously — independent merges, no cross-contamination
+    // MARK: - Test 7 (#242-R2-1 CRITICAL regression guard): a schema-invalid-but-object-shaped item never poisons anything, never gets forwarded
 
-    func testTwoBatchesInFlightMergeIndependently() async throws {
+    /// The exact shape the R2 review reproduced: an object-shaped batch
+    /// item missing `method` (or any other required field) — R2's
+    /// mechanism let this ride into the forwarded sub-batch, where
+    /// swift-sdk's `Server.Batch.init(from:)` failed ATOMICALLY on it,
+    /// losing every id in that batch and leaking a staged entry forever.
+    /// R3 never forwards ANYTHING once one element is over depth, so this
+    /// item — schema-invalid or not — is simply answered like any other
+    /// non-over-depth, object-shaped, has-an-id element: a "batch not
+    /// executed" error naming its own id. It is never handed to swift-sdk
+    /// for decode at all in this branch, so there is nothing for it to
+    /// poison.
+    func testObjectShapedButSchemaInvalidItemNeverPoisonsAnythingAndIsAnsweredDirectly() async throws {
         let mock = MockTransport()
         let sut = DepthLimitedTransport(wrapping: mock, maxRawJSONDepth: 4)
         try await sut.connect()
 
+        let deepItem = #"{"jsonrpc":"2.0","id":1,"method":"m","params":{"a":[[[1]]]}}"#
+        // Object-shaped, has an id, but missing "method" — exactly what
+        // R2's `isJSONObjectShaped` let through into the forwarded batch.
+        let schemaInvalidItem = #"{"jsonrpc":"2.0","id":5,"params":{"x":1}}"#
+        let batch = Data("[\(deepItem),\(schemaInvalidItem)]".utf8)
+
+        let (forwarded, sent) = try await run(sut, mock, batch)
+        XCTAssertTrue(forwarded.isEmpty, "nothing is ever forwarded once the batch is refused — the schema-invalid item cannot poison a decode that never happens")
+        XCTAssertEqual(sent.count, 1, "exactly one message — R2's failure mode (zero messages, permanently lost ids) cannot occur")
+        let merged = try jsonArray(try XCTUnwrap(sent.first))
+        XCTAssertEqual(Set(merged.compactMap { $0["id"] as? Int }), [1, 5], "both ids answered, including the schema-invalid one")
+        XCTAssertTrue(merged.allSatisfy { $0["error"] != nil })
+    }
+
+    // MARK: - Test 8 (#242-R2-2 HIGH regression guard): two batches with the SAME id set, run back to back, never cross-contaminate
+
+    /// R2's staging dictionary was keyed by id set and OVERWRITTEN
+    /// (`pendingIllegalByIDSet[ids] = responses`) — two concurrent batches
+    /// sharing the same legal-sub-batch id set silently lost one batch's
+    /// error entirely. R3 has no dictionary to key at all: each batch is
+    /// answered synchronously, in the same pump-loop iteration that
+    /// received it, using only that batch's own elements. Running two
+    /// batches with an identical id set back-to-back must produce two
+    /// independent, fully-correct messages.
+    func testTwoBatchesWithTheSameIDSetNeverCrossContaminate() async throws {
+        let mock = MockTransport()
+        let sut = DepthLimitedTransport(wrapping: mock, maxRawJSONDepth: 4)
+        try await sut.connect()
+
+        // Both batches' "legal" (non-over-depth) item uses the SAME id
+        // (101) — exactly the scenario R2's dictionary collided on. Each
+        // batch's own over-depth item has a distinct id (1 vs 2).
         let batchA = Data(
             "[\(#"{"jsonrpc":"2.0","id":1,"method":"m","params":{"a":[[[1]]]}}"#),\(#"{"jsonrpc":"2.0","id":101,"method":"m"}"#)]"
                 .utf8)
         let batchB = Data(
-            "[\(#"{"jsonrpc":"2.0","id":2,"method":"m","params":{"a":[[[1]]]}}"#),\(#"{"jsonrpc":"2.0","id":202,"method":"m"}"#)]"
+            "[\(#"{"jsonrpc":"2.0","id":2,"method":"m","params":{"a":[[[1]]]}}"#),\(#"{"jsonrpc":"2.0","id":101,"method":"m"}"#)]"
                 .utf8)
 
         await mock.enqueue(batchA)
         await mock.enqueue(batchB)
         await mock.finishStream()
-
         var forwarded: [Data] = []
         for try await message in await sut.receive() {
             forwarded.append(message)
         }
-        XCTAssertEqual(forwarded.count, 2, "each batch's own legal sub-batch is forwarded independently")
-
-        var sent = await mock.sentMessages
-        XCTAssertTrue(sent.isEmpty, "both deferred — neither batch's legal item has answered yet")
-
-        // Respond to B first, THEN A — order must not matter; each must
-        // only pick up its OWN staged entry.
-        try await sut.send(fakeSDKResponse(ids: [202]))
-        sent = await mock.sentMessages
-        XCTAssertEqual(sent.count, 1, "B's response must merge with B's staged error only")
-        var mergedB = try jsonArray(try XCTUnwrap(sent.last))
-        XCTAssertEqual(Set(mergedB.compactMap { $0["id"] as? Int }), [202, 2], "B's merge must NOT include A's id 1 or 101")
-
-        try await sut.send(fakeSDKResponse(ids: [101]))
-        sent = await mock.sentMessages
-        XCTAssertEqual(sent.count, 2, "A's response arrives later and produces its OWN second message")
-        let mergedA = try jsonArray(try XCTUnwrap(sent.last))
-        XCTAssertEqual(Set(mergedA.compactMap { $0["id"] as? Int }), [101, 1], "A's merge must NOT include B's id 2 or 202")
-        // Re-fetch B's merge to confirm it was untouched by A's later send.
-        mergedB = try jsonArray(try XCTUnwrap(sent.first))
-        XCTAssertEqual(Set(mergedB.compactMap { $0["id"] as? Int }), [202, 2])
-    }
-
-    // MARK: - Test 8: an unrelated send() with a different id set passes through untouched, pending entry stays staged
-
-    func testUnrelatedSendDoesNotConsumeAPendingEntry() async throws {
-        let mock = MockTransport()
-        let sut = DepthLimitedTransport(wrapping: mock, maxRawJSONDepth: 4)
-        try await sut.connect()
-
-        let batch = Data(
-            "[\(#"{"jsonrpc":"2.0","id":1,"method":"m","params":{"a":[[[1]]]}}"#),\(#"{"jsonrpc":"2.0","id":101,"method":"m"}"#)]"
-                .utf8)
-        await mock.enqueue(batch)
-        await mock.finishStream()
-        _ = try await drain(sut)
-
-        // An unrelated non-batch response for a totally different id (e.g.
-        // a concurrent, ordinary single tool call swift-sdk is also
-        // answering) must pass through unchanged.
-        let unrelated = Data(#"{"jsonrpc":"2.0","id":999,"result":{"ok":true}}"#.utf8)
-        try await sut.send(unrelated)
-        var sent = await mock.sentMessages
-        XCTAssertEqual(sent.count, 1)
-        XCTAssertEqual(sent.first, unrelated, "must be forwarded byte-for-byte unchanged — not mistaken for a match")
-
-        // The REAL match still works afterward — proving the unrelated
-        // send above did not consume/corrupt the staged entry.
-        try await sut.send(fakeSDKResponse(ids: [101]))
-        sent = await mock.sentMessages
-        XCTAssertEqual(sent.count, 2)
-        let merged = try jsonArray(try XCTUnwrap(sent.last))
-        XCTAssertEqual(Set(merged.compactMap { $0["id"] as? Int }), [101, 1])
-    }
-
-    private func drain(_ sut: DepthLimitedTransport) async throws -> [Data] {
-        var forwarded: [Data] = []
-        for try await message in await sut.receive() {
-            forwarded.append(message)
-        }
-        return forwarded
-    }
-
-    // MARK: - Test 9: a non-object batch item does not poison its legal siblings and gets its own answered error
-
-    /// R2 fix for the gap the id-set-merge design would otherwise have:
-    /// a bare scalar batch item (never decodable as `Server.Batch.Item`)
-    /// left in the "legal, forward it" bucket would poison the WHOLE
-    /// reconstructed sub-batch's decode (per `Server.Batch.init(from:)`,
-    /// one item's decode failure fails the whole array), permanently
-    /// stranding any deferred entry. `isJSONObjectShaped` routes it into
-    /// the directly-answered bucket instead.
-    func testNonObjectBatchItemDoesNotPoisonSubBatchAndGetsItsOwnError() async throws {
-        let mock = MockTransport()
-        let sut = DepthLimitedTransport(wrapping: mock, maxRawJSONDepth: 4)
-        try await sut.connect()
-
-        let deepItem = #"{"jsonrpc":"2.0","id":1,"method":"m","params":{"a":[[[1]]]}}"#
-        let legalItem = #"{"jsonrpc":"2.0","id":5,"method":"m"}"#
-        let batch = Data("[42,\(legalItem),\(deepItem)]".utf8)
-
-        await mock.enqueue(batch)
-        await mock.finishStream()
-
-        var forwarded: [Data] = []
-        for try await message in await sut.receive() {
-            forwarded.append(message)
-        }
-        XCTAssertEqual(forwarded.count, 1, "only the genuinely legal, object-shaped item is forwarded")
-        let forwardedArray = try jsonArray(try XCTUnwrap(forwarded.first))
-        XCTAssertEqual(forwardedArray.count, 1, "the bare `42` must NOT ride along in the forwarded sub-batch")
-        XCTAssertEqual(forwardedArray.first?["id"] as? Int, 5)
-
-        var sent = await mock.sentMessages
-        XCTAssertTrue(sent.isEmpty, "deferred — id 5 does expect a response")
-
-        try await sut.send(fakeSDKResponse(ids: [5]))
-        sent = await mock.sentMessages
-        XCTAssertEqual(sent.count, 1)
-        let merged = try jsonArray(try XCTUnwrap(sent.first))
-        XCTAssertEqual(merged.count, 3, "id 5's result + the non-object item's error + the over-depth item's error")
-        let nullIDErrors = merged.filter { $0["id"] is NSNull }
-        XCTAssertEqual(nullIDErrors.count, 1, "the bare `42` item gets its own null-id error naming it as an invalid batch item")
-        XCTAssertTrue(
-            (nullIDErrors.first?["error"] as? [String: Any]).flatMap { $0["message"] as? String }?
-                .contains("must be a JSON object") == true
-        )
-    }
-
-    /// Same shape, but EVERY element is non-object or over-depth — no
-    /// legal sub-batch at all, so this must send immediately (one
-    /// message), exercising the same "nothing to forward" path as
-    /// `testBatchWhereEveryItemIsOverDepth` but for the non-object case.
-    func testAllNonObjectOrOverDepthItemsSendImmediately() async throws {
-        let mock = MockTransport()
-        let sut = DepthLimitedTransport(wrapping: mock, maxRawJSONDepth: 4)
-        try await sut.connect()
-
-        let deepItem = #"{"jsonrpc":"2.0","id":1,"method":"m","params":{"a":[[[1]]]}}"#
-        let batch = Data("[42,\"abc\",\(deepItem)]".utf8)
-
-        await mock.enqueue(batch)
-        await mock.finishStream()
-
-        let forwarded = try await drain(sut)
-        XCTAssertTrue(forwarded.isEmpty)
+        XCTAssertTrue(forwarded.isEmpty, "both batches are refused — nothing forwarded")
 
         let sent = await mock.sentMessages
-        XCTAssertEqual(sent.count, 1, "no legal sub-batch — everything answered directly, right away, in one array")
-        let errorArray = try jsonArray(try XCTUnwrap(sent.first))
-        XCTAssertEqual(errorArray.count, 3, "two invalid-shape errors (42, \"abc\") plus the one depth error (id 1)")
+        XCTAssertEqual(sent.count, 2, "each batch gets its OWN message — no merging, no state shared between them")
+        guard sent.count == 2 else { return }
+        let mergedA = try jsonArray(sent[0])
+        let mergedB = try jsonArray(sent[1])
+        XCTAssertEqual(Set(mergedA.compactMap { $0["id"] as? Int }), [1, 101], "batch A's message must name exactly batch A's ids")
+        XCTAssertEqual(Set(mergedB.compactMap { $0["id"] as? Int }), [2, 101], "batch B's message must name exactly batch B's ids — id 1 from batch A must NEVER appear here")
+        XCTAssertFalse(mergedB.contains { $0["id"] as? Int == 1 }, "no cross-contamination from batch A into batch B's message")
+        XCTAssertFalse(mergedA.contains { $0["id"] as? Int == 2 }, "no cross-contamination from batch B into batch A's message")
+    }
+
+    /// Same shared id (101), but this time followed by an entirely
+    /// ORDINARY non-batch request reusing that id after both batches were
+    /// refused — proving there is no leftover state anywhere that could
+    /// answer (or corrupt) an unrelated later call, the exact #242-R2-1
+    /// "leaked entry poisons a future request" failure mode.
+    func testOrdinaryRequestAfterARefusedBatchIsNotCorruptedByAnyLeftoverState() async throws {
+        let mock = MockTransport()
+        let sut = DepthLimitedTransport(wrapping: mock, maxRawJSONDepth: 4)
+        try await sut.connect()
+
+        let refusedBatch = Data(
+            "[\(#"{"jsonrpc":"2.0","id":1,"method":"m","params":{"a":[[[1]]]}}"#),\(#"{"jsonrpc":"2.0","id":101,"method":"m"}"#)]"
+                .utf8)
+        await mock.enqueue(refusedBatch)
+        // An ordinary, unrelated, non-batch request reusing id 101 —
+        // sent directly to `sut.send`-observable territory by simulating
+        // what swift-sdk would forward-then-answer for it: since R3 never
+        // forwards the refused batch at all, `sut.receive()` yields
+        // NOTHING for it — a real swift-sdk never even sees id 101 from
+        // the batch, so a later, unrelated single request with the same
+        // id is completely ordinary traffic from swift-sdk's perspective.
+        // What matters here is that `send(_:)` performs NO inspection or
+        // merging at all any more — assert it passes arbitrary data
+        // through byte-for-byte regardless of what was refused earlier.
+        await mock.finishStream()
+        for try await _ in await sut.receive() {
+            XCTFail("nothing should ever be forwarded from the refused batch")
+        }
+
+        let unrelatedResponse = Data(#"{"jsonrpc":"2.0","id":101,"result":{"ok":true}}"#.utf8)
+        try await sut.send(unrelatedResponse)
+        let sent = await mock.sentMessages
+        XCTAssertEqual(sent.count, 2, "the refused batch's own message, plus this unrelated send")
+        XCTAssertEqual(sent.last, unrelatedResponse, "send(_:) must forward byte-for-byte, unmodified — no merge logic left to corrupt it")
+    }
+
+    // MARK: - Test 9: non-object batch element (bare scalar) gets id: null, deep item still named
+
+    func testNonObjectBatchItemGetsNullIDInvalidRequest() async throws {
+        let mock = MockTransport()
+        let sut = DepthLimitedTransport(wrapping: mock, maxRawJSONDepth: 4)
+        try await sut.connect()
+
+        let deepItem = #"{"jsonrpc":"2.0","id":1,"method":"m","params":{"a":[[[1]]]}}"#
+        let batch = Data("[42,\(deepItem)]".utf8)
+
+        let (forwarded, sent) = try await run(sut, mock, batch)
+        XCTAssertTrue(forwarded.isEmpty)
+        XCTAssertEqual(sent.count, 1)
+        let merged = try jsonArray(try XCTUnwrap(sent.first))
+        XCTAssertEqual(merged.count, 2)
+        XCTAssertTrue(merged.contains { $0["id"] is NSNull }, "the bare `42` item cannot carry an id — must fall back to null")
+        XCTAssertTrue(merged.contains { $0["id"] as? Int == 1 })
+    }
+
+    // MARK: - batchNotExecutedErrorResponse: unit-level coverage
+
+    func testBatchNotExecutedErrorResponseShape() throws {
+        let response = DepthLimitedTransport.batchNotExecutedErrorResponse(idToken: "5", overDepthIndices: [0, 2], maxDepth: 64)
+        let parsed = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(response.utf8)) as? [String: Any])
+        XCTAssertEqual(parsed["id"] as? Int, 5)
+        let error = try XCTUnwrap(parsed["error"] as? [String: Any])
+        XCTAssertEqual(error["code"] as? Int, -32600)
+        let message = try XCTUnwrap(error["message"] as? String)
+        XCTAssertTrue(message.contains("0") && message.contains("2"), "must name the offending indices. got: \(message)")
+        XCTAssertTrue(message.contains("not executed"))
     }
 
     // MARK: - isJSONObjectShaped: unit-level coverage
@@ -485,5 +417,17 @@ final class Issue242BatchDepthLimitTests: XCTestCase {
         XCTAssertEqual(firstParsed["id"] as? Int, 1)
         let secondParsed = try XCTUnwrap(JSONSerialization.jsonObject(with: elements[1]) as? [String: Any])
         XCTAssertEqual(secondParsed["id"] as? Int, 2)
+    }
+
+    // MARK: - Empty batch `[]` — falls through to the normal-forward path (see #242 R3's own doc comment / CHANGELOG)
+
+    func testEmptyBatchIsForwardedLikeAnyOtherWithinCapMessage() async throws {
+        let mock = MockTransport()
+        let sut = DepthLimitedTransport(wrapping: mock, maxRawJSONDepth: 4)
+        try await sut.connect()
+        let empty = Data("[]".utf8)
+        let (forwarded, sent) = try await run(sut, mock, empty)
+        XCTAssertEqual(forwarded, [empty], "an empty batch is shallow (depth 1) — well within any reasonable cap, forwarded like any other message; swift-sdk's own \"batch array must not be empty\" error applies downstream, unrelated to this guard")
+        XCTAssertTrue(sent.isEmpty)
     }
 }
