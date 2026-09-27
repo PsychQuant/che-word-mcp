@@ -14,6 +14,12 @@ import OOXMLSwift
 /// calling has no way to know which half of the surface is real without
 /// trying every tool once.
 ///
+/// `restrict_editing_region` has since been implemented for real (#184) and
+/// dropped out of the stub list below — it no longer throws
+/// `ToolNotImplemented`, so requiring the disclosure text on it would now be
+/// backwards (see `testAnOrdinaryToolDoesNotClaimToBeUnimplemented`'s inverse
+/// guard for why that matters).
+///
 /// This test enumerates every tool this server is KNOWN to implement as a
 /// `ToolNotImplemented` stub (the list below is exactly the `tool:` values
 /// passed to `ToolNotImplemented(...)` call sites in Server.swift — see the
@@ -37,7 +43,6 @@ final class Issue210NotImplementedDescriptionTests: XCTestCase {
         "unprotect_document",
         "set_document_password",
         "remove_document_password",
-        "restrict_editing_region",
     ]
 
     func testEveryNotImplementedToolDisclosesItInItsDescription() async throws {
@@ -76,5 +81,23 @@ final class Issue210NotImplementedDescriptionTests: XCTestCase {
         }
         let description = tool.description ?? ""
         XCTAssertFalse(description.contains("未實作"), "Got: \(description)")
+    }
+
+    /// #184: `restrict_editing_region` graduated out of the stub list above —
+    /// pin that its description no longer claims to be unimplemented, the
+    /// same inverse guard `testAnOrdinaryToolDoesNotClaimToBeUnimplemented`
+    /// applies to an always-worked tool.
+    func testRestrictEditingRegionNoLongerClaimsToBeUnimplemented() async throws {
+        let server = await WordMCPServer()
+        let tools = await server.toolsForTesting()
+        let byName = Dictionary(uniqueKeysWithValues: tools.map { ($0.name, $0) })
+
+        guard let tool = byName["restrict_editing_region"] else {
+            XCTFail("expected tools/list to contain 'restrict_editing_region'")
+            return
+        }
+        let description = tool.description ?? ""
+        XCTAssertFalse(description.contains("未實作"), "Got: \(description)")
+        XCTAssertFalse(description.lowercased().contains("not implemented"), "Got: \(description)")
     }
 }
