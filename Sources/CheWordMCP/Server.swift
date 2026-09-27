@@ -12037,24 +12037,17 @@ actor WordMCPServer {
         }
         let resolved = try optionalBool(args, "resolved") ?? true
 
-        // #252: consistent with #137's `add_comment_reply`/`reply_to_comment`
-        // rejection — Word's "done" state is a THREAD-ROOT-level flag
-        // (`w15:done` on `commentEx`, keyed by the root's `paraId`), not a
-        // per-comment one. Marking a reply done alone produces a state Word
-        // itself cannot display consistently (the thread's done indicator is
-        // read from the root, not from whichever reply happened to be
-        // marked). Reject before mutating and name the thread root the
-        // caller should target instead, the same shape #137 already
-        // established for the write side of a reply.
-        // #252: consistent with #137's `add_comment_reply`/`reply_to_comment`
-        // rejection — Word's "done" state is a THREAD-ROOT-level flag
-        // (`w15:done` on `commentEx`, keyed by the root's `paraId`), not a
-        // per-comment one. Marking a reply done alone produces a state Word
-        // itself cannot display consistently (the thread's done indicator is
-        // read from the root, not from whichever reply happened to be
-        // marked). Reject before mutating and name the thread root the
-        // caller should target instead, the same shape #137 already
-        // established for the write side of a reply.
+        // #252 (R2: dedupe — this comment block used to be duplicated
+        // verbatim here): consistent with #137's `add_comment_reply`/
+        // `reply_to_comment` rejection — Word's "done" state is a
+        // THREAD-ROOT-level flag (`w15:done` on `commentEx`, keyed by the
+        // root's `paraId`), not a per-comment one. Marking a reply done
+        // alone produces a state Word itself cannot display consistently
+        // (the thread's done indicator is read from the root, not from
+        // whichever reply happened to be marked). Reject before mutating
+        // and name the thread root the caller should target instead, the
+        // same shape #137 already established for the write side of a
+        // reply.
         if let target = doc.comments.comments.first(where: { $0.id == commentId }),
            let parentId = target.parentId {
             throw WordError.invalidParameter(
@@ -12177,18 +12170,13 @@ actor WordMCPServer {
                 failed.append("{\"comment_id\":\(id),\"error\":\"not_found\"}")
                 continue
             }
-            // #252: same rejection `resolveComment` now applies for a
-            // single id (see its #137-consistency comment above) — Word's
-            // "done" state is a thread-root-level flag, and this tool's own
-            // documented contract is "不中斷於單筆失敗": a reply id fails
-            // THAT entry via `failed`, it does not abort the whole batch or
-            // silently mark the reply done.
-            // #252: same rejection `resolveComment` now applies for a
-            // single id (see its #137-consistency comment above) — Word's
-            // "done" state is a thread-root-level flag, and this tool's own
-            // documented contract is "不中斷於單筆失敗": a reply id fails
-            // THAT entry via `failed`, it does not abort the whole batch or
-            // silently mark the reply done.
+            // #252 (R2: dedupe — this comment block used to be duplicated
+            // verbatim here): same rejection `resolveComment` now applies
+            // for a single id (see its #137-consistency comment above) —
+            // Word's "done" state is a thread-root-level flag, and this
+            // tool's own documented contract is "不中斷於單筆失敗": a reply
+            // id fails THAT entry via `failed`, it does not abort the
+            // whole batch or silently mark the reply done.
             if let parentId = doc.comments.comments[index].parentId {
                 failed.append("{\"comment_id\":\(id),\"error\":\"is_reply\",\"parent_id\":\(parentId)}")
                 continue
