@@ -63,13 +63,16 @@ cd mcpb && zip -r che-word-mcp.mcpb .
    兩個大版本（#211）。
 6. **`server.json`**——`version`、`packages[0].version`、
    `packages[0].identifier`（下載網址裡的 `vX.Y.Z`）三處都要跟著改；
-   `packages[0].fileSha256` 只能在 release binary 建好之後才知道正確值，
-   不要用舊值硬填。
+   `packages[0].fileSha256` 由 `scripts/release.sh` 在發版成功後自動寫回，
+   不要事先手填（見下段）。
 
 以上六項中，第 1、5、6 項（manifest.json／serverVersion／server.json 的
 version 與 identifier）由 `scripts/release.sh` 的 `[0.3/7]` 步驟在建置前
-fail-fast 檢查；`server.json` 的 `fileSha256` 由 `[5.5/7]` 步驟在 sha256
-算出後檢查。第 5 項另有 `Issue211VersionConsistencyTests`（`swift test`）
+fail-fast 檢查。`server.json` 的 `fileSha256` 是**簽章後** binary 的 sha256，
+而 `codesign --timestamp` 每次簽章都會嵌入新的時間戳，同一份 bytes 簽兩次
+sha 就不同，所以發版前不可能知道正確值：`scripts/release.sh` 在 `[post]`
+步驟把這次實際的 sha 寫回 `server.json`，發版後要 commit 這個變更（下一次
+發版的乾淨工作樹檢查會擋住沒 commit 的情況）。第 5 項另有 `Issue211VersionConsistencyTests`（`swift test`）
 鎖住 `serverVersion` 與 `mcpb/manifest.json` 的一致性，每次 `swift test`
 都會跑，不必等到真的要發版才發現漏改（#211）。
 
