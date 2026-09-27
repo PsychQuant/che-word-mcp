@@ -7301,7 +7301,33 @@ actor WordMCPServer {
             if FileManager.default.fileExists(atPath: lockFile.path) {
                 throw WordError.invalidFormat("File is open in Microsoft Word. Please save and close it first: \(sourceURL.lastPathComponent)")
             }
-            let document = try DocxReader.read(from: sourceURL)
+            var document = try DocxReader.read(from: sourceURL)
+            // #221 RED-instrumentation: records the specific tempDir this
+            // one Direct Mode call extracted, so a test can assert on THAT
+            // exact path (see DocumentProfileToolsTests's precedent) rather
+            // than diffing the whole shared `$TMPDIR/che-word-mcp/`
+            // namespace, which is racy against any other concurrently
+            // running process touching a real .docx. Captured BEFORE
+            // `close()`, which nils out `archiveTempDir`.
+            logDebug(event: "resolveDocument.directModeArchiveExtracted", [
+                ("archive_temp_dir", document.archiveTempDir?.path ?? "nil"),
+            ])
+            // #221: `DocxReader.read` hands ownership of its unzip tempDir to
+            // `document.preservedArchive` and documents "Caller MUST call
+            // `close()`" — every one of this function's 20+ call sites
+            // destructures the `isTemporary` flag straight into `_` and
+            // never does. Direct Mode is read-only (doc comment above) and
+            // every field a Direct-Mode caller reads off `document`
+            // (paragraphs/runs/images-as-`Data`/etc.) is already fully
+            // materialized by `read()` — no Direct-Mode caller reads
+            // `archiveTempDir` afterward (that lazy raw-XML-part access
+            // path — `readArchivePart`/`setTheme`/header-footer tools — is
+            // Session-Mode-only, via `openDocuments[docId]`, never through
+            // this function) — so releasing the tempDir right here, before
+            // handing the document back, is safe and closes the leak at
+            // its one shared choke point instead of in each of the 20+
+            // callers individually.
+            document.close()
             return (document, true)
         } else if let docId = args["doc_id"]?.stringValue {
             // Session Mode - use already-opened document
