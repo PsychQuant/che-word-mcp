@@ -40,9 +40,12 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # human can forget), and `Implementation(version:)` (now the
 # `WordMCPServer.serverVersion` constant, Server.swift) sat stale on an old
 # release for two major versions with nothing comparing it to the tag being
-# cut. This step is cheap (no build yet) so it runs first; server.json's
-# `fileSha256` cannot be checked here (only known after the binary exists) —
-# see the "[5.5/7]" step below for that half.
+# cut. This step is cheap (no build yet) so it runs first. server.json's
+# `fileSha256` is NOT checked before the release: it is the sha256 of the
+# SIGNED binary, and `codesign --timestamp` embeds a fresh secure timestamp
+# on every signing, so the same bytes signed twice hash differently. No value
+# committed before this run can ever match the binary this run produces —
+# see the "[post]" step at the end, which writes the real value back.
 echo "→ [0.3/7] pre-flight: version-string consistency (manifest.json / server.json / Server.swift)"
 grep -q "static let serverVersion = \"$VERSION\"" Sources/CheWordMCP/Server.swift \
     || { echo "error: Sources/CheWordMCP/Server.swift's 'static let serverVersion' does not say \"$VERSION\" — update it before releasing (che-word-mcp#211)" >&2; exit 2; }
@@ -147,20 +150,6 @@ echo "→ [5/7] sha256 asset"
 cp "$BIN" "$WORKDIR/$BINARY_NAME"
 shasum -a 256 "$WORKDIR/$BINARY_NAME" | awk '{print $1}' > "$WORKDIR/$BINARY_NAME.sha256"
 
-# che-word-mcp#211 (second half — see "[0.3/7]" above): server.json's
-# fileSha256 can only be known now that the actual release binary exists.
-# This necessarily runs after notarization, so a mismatch here wastes that
-# notarization submission — the same fail-late trade-off the FINAL GATE
-# below already accepts. Failing HERE, before "[7/7]", still guarantees no
-# GitHub release is ever created with a server.json that lies about the
-# binary it points at.
-echo "→ [5.5/7] verify server.json fileSha256 matches this release's binary"
-SERVER_JSON_SHA=$(python3 -c "import json,sys; print(json.load(open('server.json'))['packages'][0]['fileSha256'])") \
-    || { echo "error: cannot read 'packages[0].fileSha256' from server.json" >&2; exit 5; }
-ACTUAL_SHA=$(cat "$WORKDIR/$BINARY_NAME.sha256")
-[[ "$SERVER_JSON_SHA" == "$ACTUAL_SHA" ]] \
-    || { echo "error: server.json packages[0].fileSha256 ('$SERVER_JSON_SHA') does not match this release's actual binary sha256 ('$ACTUAL_SHA') — update server.json's fileSha256 (compute it locally with 'shasum -a 256' against a rebuild, or from this run's log above), commit it, then re-run scripts/release.sh $VERSION" >&2; exit 5; }
-
 echo "→ [6/7] FINAL GATE — re-verify the exact upload artifact (TOCTOU guard)"
 codesign --verify --strict -R "$REQUIREMENT" "$WORKDIR/$BINARY_NAME" \
     || { echo "error: FINAL GATE FAILED — upload artifact no longer passes the signature requirement (mutated after step 3?)" >&2; exit 5; }
@@ -175,3 +164,20 @@ gh release create "v$VERSION" --repo "$REPO" \
     "$WORKDIR/$BINARY_NAME" "$WORKDIR/$BINARY_NAME.sha256"
 
 echo "✓ released $BINARY_NAME v$VERSION (signed, notarized, gated, sha256 attached)"
+
+# che-word-mcp#211: server.json's fileSha256 describes the binary just
+# released, and can only be known now (see the "[0.3/7]" comment for why a
+# pre-release check is impossible). Write it into the primary tree; this
+# leaves the tree dirty on purpose — the next run's clean-tree pre-flight
+# refuses to start until it is committed, so it cannot be silently skipped.
+echo "→ [post] write this release's sha256 into server.json"
+python3 - "$(cat "$WORKDIR/$BINARY_NAME.sha256")" <<'PY'
+import re, sys
+path = "server.json"
+text = open(path).read()
+new, n = re.subn(r'("fileSha256":\s*")[0-9a-f]*(")', r"\g<1>" + sys.argv[1] + r"\g<2>", text)
+if n != 1:
+    sys.exit(f"error: expected exactly one fileSha256 field in {path}, found {n}")
+open(path, "w").write(new)
+PY
+echo "  server.json fileSha256 updated — commit it now: git add server.json && git commit -m \"chore: server.json fileSha256 for v$VERSION\""
