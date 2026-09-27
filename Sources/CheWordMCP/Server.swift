@@ -586,6 +586,70 @@ actor WordMCPServer {
     /// `twipsLine` set out to use for `line_spacing`.
     static let imagePixelDimensionRange: ClosedRange<Int> = 1...2_863_311_529
 
+    /// #235 (batch following #234's pattern): `insert_floating_image`'s
+    /// `width`/`height` are ALREADY EMU (unlike `insert_image`/
+    /// `insert_image_from_path`, which take pixels and convert), and reach
+    /// `Drawing.anchor(width:height:...)` → `<wp:extent cx="..." cy="...">`
+    /// with no range check at all — a caller can currently write
+    /// `Int.max` straight into `cx`/`cy`, producing a `.docx` Word cannot
+    /// parse. `<wp:extent>`'s `cx`/`cy` use the same `ST_PositiveCoordinate`
+    /// (`xsd:long` restricted to `0 ≤ n ≤ 27273042316900`) cited above for
+    /// `imagePixelDimensionRange`'s derivation — this is the DIRECT EMU
+    /// form of that same bound, with no `× 9525` pixel conversion in
+    /// between. Lower bound 1 (not 0) for the same reason
+    /// `imagePixelDimensionRange` excludes 0: a zero-extent image is
+    /// degenerate, not merely a boundary value.
+    static let floatingImageExtentEMURange: ClosedRange<Int> = 1...27_273_042_316_900
+
+    /// #235: `set_image_style`'s `border_width` is EMU and reaches
+    /// `Drawing.borderWidth` → `<a:ln w="...">` with no range check. DrawingML's
+    /// `a:ln`'s `w` attribute is typed `ST_LineWidth`, a restriction of
+    /// `ST_Coordinate32Unqualified` (`xsd:int`) with an XSD-documented
+    /// `minInclusive 0` / `maxInclusive 20116800` (20116800 EMU = 1584pt —
+    /// the schema's own ceiling, not a Word-UI heuristic; source:
+    /// python-pptx's DrawingML analysis notes, which reproduce the ECMA-376
+    /// `ST_LineWidth` XSD restriction verbatim).
+    static let lineWidthEMURange: ClosedRange<Int> = 0...20_116_800
+
+    /// #235: `set_character_spacing`'s `spacing` (`<w:spacing w:val>`,
+    /// `ST_SignedTwipsMeasure`) and `position` (`<w:position w:val>`,
+    /// `ST_SignedHpsMeasure` — same signed-union shape, half-points not
+    /// twips) reach ooxml-swift with no range check. Per MS-OI29500 Part 1
+    /// §17.18.81 (`ST_SignedTwipsMeasure`): "the standard states that
+    /// ST_SignedTwipsMeasure allows unbounded integers... Word only reads
+    /// 32-bit integers" — the same citation `twipsLine` above already uses
+    /// for `w:line`. No MS-OI29500 entry specifically for
+    /// `ST_SignedHpsMeasure` was found during this issue's research, but it
+    /// is the same signed-union-of-(int|UniversalMeasure-string) shape as
+    /// `ST_SignedTwipsMeasure`, just in half-points instead of twips, so the
+    /// same 32-bit-read bound is applied here by analogy rather than a
+    /// type-specific citation — flagged honestly rather than asserted as
+    /// independently confirmed.
+    static let signedHalfPointOrTwipsRange: ClosedRange<Int> = Int(Int32.min)...Int(Int32.max)
+
+    /// #235: `set_character_spacing`'s `kern` (`<w:kern w:val>`) is
+    /// `ST_HpsMeasure` — the UNSIGNED sibling of `ST_SignedHpsMeasure`,
+    /// same XSD shape as `ST_TwipsMeasure` (an `xsd:unsignedInt`-based
+    /// union). MS-OI29500's `ST_TwipsMeasure` entry states "any unsigned
+    /// 32-bit integer is allowed" with no general Word-imposed ceiling
+    /// (the "Word allows only values up to 31,680" note there is scoped
+    /// explicitly to Math elements, not general use — do not reuse that
+    /// number here). Bounded to the full unsigned-32-bit range
+    /// (`UInt32.max`) by the same XSD-shape analogy, not a Word-specific
+    /// citation for `ST_HpsMeasure` itself.
+    static let unsignedHpsOrTwipsRange: ClosedRange<Int> = 0...4_294_967_295
+
+    /// #235: shared range guard for the parameters bounded above — same
+    /// shape as #234's `estimateCharsPerPage`-local `validated(_:_:_:)`, but
+    /// generic (not tied to one function's "頁面設定" wording) so it can be
+    /// reused across the several unrelated call sites #235 touches.
+    static func validatedParamRange(_ value: Int, _ field: String, _ range: ClosedRange<Int>) throws -> Int {
+        guard range.contains(value) else {
+            throw WordError.invalidParameter(field, "必須介於 \(range.lowerBound) 到 \(range.upperBound) 之間")
+        }
+        return value
+    }
+
     /// R8 (independent fuzzer, `rev232b` H-234-3): `insert_table`/
     /// `insert_nested_table`'s `rows`/`cols` reach `Table(rowCount:
     /// columnCount:)` (ooxml-swift `Table.init`) completely unguarded,
@@ -2635,7 +2699,7 @@ actor WordMCPServer {
                         ]),
                         "border_width": .object([
                             "type": .string("integer"),
-                            "description": .string("邊框寬度（EMU，9525 ≈ 0.75pt）")
+                            "description": .string("邊框寬度（EMU，9525 ≈ 0.75pt；須介於 0–20116800，即 ST_LineWidth 上限 1584pt）")
                         ]),
                         "has_shadow": .object([
                             "type": .string("boolean"),
@@ -3405,7 +3469,15 @@ actor WordMCPServer {
                         ]),
                         "spacing": .object([
                             "type": .string("integer"),
-                            "description": .string("字元間距（1/20 點，正值增加，負值減少）")
+                            "description": .string("字元間距（1/20 點，正值增加，負值減少；ST_SignedTwipsMeasure，須落在 Word 讀取的 32 位元整數範圍內，見 #235）")
+                        ]),
+                        "position": .object([
+                            "type": .string("integer"),
+                            "description": .string("垂直位移（1/2 點，正值上升、負值下降；ST_SignedHpsMeasure，須落在 Word 讀取的 32 位元整數範圍內，見 #235）")
+                        ]),
+                        "kern": .object([
+                            "type": .string("integer"),
+                            "description": .string("字距調整的最小字級（1/2 點；ST_HpsMeasure 為無號整數，不接受負值，見 #235）")
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("paragraph_index")])
@@ -3579,11 +3651,11 @@ actor WordMCPServer {
                         ]),
                         "width": .object([
                             "type": .string("integer"),
-                            "description": .string("圖片寬度（像素）")
+                            "description": .string("圖片寬度（EMU，914400 = 1 英吋；不指定預設 2000000 約 2.19 吋。#235 發現先前寫「像素」是錯的——handler 從未做像素換算，數字直接寫進 <wp:extent cx>；須介於 1–27273042316900，即 ST_PositiveCoordinate 範圍）")
                         ]),
                         "height": .object([
                             "type": .string("integer"),
-                            "description": .string("圖片高度（像素）")
+                            "description": .string("圖片高度（EMU，914400 = 1 英吋；不指定預設 2000000 約 2.19 吋。同上，須介於 1–27273042316900）")
                         ]),
                         "wrap_type": .object([
                             "type": .string("string"),
@@ -5225,7 +5297,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（不指定則套用全文件）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs），不指定則套用全文件。此工具目前是 stub，`<w:textDirection>` 尚未真正寫入文件，但越界的 paragraph_index 仍會被拒絕（#235）")
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("direction")])
@@ -6090,7 +6162,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("插入位置段落索引")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）。此工具目前是 stub，REF field 尚未真正寫入文件，但越界的 paragraph_index 仍會被拒絕（#235）")
                         ]),
                         "reference_type": .object([
                             "type": .string("string"),
@@ -9993,6 +10065,9 @@ actor WordMCPServer {
         let hasBorder = try optionalBool(args, "has_border")
         let borderColor = args["border_color"]?.stringValue
         let borderWidth = try optionalInt(args, "border_width")
+        if let borderWidth {
+            _ = try Self.validatedParamRange(borderWidth, "border_width", Self.lineWidthEMURange)
+        }
         let hasShadow = try optionalBool(args, "has_shadow")
 
         try doc.setImageStyle(
@@ -11544,6 +11619,12 @@ actor WordMCPServer {
         let spacing = try optionalInt(args, "spacing")
         let position = try optionalInt(args, "position")
         let kern = try optionalInt(args, "kern")
+        // #235: `spacing`/`position` → ST_SignedTwipsMeasure/ST_SignedHpsMeasure
+        // (signed; bounded to what Word's 32-bit read can hold), `kern` →
+        // ST_HpsMeasure (unsigned). See the range constants' doc comments.
+        if let spacing { _ = try Self.validatedParamRange(spacing, "spacing", Self.signedHalfPointOrTwipsRange) }
+        if let position { _ = try Self.validatedParamRange(position, "position", Self.signedHalfPointOrTwipsRange) }
+        if let kern { _ = try Self.validatedParamRange(kern, "kern", Self.unsignedHpsOrTwipsRange) }
 
         try doc.setCharacterSpacing(at: paragraphIndex, spacing: spacing, position: position, kern: kern)
         try await storeDocument(doc, for: docId)
@@ -11812,6 +11893,13 @@ actor WordMCPServer {
         let paragraphIndex = try optionalInt(args, "paragraph_index") ?? 0
         let widthEmu = try optionalInt(args, "width") ?? 2000000  // ~2 inches default
         let heightEmu = try optionalInt(args, "height") ?? 2000000
+        // #235: unlike insert_image/insert_image_from_path (pixels, converted
+        // to EMU downstream), width/height here are ALREADY EMU and reach
+        // <wp:extent cx/cy> directly — validate against ST_PositiveCoordinate
+        // (see `floatingImageExtentEMURange`'s doc comment) before ever
+        // calling into Drawing.anchor.
+        _ = try Self.validatedParamRange(widthEmu, "width", Self.floatingImageExtentEMURange)
+        _ = try Self.validatedParamRange(heightEmu, "height", Self.floatingImageExtentEMURange)
         // R8: see this function's doc comment above for why
         // horizontal_position/vertical_position are plain integer EMU
         // offsets again, paired with separate string alignment parameters.
@@ -15030,7 +15118,7 @@ actor WordMCPServer {
         guard let direction = args["direction"]?.stringValue else {
             throw WordError.missingParameter("direction")
         }
-        guard openDocuments[docId] != nil else {
+        guard let doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
 
@@ -15040,6 +15128,17 @@ actor WordMCPServer {
         }
 
         let paragraphIndex = try optionalInt(args, "paragraph_index")
+        // #235: this tool is a stub (the described <w:textDirection> is never
+        // actually written — tracked separately in
+        // docs/paragraph-index-conventions.md's "Known stub tools"), but an
+        // out-of-range paragraph_index must still be rejected rather than
+        // reported as success. Top-level ordinal, matching sibling
+        // paragraph-formatting tools (set_keep_lines 等).
+        if let pIndex = paragraphIndex {
+            guard pIndex >= 0, pIndex < topLevelParagraphCount(doc) else {
+                throw WordError.invalidIndex(pIndex)
+            }
+        }
 
         // 文字方向需要在段落或節屬性中設定 <w:textDirection>
         // 目前 OOXMLSwift 沒有直接支援
@@ -15694,8 +15793,17 @@ actor WordMCPServer {
         guard let referenceTarget = args["reference_target"]?.stringValue else {
             throw WordError.missingParameter("reference_target")
         }
-        guard openDocuments[docId] != nil else {
+        guard let doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
+        }
+        // #235: this tool is a stub (the described REF field is never
+        // actually written — tracked separately in
+        // docs/paragraph-index-conventions.md's "Known stub tools"), but an
+        // out-of-range paragraph_index must still be rejected rather than
+        // reported as success. Top-level ordinal, matching sibling
+        // paragraph-formatting tools.
+        guard paragraphIndex >= 0, paragraphIndex < topLevelParagraphCount(doc) else {
+            throw WordError.invalidIndex(paragraphIndex)
         }
 
         let format = args["format"]?.stringValue ?? "full"
