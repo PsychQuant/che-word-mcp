@@ -497,7 +497,9 @@ final class DocumentProfileToolsTests: XCTestCase {
         args["profile"] = .string("official")
         let rejected = await server.invokeToolForTesting(name: "execute_script", arguments: args)
         XCTAssertTrue(rejected.isError == true, text(rejected))
-        XCTAssertTrue(text(rejected).contains("驗證失敗"))
+        // #182: a failing verdict's body is now the structured JSON payload
+        // (verified:false / broken_parts), not "驗證失敗" prose.
+        XCTAssertTrue(text(rejected).contains("\"verified\":false"), text(rejected))
         XCTAssertEqual(try Data(contentsOf: output), before)
         args.removeValue(forKey: "verify_byte_equal_against")
         let applied = await server.invokeToolForTesting(name: "execute_script", arguments: args)
