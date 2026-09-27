@@ -1,8 +1,8 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.kiki830621/che-word-mcp",
-  "description": "Swift-native MCP server for Word (.docx) manipulation with 148 tools",
-  "version": "1.17.0",
+  "description": "Swift-native MCP server for Word (.docx) manipulation with 246 tools",
+  "version": "4.8.0",
   "repository": {
     "url": "https://github.com/PsychQuant/che-word-mcp",
     "source": "github"
@@ -10,8 +10,8 @@
   "packages": [
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/PsychQuant/che-word-mcp/releases/download/v1.17.0/CheWordMCP",
-      "version": "1.17.0",
+      "identifier": "https://github.com/PsychQuant/che-word-mcp/releases/download/v4.8.0/CheWordMCP",
+      "version": "4.8.0",
       "transport": {
         "type": "stdio"
       },

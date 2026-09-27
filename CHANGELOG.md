@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.8.0] - 2026-09-28
+
+> 32 個寫側工具的 JSON 字面拒絕改為 `isError`；`execute_script` 驗證失敗的 body 改為 JSON；工具回應可能在主要內容之後多出 `Advisory: ` 區塊；讀取 .docx 套用解壓大小上限；`restrict_editing_region` 改為真的寫入（見文末「升級注意」）。依本專案先例 bump minor。
+
 ### Added
 
 - **`StructuredToolFailure`：讓 handler 能同時設 `isError: true` 並回傳結構化 JSON body**（#182）。
