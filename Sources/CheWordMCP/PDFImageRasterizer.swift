@@ -39,6 +39,18 @@ enum PDFImageRasterizer {
         guard let pdfDocument = PDFDocument(url: URL(fileURLWithPath: pdfPath)) else {
             throw WordError.invalidFormat("could not open '\(pdfPath)' as a PDF")
         }
+        // #16 R2 F3: `PDFDocument(url:)` does NOT return nil for an
+        // encrypted PDF — it hands back a locked, non-nil document.
+        // `pdfPage.bounds(for: .mediaBox)` then reports a fixed US Letter
+        // box (612x792pt) regardless of the PDF's real page size, and
+        // `pdfPage.draw(with:to:)` draws nothing — the result was a
+        // successful-looking, wrong-size, entirely blank PNG with no signal
+        // to the caller that anything was wrong. Refuse before either call.
+        guard !pdfDocument.isLocked else {
+            throw WordError.invalidFormat(
+                "PDF '\(pdfPath)' is password-protected and locked; cannot rasterize its content without the password. "
+                + "Unlock it first (e.g. a general-purpose PDF tool that accepts the password) and retry.")
+        }
         let pageCount = pdfDocument.pageCount
         guard pageCount > 0 else {
             throw WordError.invalidFormat("PDF '\(pdfPath)' has no pages")
