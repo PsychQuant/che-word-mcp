@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`list_comments`／`find_unresolved_comments` 統一了回覆（reply）的顯示規則，並補上 `parent_id` 欄位**（#135）。過去 `list_comments` 在 `include_context: true` 時會連 reply 一起列出（reply 的 anchor 相關欄位全部是 `null`，卻沒有任何欄位說明「這是一則 reply」），`find_unresolved_comments` 則一律排除 reply——兩個工具行為不一致。現在兩者預設都只列 thread root，加上 `include_replies: true` 才會列出 reply；每筆註解（不論是不是 reply）都多一個 `parent_id` 欄位，thread root 固定是 `null`。
 - **`add_comment_reply`／`reply_to_comment` 拒絕「回覆一則回覆」與「把一則回覆標記為已解決」**（#137）。Word 的註解討論串只有一層：一則回覆不能再有自己的回覆，`commentsExtended.xml` 也只能記錄一個直接上層。過去這兩個工具沒檢查，允許對一則 reply 呼叫，寫入的巢狀關係存進文件後 Word 的顯示會跟實際請求不一致。現在對 reply 呼叫這兩個工具（無論是否帶 `resolve: true`）一律回 `isError`，並具名說明要回覆／解決的是 thread root，不是這則 reply。
 
+- **`update_cell` 對多段落儲存格不再刪掉第一段以外的段落**（PsychQuant/ooxml-swift#182）。過去儲存格有多個段落時，`update_cell` 只留下被改寫的那一段，其餘段落靜默消失；本版依賴升到 ooxml-swift 3.15.0，改為只替換第一段的文字、其餘段落保留，工具說明也寫明這個語意，要改其他段落請用 `update_cell_paragraph`。同版的 ooxml-swift 另修掉多項 typed 重寫時遺失格式的問題（未建模的文字格式、屬性值中的換行、段落框線的 theme 色、巢狀表格多出空段落等），這些修正對所有會存檔的工具都生效。
+
 ### Testing
 
 - **`Issue97ParagraphIndexConventionTests` 的 fixture 擴充為 5 個 body child，mega-test 拆成具名 per-family test**（#141）。舊 fixture `[paragraph, table, blockSDT, paragraph]`（4 個）在「索引 1」處無法區分 `body.children` 插入索引與 top-level paragraph ordinal——兩者剛好指到同一段。新 fixture `[paragraph0, table, paragraph2, blockSDT(paragraph_inSDT), paragraph4]`（5 個）讓 inline-mode `insert_equation`（top-level ordinal 1 → `paragraph2`）與 `insert_paragraph`（`body.children` 索引 1 → 插在 table 前）在同一個索引值上給出可驗證的不同結果。原本一個方法涵蓋三個 family＋三個 doc/schema substring 斷言的 mega-test，拆成六個具名方法（`testInsertParagraphAtIndex1UsesBodyChildrenIndex`、`testInsertEquationDisplayModeUsesBodyChildrenIndex`、`testInsertEquationInlineModeUsesTopLevelParagraphOrdinal`、`testSetParagraphBorderRejectsIndexPastTopLevelCount`、`testSetParagraphBorderAppliesToTopLevelOrdinalNotSDTInner`、`testGetParagraphsRecursesIntoSDTButSkipsTables`），並補上 #139 修完後 `set_paragraph_border` 的兩個案例（超出 top-level 範圍的拒絕、命中正確目標而非誤中 SDT 內段落）。原本的快照測試重新命名為 `testPinCurrentBehaviorPendingConventionPick`，並加上文件註解：等 PsychQuant/ooxml-swift#10 選定跨工具的統一慣例、程式碼因此改變行為時，這個測試理應開始失敗——那時要改的是測試本身去反映新慣例，不是把它當回歸修回舊行為。
@@ -34,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 升級注意
 
+- `update_cell` 對多段落儲存格：過去只剩一段，本版起其餘段落保留。若你的流程依賴「呼叫 `update_cell` 就把整格換成一段文字」，現在需要先用 `update_cell_paragraph` 或刪除段落的工具清掉其餘段落。
 - `insert_equation` 同時給 `components` 與 `latex`、其中一個型別不對時（例如 `components` 給了陣列、`latex` 給了合法字串），過去會**靜默丟棄型別錯的那一邊、用另一邊的值成功插入**（不報任何錯誤，呼叫端可能以為送出的 `components`生效了，其實根本沒被使用）；現在一律回衝突錯誤（「pass either 'components' OR 'latex', not both」），不會再靜默丟棄任一邊、也不會再回報成功。只有其中一邊是合法值、另一邊完全沒給（或給的是 JSON `null`）的呼叫不受影響。
 - `list_comments`（`include_context: true` 時）／`find_unresolved_comments`／`find_inline_math_gaps` 的 JSON 輸出，本版起一律包成 `{"total", "offset", "returned", "truncated", "comments"/"gaps": [...]}`，不再是裸陣列。
 - 純文字模式的 `list_comments`（`include_context` 省略或為 `false`）：一旦 `offset`／`limit` 造成只顯示部分結果，標頭本身會從 `"Comments (N):"` 變成 `"Comments (total N, showing A-B):"`，並在最後多一行「還有幾筆沒顯示」的提示；`offset` 超過總筆數時改印一行明講「offset 超出範圍、共 N 筆、本次 0 筆」，不會再印出容易誤讀成「有結果」的 `showing 0-N`。未觸發分頁的一般呼叫，文字內容不變。
