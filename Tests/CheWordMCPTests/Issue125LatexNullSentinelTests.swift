@@ -14,14 +14,32 @@ import OOXMLSwift
 ///
 /// #232 R1 already made this decision for `display_mode: null` (treated as
 /// absent, not a type error). This closes the same gap for `components` /
-/// `latex`, using the same type-filtered presence check the file already
-/// uses for anchors (`Self.anchorPresence`, `.objectValue` / `.stringValue`).
+/// `latex`.
 ///
 /// #122 note: that issue was filed with a title copied from a *different*
 /// issue in this batch ("paragraph_index schema missing inline-mode bounds
 /// asymmetry note" — that's actually #123's topic). #122's own body is this
 /// exact `latex: null` conflict-guard problem, i.e. the same bug #125
 /// describes and the same fix. Both issue numbers are closed by this file.
+///
+/// R2 (independent review FAIL, HIGH finding): the first fix used
+/// `.objectValue != nil` / `.stringValue != nil` as the PRESENCE test itself
+/// — which conflates "absent-or-null" with "present but the wrong JSON
+/// type". That is exactly the #232 anti-pattern the long comment above
+/// `optionalInt`/`optionalBool` in `Server.swift` already diagnoses: "a
+/// wrong JSON type... OR a JSON null OR an absent key all fall through to
+/// nil identically". Reintroducing it here (just with different accessor
+/// names) meant `{"components": "oops"}` (a string, not null) got the false
+/// "either components or latex required" message instead of a message
+/// naming `components` and echoing what it actually received, and
+/// `{"components": [1,2,3], "latex": "real"}` silently dropped the
+/// malformed `components` and "succeeded" using only `latex` — no error at
+/// all. The R2 tests below (`test*TypeError*` and
+/// `testBothPresent*TreatedAsConflict`) pin the fix: presence is now
+/// "key exists and is not JSON null" (mirrors `display_mode`'s existing
+/// `!= .null` pattern), and each side validates its OWN type and throws a
+/// named, value-echoing error rather than falling through to the other
+/// parameter or to the generic "required" message.
 final class Issue125LatexNullSentinelTests: XCTestCase {
 
     private func minimalDocxFiveParas() throws -> URL {
@@ -131,6 +149,115 @@ final class Issue125LatexNullSentinelTests: XCTestCase {
         XCTAssertTrue(
             txt.contains("received"),
             "expected the conflict error to echo the received values (#129); got: \(txt)"
+        )
+    }
+
+    // MARK: - R2: present-but-wrong-type must NEVER look like absent.
+    //
+    // Each of these gives exactly ONE side a non-null value of the wrong
+    // JSON type, with the OTHER side entirely absent. The expected error
+    // names the parameter that was actually given and echoes what it
+    // received — NOT the generic "either components or latex required"
+    // (that message is only correct when NEITHER side was given).
+
+    func testComponentsStringTypeErrorNamesParameterAndEchoesValue() async throws {
+        let r = try await invoke(["components": .string("oops-not-an-object")], docId: "e125-r2-a")
+        let txt = textOf(r)
+        XCTAssertEqual(r.isError, true, "got: \(txt)")
+        XCTAssertFalse(
+            txt.contains("either 'components'"),
+            "components WAS provided (just wrong type) — must not fall to the generic 'either...required' message; got: \(txt)"
+        )
+        XCTAssertTrue(txt.contains("components"), "error must name 'components'; got: \(txt)")
+        XCTAssertTrue(
+            txt.contains("\"oops-not-an-object\""),
+            "error must echo the received value; got: \(txt)"
+        )
+    }
+
+    func testComponentsArrayTypeErrorNamesParameterAndEchoesValue() async throws {
+        let r = try await invoke(["components": .array([.int(1), .int(2), .int(3)])], docId: "e125-r2-b")
+        let txt = textOf(r)
+        XCTAssertEqual(r.isError, true, "got: \(txt)")
+        XCTAssertFalse(txt.contains("either 'components'"), "got: \(txt)")
+        XCTAssertTrue(txt.contains("components"), "got: \(txt)")
+        XCTAssertTrue(txt.contains("array of 3") || txt.contains("<array"), "error should echo an array-shaped value; got: \(txt)")
+    }
+
+    func testComponentsNumberTypeErrorNamesParameterAndEchoesValue() async throws {
+        let r = try await invoke(["components": .int(5)], docId: "e125-r2-c")
+        let txt = textOf(r)
+        XCTAssertEqual(r.isError, true, "got: \(txt)")
+        XCTAssertFalse(txt.contains("either 'components'"), "got: \(txt)")
+        XCTAssertTrue(txt.contains("components"), "got: \(txt)")
+        XCTAssertTrue(txt.contains("5"), "error should echo the received int 5; got: \(txt)")
+    }
+
+    func testLatexNumberTypeErrorNamesParameterAndEchoesValue() async throws {
+        let r = try await invoke(["latex": .int(5)], docId: "e125-r2-d")
+        let txt = textOf(r)
+        XCTAssertEqual(r.isError, true, "got: \(txt)")
+        XCTAssertFalse(
+            txt.contains("either 'components'"),
+            "latex WAS provided (just wrong type) — must not fall to the generic 'either...required' message; got: \(txt)"
+        )
+        XCTAssertTrue(txt.contains("latex"), "error must name 'latex'; got: \(txt)")
+        XCTAssertTrue(txt.contains("string"), "error should say latex must be a string; got: \(txt)")
+        XCTAssertTrue(txt.contains("5"), "error should echo the received int 5; got: \(txt)")
+    }
+
+    func testLatexObjectTypeErrorNamesParameterAndEchoesValue() async throws {
+        let r = try await invoke(["latex": .object(["a": .int(1)])], docId: "e125-r2-e")
+        let txt = textOf(r)
+        XCTAssertEqual(r.isError, true, "got: \(txt)")
+        XCTAssertFalse(txt.contains("either 'components'"), "got: \(txt)")
+        XCTAssertTrue(txt.contains("latex"), "got: \(txt)")
+        XCTAssertTrue(txt.contains("<object>"), "error should echo an object-shaped value; got: \(txt)")
+    }
+
+    func testLatexArrayTypeErrorNamesParameterAndEchoesValue() async throws {
+        let r = try await invoke(["latex": .array([.int(1), .int(2), .int(3)])], docId: "e125-r2-f")
+        let txt = textOf(r)
+        XCTAssertEqual(r.isError, true, "got: \(txt)")
+        XCTAssertFalse(txt.contains("either 'components'"), "got: \(txt)")
+        XCTAssertTrue(txt.contains("latex"), "got: \(txt)")
+        XCTAssertTrue(txt.contains("array of 3") || txt.contains("<array"), "got: \(txt)")
+    }
+
+    // MARK: - R2: both sides present (non-null), one of them wrong-typed —
+    // must be treated as a genuine conflict, never a silent drop-and-succeed
+    // on the other side. This is the R1 regression the review caught:
+    // `{"components": [1,2,3], "latex": "real"}` used to "succeed" using
+    // only `latex`, discarding a malformed `components` with no error.
+
+    func testBothPresentComponentsWrongTypeLatexValidTreatedAsConflict() async throws {
+        let r = try await invoke([
+            "components": .array([.int(1), .int(2), .int(3)]),
+            "latex": .string("real")
+        ], docId: "e125-r2-g")
+        let txt = textOf(r)
+        XCTAssertEqual(r.isError, true, "malformed components + valid latex must NOT silently succeed using only latex; got: \(txt)")
+        XCTAssertFalse(
+            txt.contains("Inserted equation"),
+            "must not silently drop the malformed components and proceed; got: \(txt)"
+        )
+        XCTAssertTrue(
+            txt.lowercased().contains("not both"),
+            "both sides were non-null present (one wrong-typed) — expected the conflict error; got: \(txt)"
+        )
+    }
+
+    func testBothPresentComponentsValidLatexWrongTypeTreatedAsConflict() async throws {
+        let r = try await invoke([
+            "components": .object(["type": .string("run"), "text": .string("y")]),
+            "latex": .int(5)
+        ], docId: "e125-r2-h")
+        let txt = textOf(r)
+        XCTAssertEqual(r.isError, true, "got: \(txt)")
+        XCTAssertFalse(txt.contains("Inserted equation"), "got: \(txt)")
+        XCTAssertTrue(
+            txt.lowercased().contains("not both"),
+            "both sides were non-null present (one wrong-typed) — expected the conflict error, not a type error on latex alone; got: \(txt)"
         )
     }
 }
