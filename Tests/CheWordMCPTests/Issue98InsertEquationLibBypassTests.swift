@@ -442,14 +442,19 @@ final class Issue98InsertEquationLibBypassTests: XCTestCase {
         )
     }
 
-    func testParagraphIndexSchemaDocumentsDisplayAndInlineOrdinals() throws {
+    /// Extracts the `insert_equation` tool's `paragraph_index` schema
+    /// description text, from `"paragraph_index": .object([` up to the next
+    /// sibling property (`"into_table_cell": .object([`). Shared by the
+    /// #105/#123/#128 schema-doc tests below so they don't each re-implement
+    /// the same source-slicing.
+    private func paragraphIndexSchemaSnippet() throws -> String {
         let source = try serverSource()
         guard let toolStart = source.range(
             of: #"Tool\(\s*\n\s*name: "insert_equation""#,
             options: .regularExpression
         ) else {
             XCTFail("could not locate insert_equation tool schema")
-            return
+            return ""
         }
 
         let toolSource = source[toolStart.lowerBound...]
@@ -458,10 +463,14 @@ final class Issue98InsertEquationLibBypassTests: XCTestCase {
                 of: #""into_table_cell": .object(["#
               ) else {
             XCTFail("could not locate insert_equation paragraph_index schema block")
-            return
+            return ""
         }
 
-        let snippet = String(toolSource[paragraphStart.lowerBound..<nextProperty.lowerBound])
+        return String(toolSource[paragraphStart.lowerBound..<nextProperty.lowerBound])
+    }
+
+    func testParagraphIndexSchemaDocumentsDisplayAndInlineOrdinals() throws {
+        let snippet = try paragraphIndexSchemaSnippet()
         XCTAssertTrue(
             snippet.contains("display_mode=true") && snippet.contains("body.children"),
             "display mode schema must preserve body.children insertion-index contract; got: \(snippet)"
@@ -476,6 +485,56 @@ final class Issue98InsertEquationLibBypassTests: XCTestCase {
             snippet.contains("inline 模式直接以此索引插入"),
             "schema must not imply inline mode directly uses body.children ordinal; got: \(snippet)"
         )
+    }
+
+    /// PsychQuant/che-word-mcp#123 — the schema documented display-mode's
+    /// `idx == body.children.count` append-at-end acceptance and inline-mode's
+    /// paragraph-only ordinal, but never said inline mode's upper bound is
+    /// *exclusive* (must point to an existing paragraph — no append-at-end
+    /// semantic there), unlike display mode's *inclusive* upper bound. A
+    /// caller reading the schema cold could assume symmetry and pass
+    /// `paragraph_index = topLevelParagraphCount` in inline mode expecting an
+    /// append, and get an out-of-range error instead.
+    func testParagraphIndexSchemaDocumentsInlineModeBoundsAsymmetry() throws {
+        let snippet = try paragraphIndexSchemaSnippet()
+        XCTAssertTrue(
+            snippet.contains("idx == body.children.count"),
+            "display-mode half must document that idx == body.children.count is accepted as append-at-end; got: \(snippet)"
+        )
+        XCTAssertTrue(
+            snippet.contains("必須指向既存段落") && snippet.contains("沒有") && snippet.contains("append-at-end"),
+            "inline-mode half must document that it requires an EXISTING paragraph and has no append-at-end semantic (unlike display mode); got: \(snippet)"
+        )
+        XCTAssertTrue(
+            snippet.contains("不對稱"),
+            "schema should name the display-vs-inline bounds asymmetry explicitly so a caller doesn't have to infer it; got: \(snippet)"
+        )
+    }
+
+    /// PsychQuant/che-word-mcp#128 — the schema's old wording ("若搭配其他
+    /// anchor 則 anchor 衝突會回錯") implied `paragraph_index` itself is NOT
+    /// an anchor ("other" anchors conflict with it), but `toolAnchorWhitelists`
+    /// / `anchorPresence` treat `paragraph_index` as an anchor like any other.
+    /// The schema must not contradict the anchor whitelist it's describing.
+    func testParagraphIndexSchemaClarifiesItIsAnIndexTypeAnchor() throws {
+        let snippet = try paragraphIndexSchemaSnippet()
+        XCTAssertTrue(
+            snippet.contains("索引型 anchor"),
+            "schema must explicitly name paragraph_index as an anchor itself (index-type), not just something 'other anchors' conflict with; got: \(snippet)"
+        )
+        XCTAssertFalse(
+            snippet.contains("若搭配其他 anchor"),
+            "schema must not use the old ambiguous phrasing that implied paragraph_index is not itself an anchor; got: \(snippet)"
+        )
+        // The four display-mode text/position anchors that actually conflict
+        // with paragraph_index (per toolAnchorWhitelists["insert_equation"])
+        // should be named explicitly rather than left as "other anchor".
+        for anchor in ["after_text", "before_text", "after_image_id", "into_table_cell"] {
+            XCTAssertTrue(
+                snippet.contains(anchor),
+                "schema should name '\(anchor)' explicitly as one of the anchors paragraph_index conflicts with; got: \(snippet)"
+            )
+        }
     }
 
     // MARK: - Issues 108/109/110: follow-up docs and dead-code cleanup
