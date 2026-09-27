@@ -1648,7 +1648,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "replace_text",
-                description: "搜尋並取代文字。v2.1+ cross-run 匹配自動生效；新增 scope / regex / match_case。BREAKING: all 參數已移除（現在恆為 replace-all）。（需先 open_document）\n\n【字元選擇】表單勾選請用 ■(U+25A0) 取代 □(U+25A1)，不要用 ☑(U+2611) 或 ☒(U+2612)。實測（本機當前版本）後兩者在 Times New Roman、Arial 與常見 CJK 字型中都沒有字形；缺字形時渲染器會改用別的字型——macOS 上通常是彩色 emoji 字型，其他平台可能是符號字型或 .notdef 方框——勾選框於是與表單其餘部分不一致。本工具不會改動 run 的字型宣告，但實際繪製的字型會變——所以逐格文字比對會全對、外觀卻是錯的。",
+                description: "搜尋並取代文字。v2.1+ cross-run 匹配自動生效；新增 scope / regex / match_case。BREAKING: all 參數已移除（現在恆為 replace-all）。（需先 open_document）\n\n【字元選擇】表單勾選請用 ■(U+25A0) 取代 □(U+25A1)，不要用 ☑(U+2611) 或 ☒(U+2612)。實測（本機當前版本）後兩者在 Times New Roman、Arial 與常見 CJK 字型中都沒有字形；缺字形時渲染器會改用別的字型——macOS 上通常是彩色 emoji 字型，其他平台可能是符號字型或 .notdef 方框——勾選框於是與表單其餘部分不一致。本工具不會改動 run 的字型宣告，但實際繪製的字型會變——所以逐格文字比對會全對、外觀卻是錯的。\n\n【跨 run 格式】match 到的文字若橫跨多個格式不同的 run（例如「符號 run＋標籤 run」的勾選列），find／replace 等長時會自動保留各段原本的格式；不等長、regex、或同一段落內有一個以上這種跨 run match 時無法安全拆分，回傳訊息會附上 WARNING 說明格式被合併，請自行檢查該處外觀（#190）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1682,7 +1682,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "replace_text_batch",
-                description: "批次文字取代（減少 per-call round-trip，單次 save）。Replacements 依陣列順序套用（sequential），後者看到前者結果。per-item scope / regex / match_case 設定。dry_run 略過 disk save（但 in-memory doc 仍被 mutate；需 open_document 還原）。（需先 open_document）\n\n【字元選擇】同 replace_text：表單勾選用 ■(U+25A0)，勿用 ☑(U+2611) 或 ☒(U+2612)——實測（本機當前版本）在 Times New Roman、Arial 及常見 CJK 字型皆無字形，缺字形時會改用別的字型而與表單不一致。",
+                description: "批次文字取代（減少 per-call round-trip，單次 save）。Replacements 依陣列順序套用（sequential），後者看到前者結果。per-item scope / regex / match_case 設定。dry_run 略過 disk save（但 in-memory doc 仍被 mutate；需 open_document 還原）。（需先 open_document）\n\n【字元選擇】同 replace_text：表單勾選用 ■(U+25A0)，勿用 ☑(U+2611) 或 ☒(U+2612)——實測（本機當前版本）在 Times New Roman、Arial 及常見 CJK 字型皆無字形，缺字形時會改用別的字型而與表單不一致。\n\n【跨 run 格式】同 replace_text：每個 item 各自判斷是否能安全保留跨 run 格式，無法保留時該行結果會附上 WARNING（#190）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -8655,6 +8655,317 @@ actor WordMCPServer {
         return "Deleted paragraph at index \(index)"
     }
 
+    // MARK: - #190: cross-run replace format preservation
+    //
+    // ooxml-swift's `TextReplacementEngine` (a dependency this repo does not
+    // modify) flattens a paragraph's runs, finds matches, and splices the
+    // replacement back in. For a match spanning more than one run, the whole
+    // replacement text lands in the *starting* run — inheriting only that
+    // run's `rPr` — while every other matched run is emptied out, discarding
+    // its own `rPr` for good. A form's checkbox-glyph run and its label run
+    // commonly declare different fonts (`ascii`/`hAnsi`/`cs` for the glyph,
+    // `eastAsia` for the CJK label); replacing "□免除審查" with "■免除審査"
+    // silently turns "免除審査" from 標楷體 into whatever the glyph run
+    // declares (or docDefaults, if it doesn't declare `eastAsia` at all).
+    // `get_tables`/cell-text comparisons never catch this — the text is
+    // correct, only the run structure carrying it changed.
+    //
+    // Repair strategy (implemented entirely in che-word-mcp, calling
+    // `doc.replaceText` unchanged for the actual mutation):
+    // 1. Before the call, scan `doc.body.children` (body paragraphs +
+    //    top-level table cells — not headers/footers/footnotes/endnotes,
+    //    not hyperlink/fieldSimple/contentControl-wrapped runs, not nested
+    //    tables) for matches whose span crosses more than one run with
+    //    genuinely different `rPr`.
+    // 2. A match is repairable when (a) it is the *only* cross-run match in
+    //    that paragraph's run array (so post-mutation run-array positions
+    //    stay predictable without re-deriving them — see `applyCrossRunRepair`),
+    //    (b) `find.count == replacement.count` (a same-length swap, the
+    //    checkbox-toggle shape — for anything else, splitting the
+    //    replacement back onto the original run boundaries has no
+    //    well-defined mapping), and (c) every run strictly between the
+    //    match's first and last run is a plain, removable text run (mirrors
+    //    `TextReplacementEngine`'s own removal predicate — anything else
+    //    would leave the post-mutation run count different from what this
+    //    repair layer assumes).
+    // 3. Call `doc.replaceText` — unchanged, still delegates every surface
+    //    (hyperlinks, tables, headers, content controls, OMML boundaries,
+    //    comment-reference preservation) to the dependency.
+    // 4. For each repairable match, replace the two resulting runs (the
+    //    engine never removes a run for a 2-run-adjacent match, and any
+    //    fully-removable middle runs collapse to exactly one survivor
+    //    alongside the start run — see the proof in `applyCrossRunRepair`)
+    //    with fresh runs built directly from the *original* per-run text
+    //    lengths and `rPr`, sliced out of the (same-length) replacement.
+    // Anything not repairable (different lengths, `regex: true`, more than
+    // one cross-run match in the same paragraph, or a non-removable run in
+    // the middle) keeps the old collapsing behaviour, but the tool's return
+    // string says so instead of staying silent.
+
+    /// One physical run's slice of a repairable cross-run match: the
+    /// (unmatched) text on either side of the match that this run
+    /// contributed, how many matched characters it contributed, and the
+    /// run's own *original* `RunProperties` (captured before any mutation).
+    private struct CrossRunRepairSegment {
+        let prefix: String
+        let matchedLength: Int
+        let suffix: String
+        let properties: RunProperties
+    }
+
+    /// A single cross-run match's repair recipe. `startRunIndex` is the
+    /// match's first run's index in the *original* (pre-`doc.replaceText`)
+    /// run array — see `applyCrossRunRepair` for why that's still the right
+    /// anchor after the dependency call has run.
+    private struct CrossRunRepairPlan {
+        let startRunIndex: Int
+        let segments: [CrossRunRepairSegment]
+    }
+
+    /// Mirrors `TextReplacementEngine`'s own (private) `isTextRun` predicate:
+    /// a run whose `text` is what actually gets flattened/matched (no field
+    /// code, no drawing).
+    private func isMutableTextRun(_ run: Run) -> Bool {
+        run.rawXML == nil && run.drawing == nil
+    }
+
+    /// Mirrors the engine's removal predicate for runs strictly between a
+    /// match's first and last run: only a plain text run with no structural
+    /// payload (`<w:commentReference>` etc.) is removed; anything else
+    /// survives, and this repair layer refuses to guess the resulting index.
+    private func isRemovableMiddleRun(_ run: Run) -> Bool {
+        isMutableTextRun(run) && (run.rawElements?.isEmpty ?? true)
+    }
+
+    /// Read-only mirror of `TextReplacementEngine.flattenRuns`: the flat
+    /// matchable text plus a per-character `(runIdx, offsetInRun)` map.
+    private func flattenRunsForRepairScan(_ runs: [Run]) -> (flat: String, map: [(runIdx: Int, offset: Int)]) {
+        var flat = ""
+        var map: [(runIdx: Int, offset: Int)] = []
+        for (runIdx, run) in runs.enumerated() where isMutableTextRun(run) {
+            for (charIdx, _) in run.text.enumerated() {
+                map.append((runIdx, charIdx))
+            }
+            flat += run.text
+        }
+        return (flat, map)
+    }
+
+    /// Plans the repair (if any) for one paragraph's/cell's `runs` array.
+    /// Returns the plan (nil when nothing is repairable) and the count of
+    /// cross-run matches whose span has genuinely differing formatting but
+    /// could NOT be repaired — the caller aggregates this into the tool's
+    /// warning.
+    private func planCrossRunRepair(
+        runs: [Run], find: String, replacementLength: Int, matchCase: Bool
+    ) -> (plan: CrossRunRepairPlan?, unrepairedFormatAffecting: Int) {
+        guard !find.isEmpty else { return (nil, 0) }
+        let (flat, map) = flattenRunsForRepairScan(runs)
+        guard !flat.isEmpty else { return (nil, 0) }
+        let cmpOptions: String.CompareOptions = matchCase ? [] : [.caseInsensitive]
+
+        struct RawMatch { let sRunIdx: Int; let eRunIdx: Int; let sOffset: Int; let eOffsetExclusive: Int }
+        var rawMatches: [RawMatch] = []
+        var searchStart = flat.startIndex
+        while searchStart < flat.endIndex,
+              let range = flat.range(of: find, options: cmpOptions, range: searchStart..<flat.endIndex) {
+            defer { searchStart = range.upperBound }
+            let startCharIdx = flat.distance(from: flat.startIndex, to: range.lowerBound)
+            let endCharIdx = flat.distance(from: flat.startIndex, to: range.upperBound)
+            guard startCharIdx < map.count else { continue }
+            let (sRunIdx, sOffset) = map[startCharIdx]
+            let eRunIdx: Int
+            let eOffsetExclusive: Int
+            if endCharIdx < map.count {
+                (eRunIdx, eOffsetExclusive) = map[endCharIdx]
+            } else {
+                let lastTextRunIdx = runs.lastIndex(where: isMutableTextRun) ?? sRunIdx
+                eRunIdx = lastTextRunIdx
+                eOffsetExclusive = runs[lastTextRunIdx].text.count
+            }
+            rawMatches.append(RawMatch(sRunIdx: sRunIdx, eRunIdx: eRunIdx, sOffset: sOffset, eOffsetExclusive: eOffsetExclusive))
+        }
+
+        let crossRunMatches = rawMatches.filter { $0.eRunIdx > $0.sRunIdx }
+        guard !crossRunMatches.isEmpty else { return (nil, 0) }
+
+        func spanFormatDiffers(_ m: RawMatch) -> Bool {
+            let props = (m.sRunIdx...m.eRunIdx).map { runs[$0].properties }
+            return props.dropFirst().contains { $0 != props[0] }
+        }
+        let formatAffectingCount = crossRunMatches.filter(spanFormatDiffers).count
+
+        // Repair is only attempted when there is exactly ONE cross-run match
+        // in this run array: `doc.replaceText` processes matches within a
+        // paragraph right-to-left, so an earlier (lower-index) match's run
+        // positions stay valid after a later match's removal — but only if
+        // there IS no later match to interact with. Two-or-more cross-run
+        // matches in the same paragraph fall back to "detect and warn"
+        // rather than risk mis-tracking a shifted index.
+        guard crossRunMatches.count == 1, let match = crossRunMatches.first, spanFormatDiffers(match) else {
+            return (nil, formatAffectingCount)
+        }
+        guard find.count == replacementLength else { return (nil, formatAffectingCount) }
+        if match.eRunIdx - match.sRunIdx > 1 {
+            for idx in (match.sRunIdx + 1)..<match.eRunIdx where !isRemovableMiddleRun(runs[idx]) {
+                return (nil, formatAffectingCount)
+            }
+        }
+
+        var segments: [CrossRunRepairSegment] = []
+        for idx in match.sRunIdx...match.eRunIdx {
+            let text = runs[idx].text
+            let prefix = idx == match.sRunIdx ? String(text.prefix(match.sOffset)) : ""
+            let matchedLength: Int
+            if idx == match.sRunIdx {
+                matchedLength = text.count - match.sOffset
+            } else if idx == match.eRunIdx {
+                matchedLength = match.eOffsetExclusive
+            } else {
+                matchedLength = text.count
+            }
+            let suffix = idx == match.eRunIdx ? String(text.suffix(text.count - match.eOffsetExclusive)) : ""
+            segments.append(CrossRunRepairSegment(
+                prefix: prefix, matchedLength: max(0, matchedLength), suffix: suffix, properties: runs[idx].properties
+            ))
+        }
+        return (CrossRunRepairPlan(startRunIndex: match.sRunIdx, segments: segments), 0)
+    }
+
+    /// Applies a repair plan to the run array *after* `doc.replaceText` has
+    /// already mutated it.
+    ///
+    /// Why `plan.startRunIndex` is still the right position: the plan is the
+    /// only cross-run match in this run array (guaranteed by
+    /// `planCrossRunRepair`), so nothing else in this array shifted indices
+    /// around it. The engine's own splice (see `TextReplacementEngine.
+    /// applyOneReplacement`) leaves exactly two runs spanning the match: for
+    /// an adjacent 2-run match it never removes anything, and for a wider
+    /// span every strictly-between run is removable-by-construction (also
+    /// guaranteed by the plan), so exactly one run remains between the start
+    /// and end positions after removal. Either way, post-mutation, the
+    /// match's collapsed result occupies exactly `[startRunIndex,
+    /// startRunIndex + 1]` — the "start run holding prefix + full
+    /// replacement" and "end run holding the suffix".
+    @discardableResult
+    private func applyCrossRunRepair(runs: inout [Run], plan: CrossRunRepairPlan, replacement: String) -> Bool {
+        let endPos = plan.startRunIndex + 1
+        guard plan.startRunIndex >= 0, endPos < runs.count else { return false }
+
+        var cursor = replacement.startIndex
+        var newRuns: [Run] = []
+        for segment in plan.segments {
+            guard let sliceEnd = replacement.index(cursor, offsetBy: segment.matchedLength, limitedBy: replacement.endIndex) else {
+                return false
+            }
+            let slice = String(replacement[cursor..<sliceEnd])
+            cursor = sliceEnd
+            let text = segment.prefix + slice + segment.suffix
+            guard !text.isEmpty else { continue }
+            newRuns.append(Run(text: text, properties: segment.properties))
+        }
+        guard !newRuns.isEmpty else { return false }
+        runs.replaceSubrange(plan.startRunIndex...endPos, with: newRuns)
+        return true
+    }
+
+    /// Visits every direct `runs` array under `children` in a stable,
+    /// deterministic order (body paragraphs, then top-level table cells'
+    /// paragraphs row-major, recursing through block-level content
+    /// controls) — the SAME order for a read-only pre-scan and a later
+    /// mutating pass, so a positional index computed in one pass still
+    /// identifies the same run array in the other. Deliberately does not
+    /// descend into `cell.nestedTables` (#188 territory) or into
+    /// hyperlink/fieldSimple/alternateContent/contentControl-inline runs —
+    /// #190's repair layer is scoped to the surfaces `update_cell` and
+    /// `search_text` already treat as the primary editing surface.
+    private func forEachDirectRunsArray(
+        in children: inout [BodyChild], index: inout Int, action: (Int, inout [Run]) -> Void
+    ) {
+        for i in children.indices {
+            switch children[i] {
+            case .paragraph(var para):
+                action(index, &para.runs)
+                children[i] = .paragraph(para)
+                index += 1
+            case .table(var table):
+                for r in table.rows.indices {
+                    for c in table.rows[r].cells.indices {
+                        for p in table.rows[r].cells[c].paragraphs.indices {
+                            action(index, &table.rows[r].cells[c].paragraphs[p].runs)
+                            index += 1
+                        }
+                    }
+                }
+                children[i] = .table(table)
+            case .contentControl(let metadata, var inner):
+                forEachDirectRunsArray(in: &inner, index: &index, action: action)
+                children[i] = .contentControl(metadata, children: inner)
+            case .bookmarkMarker, .rawBlockElement:
+                continue
+            }
+        }
+    }
+
+    /// Runs `doc.replaceText` with the #190 cross-run format repair layered
+    /// on top. `doc.replaceText` itself is called unchanged. Returns the
+    /// dependency's own replacement count plus how many matches this layer
+    /// repaired and how many it detected as collapsed-but-unrepairable.
+    private func replaceTextPreservingCrossRunFormat(
+        doc: inout WordDocument, find: String, replacement: String, options: ReplaceOptions
+    ) throws -> (count: Int, repaired: Int, collapsedUnrepaired: Int) {
+        guard !options.regex else {
+            // Regex repair isn't attempted (#190 documented limitation —
+            // per-match matched text can vary in length even when `find`
+            // doesn't, so the length gate below can't be evaluated up
+            // front). Behaviour is unchanged from before #190.
+            let count = try doc.replaceText(find: find, with: replacement, options: options)
+            return (count, 0, 0)
+        }
+
+        var repairPlans: [Int: CrossRunRepairPlan] = [:]
+        var collapsedUnrepaired = 0
+        var scanChildren = doc.body.children
+        var scanIndex = 0
+        forEachDirectRunsArray(in: &scanChildren, index: &scanIndex) { idx, runs in
+            let (plan, unrepaired) = self.planCrossRunRepair(
+                runs: runs, find: find, replacementLength: replacement.count, matchCase: options.matchCase
+            )
+            if let plan { repairPlans[idx] = plan }
+            collapsedUnrepaired += unrepaired
+        }
+
+        let count = try doc.replaceText(find: find, with: replacement, options: options)
+
+        var repaired = 0
+        if !repairPlans.isEmpty {
+            var applyIndex = 0
+            forEachDirectRunsArray(in: &doc.body.children, index: &applyIndex) { idx, runs in
+                guard let plan = repairPlans[idx] else { return }
+                if self.applyCrossRunRepair(runs: &runs, plan: plan, replacement: replacement) {
+                    repaired += 1
+                } else {
+                    collapsedUnrepaired += 1
+                }
+            }
+        }
+
+        return (count, repaired, collapsedUnrepaired)
+    }
+
+    /// Builds the human-readable suffix #190 adds to `replace_text` /
+    /// `replace_text_batch` result strings.
+    private func crossRunRepairSummary(repaired: Int, collapsedUnrepaired: Int) -> String {
+        var suffix = ""
+        if repaired > 0 {
+            suffix += "; preserved per-run formatting across \(repaired) cross-run match(es)"
+        }
+        if collapsedUnrepaired > 0 {
+            suffix += "; WARNING: \(collapsedUnrepaired) cross-run match(es) spanned runs with different formatting and could not be format-preserved — the merged text inherited only the first run's formatting. Please verify manually."
+        }
+        return suffix
+    }
+
     /// replace_text MCP tool — now flatten-then-map + scope + regex.
     ///
     /// Args:
@@ -8670,6 +8981,11 @@ actor WordMCPServer {
     ///   replaces all — to emulate old `all: false` behavior, call once and check
     ///   the returned count, or use a regex with an anchor).
     /// - Cross-run matches now succeed (previously failed silently).
+    /// - #190: a same-length cross-run match (e.g. toggling a checkbox glyph
+    ///   next to a label run) now preserves each surviving character's
+    ///   original `rPr` instead of collapsing to the first run's formatting;
+    ///   an unrepairable cross-run merge is now disclosed in the return
+    ///   string instead of staying silent.
     private func replaceText(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -8699,10 +9015,13 @@ actor WordMCPServer {
 
         let options = ReplaceOptions(scope: scope, regex: regex, matchCase: matchCase)
         do {
-            let count = try doc.replaceText(find: find, with: replace, options: options)
+            let (count, repaired, collapsedUnrepaired) = try replaceTextPreservingCrossRunFormat(
+                doc: &doc, find: find, replacement: replace, options: options
+            )
             try await storeDocument(doc, for: docId)
             let scopeLabel = scope == .all ? " (scope: all)" : ""
-            return "Replaced \(count) occurrence(s) of '\(find)' with '\(replace)'\(scopeLabel)"
+            let repairSummary = crossRunRepairSummary(repaired: repaired, collapsedUnrepaired: collapsedUnrepaired)
+            return "Replaced \(count) occurrence(s) of '\(find)' with '\(replace)'\(scopeLabel)\(repairSummary)"
         } catch ReplaceError.invalidRegex(let pattern) {
             throw ToolRefusal("invalid regex pattern '\(pattern)'")
         }
@@ -8848,8 +9167,13 @@ actor WordMCPServer {
             let options = ReplaceOptions(scope: scope, regex: regex, matchCase: matchCase)
 
             do {
-                let count = try doc.replaceText(find: find, with: replace, options: options)
-                results.append(["index": idx, "find": find, "replaced_count": count])
+                let (count, repaired, collapsedUnrepaired) = try replaceTextPreservingCrossRunFormat(
+                    doc: &doc, find: find, replacement: replace, options: options
+                )
+                results.append([
+                    "index": idx, "find": find, "replaced_count": count,
+                    "cross_run_repaired": repaired, "cross_run_collapsed_unrepaired": collapsedUnrepaired,
+                ])
                 succeeded += 1
             } catch ReplaceError.invalidRegex(let pattern) {
                 results.append(["index": idx, "find": find, "error": "invalid regex: \(pattern)"])
@@ -8881,7 +9205,9 @@ actor WordMCPServer {
             } else {
                 let find = r["find"] as? String ?? ""
                 let count = r["replaced_count"] as? Int ?? 0
-                summary += "  [\(idx)] '\(find)' → \(count) replaced\n"
+                let repaired = r["cross_run_repaired"] as? Int ?? 0
+                let collapsedUnrepaired = r["cross_run_collapsed_unrepaired"] as? Int ?? 0
+                summary += "  [\(idx)] '\(find)' → \(count) replaced\(crossRunRepairSummary(repaired: repaired, collapsedUnrepaired: collapsedUnrepaired))\n"
             }
         }
         return summary
