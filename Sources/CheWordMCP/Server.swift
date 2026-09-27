@@ -3707,7 +3707,11 @@ actor WordMCPServer {
                         ]),
                         "wrap_type": .object([
                             "type": .string("string"),
-                            "description": .string("文繞方式：square（四邊型）, tight（緊密）, through（穿透）, topAndBottom（上下）, behindText（文字下方）, inFrontOfText（文字上方）")
+                            "description": .string("文繞方式：square（四邊型）, tight（緊密）, through（穿透）, topAndBottom（上下）, behindText（文字下方）, inFrontOfText（文字上方）；不分大小寫，不在此列表內的值會被拒絕（#240）"),
+                            "enum": .array([
+                                .string("none"), .string("square"), .string("tight"), .string("through"),
+                                .string("topAndBottom"), .string("behindText"), .string("inFrontOfText")
+                            ])
                         ]),
                         // R8 (independent review, M-R7-1): R7 declared
                         // `"type"` as an ARRAY of primitive type names —
@@ -12179,6 +12183,30 @@ actor WordMCPServer {
         }
     }
 
+    /// #240: the enum-shaped counterpart to `optionalStrictString` above —
+    /// same shape as #232's `optionalInt`/`optionalBool` closing "wrong
+    /// type silently ignored", extended to string parameters that also have
+    /// a fixed, closed set of legal VALUES (JSON Schema `"enum"`, or values
+    /// only enumerated in the description's prose). Before this helper,
+    /// call sites read these with plain `?.stringValue ?? default` and
+    /// either matched the result against known cases with a silent
+    /// `default:` fallback, or built the matching typed enum with `guard
+    /// let ... else { return .default }` — both shapes throw away BOTH a
+    /// wrong JSON type (`wrap_type: 5`) AND a well-typed-but-unrecognized
+    /// value (`wrap_type: "bogus"`) identically, reporting success either
+    /// way while quietly substituting a default the caller never asked for.
+    /// Reuses `optionalStrictString` for the type check, then additionally
+    /// rejects any string not in `allowed`, naming the parameter and the
+    /// legal values (mirroring `insert_floating_image`'s pre-existing
+    /// `horizontal_align`/`vertical_align` value-rejection message shape).
+    static func optionalStrictEnumString(_ args: [String: Value], _ key: String, allowed: [String]) throws -> String? {
+        guard let value = try optionalStrictString(args, key) else { return nil }
+        guard allowed.contains(value) else {
+            throw WordError.invalidParameter(key, "必須是 \(allowed.joined(separator: "/")) 之一，不接受 '\(value)'")
+        }
+        return value
+    }
+
     /// R9 (review `rev232c` LOW-4, LOW-6): the floating-image offset.
     /// - A string here is almost certainly a v4.3.x caller following the old
     ///   schema (`"center"`); say where alignment keywords live now.
@@ -12254,7 +12282,23 @@ actor WordMCPServer {
         if verticalOffset != nil, verticalAlign != nil {
             throw ToolRefusal("insert_floating_image: vertical_position 與 vertical_align 不可同時提供，請擇一")
         }
-        let wrapTypeStr = args["wrap_type"]?.stringValue ?? "square"
+        // #240: `wrap_type: 5` (wrong JSON type) and `wrap_type: "bogus"`
+        // (well-typed but unrecognized value) both used to silently become
+        // "square" — `?.stringValue` drops the former, the switch below's
+        // `default:` branch absorbed the latter. Validated case-insensitively
+        // (unlike `optionalStrictEnumString`'s exact-match contract) because
+        // the switch below already normalized with `.lowercased()` before
+        // this fix, and existing callers may rely on that leniency; only the
+        // WRONG-type and WRONG-value failure shapes are new rejections.
+        let wrapTypeRaw = try Self.optionalStrictString(args, "wrap_type")
+        let wrapTypeStr = wrapTypeRaw?.lowercased() ?? "square"
+        let allowedWrapTypes = ["none", "square", "tight", "through", "topandbottom", "behindtext", "infrontoftext"]
+        guard allowedWrapTypes.contains(wrapTypeStr) else {
+            throw WordError.invalidParameter(
+                "wrap_type",
+                "必須是 \(allowedWrapTypes.joined(separator: "/")) 之一（不分大小寫），不接受 '\(wrapTypeRaw ?? "")'"
+            )
+        }
         let horizontalRelative = args["horizontal_relative"]?.stringValue ?? "column"
         let allowOverlap = try optionalBool(args, "allow_overlap") ?? true
 
@@ -15089,7 +15133,14 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docIdB)
         }
 
-        let mode = args["mode"]?.stringValue ?? "text"
+        // #240: `mode: 5` or `mode: "bogus"` used to silently behave like
+        // "text" — `?.stringValue` dropped the former, and every downstream
+        // comparison (`mode == "structure"`, `mode == "formatting" || mode
+        // == "full"` inside `buildDiffEntries`) simply never matched the
+        // latter, falling through to plain-text diff behavior. Schema
+        // already declares this parameter's `enum` (`text`/`formatting`/
+        // `structure`/`full`); now enforced at runtime too.
+        let mode = try Self.optionalStrictEnumString(args, "mode", allowed: ["text", "formatting", "structure", "full"]) ?? "text"
         let contextLines = min(max(try optionalInt(args, "context_lines") ?? 0, 0), 3)
         let maxResults = max(try optionalInt(args, "max_results") ?? 0, 0)
         let summarize = try optionalBool(args, "summarize") ?? false
@@ -15159,10 +15210,10 @@ actor WordMCPServer {
         let summarize = try optionalBool(args, "summarize") ?? false
         let includeRevisions = try optionalBool(args, "include_revisions") ?? true
         let includeComments = try optionalBool(args, "include_comments") ?? true
-        let groupBy: RevisionGroupBy = {
-            guard let s = args["group_by"]?.stringValue, let g = RevisionGroupBy(rawValue: s) else { return .author }
-            return g
-        }()
+        // #240: `group_by: 5` or `group_by: "bogus"` used to silently fall
+        // back to `.author` — same silent-default shape as `mode` above.
+        let groupByStr = try Self.optionalStrictEnumString(args, "group_by", allowed: ["author", "section", "type", "none"])
+        let groupBy: RevisionGroupBy = groupByStr.flatMap(RevisionGroupBy.init(rawValue:)) ?? .author
 
         return formatRevisionSummaryMarkdown(
             fileName: fileName,
@@ -15201,10 +15252,10 @@ actor WordMCPServer {
         let includeSummary = try optionalBool(args, "include_summary_table") ?? true
         let includePerPairDiff = try optionalBool(args, "include_per_pair_diff") ?? true
         let summarize = try optionalBool(args, "summarize") ?? false
-        let format: DiffFormat = {
-            guard let s = args["diff_format"]?.stringValue, let f = DiffFormat(rawValue: s) else { return .narrative }
-            return f
-        }()
+        // #240: `diff_format: 5` or `diff_format: "bogus"` used to silently
+        // fall back to `.narrative` — same silent-default shape as `mode`.
+        let diffFormatStr = try Self.optionalStrictEnumString(args, "diff_format", allowed: ["narrative", "table", "raw"])
+        let format: DiffFormat = diffFormatStr.flatMap(DiffFormat.init(rawValue:)) ?? .narrative
 
         // Bulk-open: load every doc transiently, gather stats, run pairwise diffs, then release.
         var openedDocs: [(label: String, doc: WordDocument)] = []
@@ -15269,10 +15320,10 @@ actor WordMCPServer {
         let summarize = try optionalBool(args, "summarize") ?? false
         let detect = try optionalBool(args, "detect_old_pattern") ?? false
         let includeResolved = try optionalBool(args, "include_resolved") ?? true
-        let format: CommentThreadFormat = {
-            guard let s = args["format"]?.stringValue, let f = CommentThreadFormat(rawValue: s) else { return .table }
-            return f
-        }()
+        // #240: `format: 5` or `format: "bogus"` used to silently fall back
+        // to `.table` — same silent-default shape as `mode` above.
+        let formatStr = try Self.optionalStrictEnumString(args, "format", allowed: ["table", "threaded", "narrative"])
+        let format: CommentThreadFormat = formatStr.flatMap(CommentThreadFormat.init(rawValue:)) ?? .table
 
         let aliasMap: [String: String] = {
             guard let obj = args["author_aliases"]?.objectValue else { return [:] }
@@ -16122,8 +16173,12 @@ actor WordMCPServer {
             throw ToolRefusal("wrap_caption_seq: pattern must contain exactly one capture group, got \(groupCount)")
         }
 
-        // 3. Format enum (default ARABIC).
-        let formatStr = args["format"]?.stringValue ?? "ARABIC"
+        // 3. Format enum (default ARABIC). #240: the switch below already
+        // rejected an unrecognized VALUE, but `?.stringValue` silently
+        // dropped a wrong JSON TYPE (`format: 5`) straight to the "ARABIC"
+        // default — `optionalStrictString` closes that gap without
+        // changing the value-rejection behavior below.
+        let formatStr = try Self.optionalStrictString(args, "format") ?? "ARABIC"
         let format: SequenceField.SequenceFormat
         switch formatStr {
         case "ARABIC":     format = .arabic
@@ -16133,8 +16188,9 @@ actor WordMCPServer {
             throw ToolRefusal("wrap_caption_seq: format '\(formatStr)' not recognized. Valid: ARABIC / ROMAN / ALPHABETIC.")
         }
 
-        // 4. Scope enum (default body).
-        let scopeStr = args["scope"]?.stringValue ?? "body"
+        // 4. Scope enum (default body). #240: same wrong-JSON-type gap as
+        // `format` above.
+        let scopeStr = try Self.optionalStrictString(args, "scope") ?? "body"
         let scope: TextScope
         switch scopeStr {
         case "body": scope = .body
