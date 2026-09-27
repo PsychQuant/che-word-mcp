@@ -7986,10 +7986,36 @@ actor WordMCPServer {
         Self.documentMayCarryImages(document, packageImageRelationshipsAtBaseline: documentImageRelationshipCountAtBaseline[docId] ?? 0)
     }
 
+    /// The exact bytes `persistDocumentToDisk` is about to write: overlay
+    /// mode (`DocxWriter.write(_:to:)`) when the document carries a preserved
+    /// source archive, scratch mode when it does not — the SAME branch
+    /// `DocxWriter` itself takes internally on `document.archiveTempDir`.
+    ///
+    /// che-word-mcp#220: the save gate used to inspect `DocxWriter.writeData`,
+    /// which is ALWAYS scratch mode (only typed-model-managed parts). A real
+    /// save from an opened document goes through the overlay path instead,
+    /// which additionally preserves parts the typed model does not manage at
+    /// all — charts, header/footer image relationships nested inside them,
+    /// diagrams. Those parts (and any orphan image relationship declared
+    /// inside them) were therefore invisible to the gate even though they are
+    /// written verbatim to the real output file: "gate passed" asserted
+    /// nothing about them. Writing to a throwaway temp URL through the public
+    /// `DocxWriter.write(_:to:)` entry point — the same call
+    /// `persistDocumentToDisk` makes — and reading those bytes back is the
+    /// only way to reach the overlay branch without duplicating its
+    /// internal `document.archiveTempDir != nil` decision here.
+    static func persistableBytes(for document: WordDocument) throws -> Data {
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("che-word-mcp-gate-\(UUID().uuidString).docx")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        try DocxWriter.write(document, to: tempURL)
+        return try Data(contentsOf: tempURL)
+    }
+
     private func imageConsistencySaveRefusal(_ document: WordDocument, docId: String) -> String? {
         guard documentMayCarryImages(document, docId: docId) else { return nil }
         let data: Data
-        do { data = try DocxWriter.writeData(document) }
+        do { data = try Self.persistableBytes(for: document) }
         catch { return Self.imageConsistencyInspectionRefusal(reason: "serialization failed: \(error.localizedDescription)") }
         let report: ImageConsistencyReport
         do { report = try PackageInspector.imageConsistencyReport(of: data) }
