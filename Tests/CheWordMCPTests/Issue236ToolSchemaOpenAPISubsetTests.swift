@@ -21,6 +21,15 @@ import MCP
 /// `Issue138SchemaDescriptionAuditTests` — so any future tool that
 /// reintroduces one of these three shapes fails a test immediately, without
 /// needing to enumerate every tool by name again.
+///
+/// R2 (independent review F2) added a 5th check: `oneOf`/`anyOf`/`allOf`
+/// schema composition keywords are valid JSON Schema / OpenAPI 3.0 but are
+/// NOT in Gemini's `Schema` field list — the same subset concern as
+/// `additionalProperties` above. `add_comment_reply`/`reply_to_comment`
+/// (added in 4.6.0 #133, before this issue's scope) declared a top-level
+/// `oneOf` enforcing "comment_id or parent_comment_id, exactly one"; that
+/// was outside #236's original 14+1+1 audit and is fixed alongside this
+/// test in the same change.
 final class Issue236ToolSchemaOpenAPISubsetTests: XCTestCase {
 
     // MARK: - 1. Every `"type": "array"` schema node must declare `items`
@@ -107,6 +116,27 @@ final class Issue236ToolSchemaOpenAPISubsetTests: XCTestCase {
         XCTAssertTrue(
             violations.isEmpty,
             "tool(s) declare a top-level 'properties': {} — omit the key entirely for a no-parameter tool instead, some client transcoders reject an explicit empty object (#236): \(violations.sorted())"
+        )
+    }
+
+    // MARK: - 5. No schema anywhere declares oneOf / anyOf / allOf (R2, F2)
+
+    func testNoSchemaDeclaresOneOfAnyOfOrAllOf() async throws {
+        let server = await WordMCPServer()
+        let tools = await server.toolsForTesting()
+
+        var violations: [String] = []
+        for tool in tools {
+            walkSchema(tool.inputSchema, path: tool.name) { path, node in
+                guard case .object(let obj) = node else { return }
+                for keyword in ["oneOf", "anyOf", "allOf"] where obj[keyword] != nil {
+                    violations.append("\(path).\(keyword)")
+                }
+            }
+        }
+        XCTAssertTrue(
+            violations.isEmpty,
+            "tools/list has schema(s) declaring oneOf/anyOf/allOf — valid OpenAPI 3.0 schema composition but not in Gemini's Schema field list; enforce the constraint at runtime instead, keeping each alternative field individually optional in the schema (#236 F2): \(violations.sorted())"
         )
     }
 
