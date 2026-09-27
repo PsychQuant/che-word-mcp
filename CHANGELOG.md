@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`insert_equation` 的 `components` JSON tree 加上遞迴深度上限，擋掉會讓 server 當掉的極深巢狀輸入**（#116）。`components` 是呼叫端傳的 JSON,不是手打 LaTeX——用程式產生一個幾百層深的巢狀 tree(fraction 裝 fraction 裝 fraction...)很容易,而解析它的遞迴函式過去沒有深度上限,巢狀夠深會撐爆 Swift 的呼叫堆疊,直接讓整個 server 行程當掉,連帶其他所有已開啟文件的 session 一起死掉。現在超過 64 層巢狀就回報 `Error: insert_equation: invalid components structure: components tree exceeds max nesting depth 64`,不再當掉;64 層遠超過任何真人會手動巢狀的公式深度。
+- **`estimate_paragraph_for_page` 對讀進來的頁面尺寸／邊界做範圍檢查，不再因為文件本身帶著超界值而當掉**（#237）。這個工具是唯讀的,但它讀的頁面尺寸與邊界是文件本身帶的欄位,不是這次呼叫的參數——`set_page_margins`／`set_page_size` 在輸入端做的範圍驗證(見 4.4.0 的 #234)擋不到這條路徑。一份手動編輯過(或損毀)的 .docx 若帶著超出範圍的頁面尺寸或邊界,呼叫這個工具就會讓 server 當掉,即使呼叫本身只是要讀資訊。現在會先驗證這些欄位,超出範圍就回報 `Error: Invalid parameter 'pageSize.width': ...` 之類的錯誤,不再當掉;一般文件(含各種內建紙張大小)的估算結果不受影響。
+- **Direct Mode（`source_path`）唯讀工具呼叫完畢後不再洩漏一個解壓暫存目錄**（#221）。用 `source_path` 而不開 session 呼叫任何唯讀工具(如 `list_images`、`get_document_info`)時,過去每次呼叫都會在系統暫存目錄留下一份完整解壓的文件內容,直到 server 行程結束才釋放;對同一份大檔重複呼叫會持續佔用磁碟。現在每次呼叫結束就釋放,不再累積。
+
 ## [4.4.0] - 2026-09-25
 
 > 含 BREAKING 的輸入驗證收緊：型別錯的值過去被默默忽略，現在回報錯誤；型別正確的呼叫行為不變。依本專案先例（3.16.0 的「BREAKING (input validation only)」），bump minor。
