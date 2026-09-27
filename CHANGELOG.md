@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.6.0] - 2026-09-27
+
+> 幾個過去回報成功或靜默處理的呼叫改為回 `isError`，comment 相關工具的 JSON 輸出形狀改變，`update_cell` 對多段落儲存格的行為改變（見文末「升級注意」）。依本專案先例 bump minor。
+
 ### Fixed
 
 - **`insert_equation` 傳 `{components: {...}, latex: null}`（或反過來）不再被誤判成「兩個都給了」；`components`／`latex` 型別錯誤時一律明確報錯，不再落到另一個參數或「兩者都沒給」**（#122、#125）。過去的衝突檢查只看兩個欄位有沒有這個 key，JSON 的 `null` 也算「有給」——會把每個 schema 欄位都序列化出來、缺的填 `null` 的 client，錯誤地擋下來，回「請只給 components 或 latex 其中一個」，但呼叫端其實只給了一個。現在的規則分兩層：(1) **是否提供**＝該欄位存在且不是 JSON `null`（明確 `null` 視同沒給，會改用另一個真正給了值的欄位；兩者都是 `null`（或都沒給）時，回原本的「兩者都要有一個」錯誤，不是衝突錯誤）；(2) **已提供但型別不對**（`components` 不是物件、`latex` 不是字串）→ 一律明確報錯，指名參數並附上收到的值，**絕不會**被當成沒給、也絕不會落到另一個參數或預設路徑靜默使用。真的同時提供兩個非 null 值時（不論型別對不對），仍然回衝突錯誤，訊息附上實際收到的值（見下）。
