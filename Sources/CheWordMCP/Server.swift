@@ -4499,7 +4499,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）。不是 get_paragraphs 的 paragraph readback index（#141）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）。不是 get_paragraphs 的 paragraph readback index（#140）")
                         ]),
                         "text": .object([
                             "type": .string("string"),
@@ -12865,7 +12865,7 @@ actor WordMCPServer {
 
         let position = try optionalInt(args, "position")
 
-        // #141: bounds-check and the text this reads MUST use the same
+        // #140: bounds-check and the text this reads MUST use the same
         // counting model `doc.updateParagraph(at:)` mutates with below —
         // top-level `.paragraph` body children only, NOT `getParagraphs()`
         // (which additionally recurses into block-level SDTs). Using the
