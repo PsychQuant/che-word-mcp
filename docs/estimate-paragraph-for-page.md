@@ -21,12 +21,16 @@ default_chars_per_page = max(400, chars_per_line × lines_per_page)
 ```
 
 這組除數（220 / 480）是針對 **12pt 單欄中英文混排論文排版**校準的保守估計，刻意寧可低估
-（見 `estimateCharsPerPage` 的原始碼註解）。實測結果：
+（見 `estimateCharsPerPage` 的原始碼註解）。實測結果（真實 release binary，`create_document`
+→〔A4 另加 `set_page_size size:"a4"`〕→ `estimate_paragraph_for_page` 無 `chars_per_page`
+override，讀回 `assumed_chars_per_page`；數字與手算公式交叉核對一致）：
 
-| 紙張 | 邊距 | `default_chars_per_page` |
-|---|---|---|
-| US Letter（12240×15840 twips） | normal（四邊 1440 twips） | 1134 |
-| A4（11906×16838 twips） | normal（四邊 1440 twips） | 1178 |
+| 紙張 | 邊距 | usable_width / usable_height（twips） | chars_per_line / lines_per_page | `default_chars_per_page` |
+|---|---|---|---|---|
+| US Letter（12240×15840 twips） | normal（四邊 1440 twips） | 9360 / 12960 | 42 / 27 | 42 × 27 = **1134** |
+| A4（11906×16838 twips） | normal（四邊 1440 twips） | 9026 / 13958 | 41 / 29 | 41 × 29 = **1189** |
+
+（除法皆為 `Int` 除法、無條件捨去：`9026 / 220 = 41.02… → 41`；`13958 / 480 = 29.07… → 29`。）
 
 英文 IEEE／ACM 雙欄排版、非 12pt 字級、或任何跟這組假設差很多的版面，caller 應該用
 `chars_per_page` 覆寫這個預設值，不要依賴推導公式。
