@@ -39,11 +39,20 @@ Exit code is 0 only when ALL of these hold (R9):
     (`CRASH@save` / `TIMEOUT@save`; disable the save with FUZZ_NO_SAVE=1);
   - every probe labelled "(must reject)" was actually rejected;
   - every `(mem)` sequence left the server under FUZZ_MEM_LIMIT_MB (default
-    1024) resident — "legal but exhausts the host" is a failure too;
+    1024) resident at its PEAK (#239: sampled throughout the sequence, not
+    read once after the last step finished — a single post-hoc reading can
+    miss a peak that happened mid-save) — "legal but exhausts the host" is a
+    failure too;
   - at least FUZZ_MIN_COVERAGE (default 0.97) of the schema's integer/number
-    parameters were REACHED: a probe stopped by an unrelated precondition
-    proves nothing about its target, so a fuzzer whose probes stop reaching
-    their targets must fail rather than keep reporting zero crashes.
+    parameters were REACHED, where "reached" requires positive evidence the
+    server actually looked at THIS parameter's value — the response names
+    the parameter or echoes its value, or is an index/not-found error
+    addressed at it (#239: a bare successful response is no longer enough
+    evidence by itself; see the coverage section's comment near the bottom
+    of this file for the three over-counting shapes that criterion missed).
+    A probe stopped by an unrelated precondition proves nothing about its
+    target, so a fuzzer whose probes stop reaching their targets must fail
+    rather than keep reporting zero crashes.
 A summary line and a coverage line are always printed, with the unreached
 parameters listed; a per-probe TSV of every result is written to
 `<workdir>/fuzz_results.tsv`.
@@ -76,6 +85,7 @@ import time
 import select
 import base64
 import zlib
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 if len(sys.argv) < 3:
@@ -513,6 +523,41 @@ def resident_mb(pid):
         return None
 
 
+class PeakMemSampler:
+    """#239: the pre-fix `(mem)` check took ONE resident-memory reading
+    after every step in the sequence had already finished — for
+    "largest legal table then save", that is AFTER `save_document`
+    returned, missing whatever the writer peaked at while serializing
+    65,536 cells to XML and zipping the result. A background thread
+    polling every SAMPLE_INTERVAL_S while the steps run (started before
+    the first call, stopped right before `Session.close()` tears down the
+    process) tracks the max instead of a single post-hoc reading."""
+
+    SAMPLE_INTERVAL_S = 0.05
+
+    def __init__(self, pid):
+        self._pid = pid
+        self._peak = None
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self):
+        while not self._stop.is_set():
+            m = resident_mb(self._pid)
+            if m is not None:
+                self._peak = m if self._peak is None else max(self._peak, m)
+            self._stop.wait(self.SAMPLE_INTERVAL_S)
+
+    def start(self):
+        self._thread.start()
+        return self
+
+    def stop_and_get_peak(self):
+        self._stop.set()
+        self._thread.join(timeout=1)
+        return self._peak
+
+
 def run_seq(item):
     label, steps = item
     rd = os.path.join(WORK, "runs", "s" + uuid.uuid4().hex)
@@ -520,6 +565,7 @@ def run_seq(item):
     doc = os.path.join(rd, "doc.docx")
     shutil.copy(FIX, doc)
     s = Session()
+    sampler = PeakMemSampler(s.p.pid).start() if "(mem)" in label else None
     s.call("open_document", {"doc_id": "d", "path": doc})
     outs = []
     for n, a in steps:
@@ -530,21 +576,25 @@ def run_seq(item):
                 a[k] = os.path.join(rd, "o.docx")
         r = s.call(n, a, timeout=30)
         if r is None:
+            if sampler:
+                sampler.stop_and_get_peak()
             code, err = s.close()
             fatal = next((l for l in err.splitlines() if "Fatal error" in l), "")
             shutil.rmtree(rd, ignore_errors=True)
             return ("CRASH", "SEQ", label + f" @ {n}", fatal[:160] or f"exit={code}")
         if r == "TIMEOUT":
+            if sampler:
+                sampler.stop_and_get_peak()
             s.close()
             shutil.rmtree(rd, ignore_errors=True)
             return ("TIMEOUT", "SEQ", label + f" @ {n}", "")
         outs.append(text(r)[:80])
-    mem = resident_mb(s.p.pid) if "(mem)" in label else None
+    mem = sampler.stop_and_get_peak() if sampler else None
     s.close()
     shutil.rmtree(rd, ignore_errors=True)
     if mem is not None and mem > MEM_LIMIT_MB:
-        return ("MEMORY", "SEQ", label, f"resident {mem:.0f} MB > {MEM_LIMIT_MB} MB")
-    return ("ok", "SEQ", label, " | ".join(outs) + (f" | resident {mem:.0f} MB" if mem is not None else ""))
+        return ("MEMORY", "SEQ", label, f"peak resident {mem:.0f} MB > {MEM_LIMIT_MB} MB")
+    return ("ok", "SEQ", label, " | ".join(outs) + (f" | peak resident {mem:.0f} MB" if mem is not None else ""))
 
 
 def run_transport_depth_probe():
@@ -608,18 +658,52 @@ with open(os.path.join(WORK, "fuzz_results.tsv"), "w") as f:
 # ---- R9 (review `rev232c` M-1): coverage — did each parameter's probe reach
 # that parameter at all? A probe stopped by an unrelated precondition proves
 # nothing about the target, and a fuzzer whose probes silently stop reaching
-# their targets would keep reporting "zero crashes". A parameter counts as
-# reached when any of its probes succeeded, or failed with an error that names
-# the parameter / its value, or is an index/not-found error for it.
-# (Same criterion as the reviewer's `coverage.py`.)
+# their targets would keep reporting "zero crashes".
+#
+# #239 (independent review, R9's 10th round): the ORIGINAL criterion below
+# also accepted a bare `out.startswith("OK")` as "reached" — ANY successful
+# response, whether or not it had anything to do with the target parameter.
+# That over-counted in (at least) three shapes the reviewer found among 14
+# parameters this let through: (1) `isError: false` with a response that was
+# actually about a DIFFERENT parameter (e.g. `start_new_list` blocked by
+# `abstract_num_id=1` — the value that reached validation was the override,
+# not the target); (2) a tool that did nothing and still replied OK (e.g.
+# `set_table_style` on an unmatched selector); (3) a branch the target value
+# never entered because some OTHER default (e.g. `set_line_numbers`'s
+# `enable` defaulting to `False`) short-circuited it first. Measured true
+# coverage under the honest criterion was ~92.7% while the old one reported
+# 241/245 — the "OK" branch was not weak evidence, it was counting probes
+# that never touched what they claimed to.
+#
+# The fix requires POSITIVE evidence that this specific parameter's value
+# was the thing the server actually looked at: the response text names the
+# parameter or echoes its value back, or the error is an index/not-found
+# shape addressed at it. A plain "OK" with nothing else is no longer
+# sufficient — a tool that reaches a target parameter and legitimately
+# accepts an extreme value should usually still say SOMETHING that mentions
+# the field or value it accepted; a response that doesn't is exactly the
+# ambiguous case this fuzzer cannot resolve without deeper per-tool
+# knowledge, so it is honestly reported as unreached rather than assumed.
+#
+# A standalone function (not inlined in the loop below) so
+# `scripts/tests/fuzz-coverage-judgment.py` can unit-test the judgment in
+# isolation — it extracts this function's source via `ast` rather than
+# importing this file, which is a procedural script that spawns subprocesses
+# at import time (see BIN/WORK/FIX above) and cannot be imported safely.
+def parameter_reached(key, val, out):
+    return bool(
+        key in out or val in out
+        or re.search(r"Invalid (paragraph )?index|not found: -?\d|id -?\d+ not found|ID -?\d+|with id -?\d", out)
+    )
+
+
 seen, reached, blockers = set(), set(), {}
 for status, tool, label, out in results:
     if tool == "SEQ" or label.startswith("EXTRA") or "=" not in label:
         continue
     key, val = label.split("=", 1)
     seen.add((tool, key))
-    if (out.startswith("OK") or key in out or val in out
-            or re.search(r"Invalid (paragraph )?index|not found: -?\d|id -?\d+ not found|ID -?\d+|with id -?\d", out)):
+    if parameter_reached(key, val, out):
         reached.add((tool, key))
     else:
         blockers.setdefault((tool, key), out[:100])
