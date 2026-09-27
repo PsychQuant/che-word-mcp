@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`insert_equation` 傳 `{components: {...}, latex: null}`（或反過來）不再被誤判成「兩個都給了」；`components`／`latex` 型別錯誤時一律明確報錯，不再落到另一個參數或「兩者都沒給」**（#122、#125）。過去的衝突檢查只看兩個欄位有沒有這個 key，JSON 的 `null` 也算「有給」——會把每個 schema 欄位都序列化出來、缺的填 `null` 的 client，錯誤地擋下來，回「請只給 components 或 latex 其中一個」，但呼叫端其實只給了一個。現在的規則分兩層：(1) **是否提供**＝該欄位存在且不是 JSON `null`（明確 `null` 視同沒給，會改用另一個真正給了值的欄位；兩者都是 `null`（或都沒給）時，回原本的「兩者都要有一個」錯誤，不是衝突錯誤）；(2) **已提供但型別不對**（`components` 不是物件、`latex` 不是字串）→ 一律明確報錯，指名參數並附上收到的值，**絕不會**被當成沒給、也絕不會落到另一個參數或預設路徑靜默使用。真的同時提供兩個非 null 值時（不論型別對不對），仍然回衝突錯誤，訊息附上實際收到的值（見下）。
 - **`insert_equation` 的 `components`＋`latex` 衝突錯誤、型別錯誤、`display_mode` 型別錯誤，現在會附上實際收到的值**（#129）。過去這些錯誤只講「不能兩個都給」「必須是物件／字串」或「必須是布林值」，沒有回顯呼叫端到底送了什麼；agent 想自我修正時只能猜。現在錯誤訊息會加上「received ...」，附上收到的值（字串會截斷到 80 字元，避免超長值把錯誤訊息灌爆）。
+- **`insert_text` 在含 block-level SDT 的文件裡不再把 SDT 內段落的文字寫進不相關的頂層段落**（#141）。過去 `paragraph_index` 的邊界檢查用 `get_paragraphs()`（readback family，會遞迴 SDT 內段落），但實際插入是 `updateParagraph(at:)`（只認 top-level `.paragraph`），兩者對不上時，讀到的「目前文字」來自 SDT 內段落、寫回去的目標卻是某個 top-level 段落——回報成功，但該 top-level 段落原本的文字被整段覆蓋成「SDT 內文字＋新插入的文字」，SDT 內段落本身反而沒被動到。現在邊界檢查與讀取「目前文字」都改用跟 `updateParagraph` 一致的 top-level 段落清單；`paragraph_index` 落在 SDT 之後、只在 readback 數得到的範圍內時，改為明確拒絕。
 
 ### Documentation
 
