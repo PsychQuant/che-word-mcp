@@ -3309,7 +3309,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("display_mode=true：body.children 插入索引（從 0 開始；計入 tables / SDTs / bookmarkMarker / rawBlockElement，**不**等同於 get_paragraphs 回傳的 paragraph-only count），若搭配其他 anchor 則 anchor 衝突會回錯。display_mode=false：top-level `.paragraph` ordinal（從 0 開始；不計入 tables / SDTs / bookmarkMarker / rawBlockElement），且 inline 模式沒有其他 anchor 時必填；inline 會把 OMML run append 到該既有段落。參數命名沿用「paragraph_index」是歷史遺留，跨工具語意統一見 PsychQuant/ooxml-swift#10。")
+                            "description": .string("display_mode=true：body.children 插入索引（從 0 開始；計入 tables / SDTs / bookmarkMarker / rawBlockElement，**不**等同於 get_paragraphs 回傳的 paragraph-only count；接受 `idx == body.children.count` 表示附加到結尾）。paragraph_index 本身是索引型 anchor；若同時提供 after_text / before_text / after_image_id / into_table_cell 等 anchor，會回 anchor 衝突錯誤（各自擇一，見對應欄位描述）。display_mode=false：top-level `.paragraph` ordinal（從 0 開始；不計入 tables / SDTs / bookmarkMarker / rawBlockElement），且 inline 模式沒有其他 anchor 時必填；**必須指向既存段落**（`0 ..< top-level 段落數`，沒有 display_mode 那種 append-at-end 語意——等於 top-level 段落數時會回 out of range，跟 display_mode=true 的上界不對稱）；inline 會把 OMML run append 到該既有段落。參數命名沿用「paragraph_index」是歷史遺留，跨工具語意統一見 PsychQuant/ooxml-swift#10。")
                         ]),
                         "into_table_cell": .object([
                             "type": .string("object"),

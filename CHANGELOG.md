@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`insert_equation` 傳 `{components: {...}, latex: null}`（或反過來）不再被誤判成「兩個都給了」**（#122、#125）。過去的衝突檢查只看兩個欄位有沒有這個 key，JSON 的 `null` 也算「有給」——會把每個 schema 欄位都序列化出來、缺的填 `null` 的 client，錯誤地擋下來，回「請只給 components 或 latex 其中一個」，但呼叫端其實只給了一個。現在跟 `after_text`／`before_text` 等 anchor 欄位一樣，用型別過濾判斷是否「真的有給」（`components` 看是否為物件、`latex` 看是否為字串）：明確的 `null` 視同沒給，會改用另一個真正給了值的欄位；兩者都是 `null`（或都沒給）時，回原本的「兩者都要有一個」錯誤，不是衝突錯誤。真的同時給了兩個有效值時，仍然回衝突錯誤——訊息現在也會附上實際收到的值（見下）。
 - **`insert_equation` 的 `components`＋`latex` 衝突錯誤、`display_mode` 型別錯誤，現在會附上實際收到的值**（#129）。過去這兩則錯誤只講「不能兩個都給」或「必須是布林值」，沒有回顯呼叫端到底送了什麼；agent 想自我修正時只能猜。現在錯誤訊息會加上「received ...」，附上收到的值（字串會截斷到 80 字元，避免超長值把錯誤訊息灌爆）。
 
+### Documentation
+
+- **`insert_equation` 的 `paragraph_index` schema 補上兩處說明**（#123、#128）。(1) inline 模式（`display_mode=false`）的上界是**不含**既有段落數（必須指向既存段落，沒有 append-at-end 語意），跟 display 模式（`display_mode=true`）**含**上界（`idx == body.children.count` 視為附加到結尾）不對稱——過去這個不對稱只存在於程式行為，schema 沒寫。(2) 舊措辭「若搭配其他 anchor 則 anchor 衝突會回錯」暗示 `paragraph_index` 自己不是 anchor，但 anchor 白名單其實把它算作 anchor 之一；現在明講 `paragraph_index` 本身是索引型 anchor，並列出會跟它衝突的四個 anchor 名稱（`after_text`／`before_text`／`after_image_id`／`into_table_cell`）。純文件澄清，行為不變。
+
 ## [4.5.0] - 2026-09-27
 
 > 幾個過去回報成功、實際上什麼都沒做或做錯的呼叫，本版起回 `isError: true`（見文末「升級注意」）；其餘呼叫行為不變。依 4.4.0 的先例 bump minor。
