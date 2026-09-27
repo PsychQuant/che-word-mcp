@@ -1883,7 +1883,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "get_tables",
-                description: "取得文件中所有表格的完整內容（支援 Direct Mode）。預設回傳每個表格的所有列、所有欄、每格完整文字；傳 summarize: true 才做省略（列／欄／長文字三種省略都會標示）。儲存格內嵌有巢狀表格時，會在該列下方以「Nested table at Table N, row R, col C > nested table K: ...」列出其內容（#188）；K 即 update_cell 的 nested_table_index。**已知限制**：若看到「nested table K > nested table K'」這種兩層以上的巢狀（本工具本身唯讀、不受影響），文件之後若經 save_document 存檔可能失敗或卡住，根因追蹤於 ooxml-swift，詳見 CHANGELOG。",
+                description: "取得文件中所有表格的完整內容（支援 Direct Mode）。預設回傳每個表格的所有列、所有欄、每格完整文字；傳 summarize: true 才做省略（列／欄／長文字三種省略都會標示）。儲存格內嵌有巢狀表格時，會在該列下方以「Nested table at Table N, row R, col C > nested table K: ...」列出其內容（#188）；K 即 update_cell 的 nested_table_index。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1901,7 +1901,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "update_cell",
-                description: "更新表格儲存格內容：把儲存格第一段的文字換成 text，保留該段的段落格式。儲存格有多個段落時，只改第一段，其餘段落原樣保留（不會被刪除）；要改其他段落請用 update_cell_paragraph。目標段落已有 run 時完整沿用該 run 原本的格式（字型／粗體／顏色等，原封不動）；完全沒有 run 時（常見於表單待填欄位），**只繼承字型**（rFonts 四軸／字級／語言，不含粗體／顏色／底線／highlight 等其他格式），依序找：同列其他儲存格的宣告字型 → 文件內最常見的宣告字型（#191），仍找不到才維持無格式（落到 docDefaults）。\n\n【巢狀表格】table_index/row/col 定址的儲存格內若還嵌了一層表格（常見於官方表單的子檢核清單），額外傳 nested_table_index（該儲存格內第幾個巢狀表格，從 0 開始；用 get_tables 的輸出確認）＋nested_row／nested_col（巢狀表格內的列／欄），即可寫入巢狀表格的儲存格；三者需一併提供。只支援一層巢狀（#188）——定址到的巢狀儲存格若自己又內含更深一層巢狀表格，會明確拒絕並說明只支援一層，不會靜默寫入。**已知限制**：文件中若存在兩層以上巢狀表格（不論是否透過本工具寫入），save_document 目前可能失敗或卡住，根因追蹤於 ooxml-swift，詳見 CHANGELOG。",
+                description: "更新表格儲存格內容：把儲存格第一段的文字換成 text，保留該段的段落格式。儲存格有多個段落時，只改第一段，其餘段落原樣保留（不會被刪除）；要改其他段落請用 update_cell_paragraph。目標段落已有 run 時完整沿用該 run 原本的格式（字型／粗體／顏色等，原封不動）；完全沒有 run 時（常見於表單待填欄位），**只繼承字型**（rFonts 四軸／字級／語言，不含粗體／顏色／底線／highlight 等其他格式），依序找：同列其他儲存格的宣告字型 → 文件內最常見的宣告字型（#191），仍找不到才維持無格式（落到 docDefaults）。\n\n【巢狀表格】table_index/row/col 定址的儲存格內若還嵌了一層表格（常見於官方表單的子檢核清單），額外傳 nested_table_index（該儲存格內第幾個巢狀表格，從 0 開始；用 get_tables 的輸出確認）＋nested_row／nested_col（巢狀表格內的列／欄），即可寫入巢狀表格的儲存格；三者需一併提供。只支援一層巢狀（#188）——定址到的巢狀儲存格若自己又內含更深一層巢狀表格，會明確拒絕並說明只支援一層，不會靜默寫入。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -10044,10 +10044,7 @@ actor WordMCPServer {
             // `nestedTables` untouched-but-now-orphaned-looking and reporting
             // success — a caller would have no way to tell, from this tool's
             // response alone, that the cell they just "updated" still has
-            // unaddressed content underneath it. (Separately, per the
-            // coordinator: documents with depth-2+ nesting anywhere can hit
-            // a known ooxml-swift serialization issue on save — tracked
-            // upstream, not specific to this write path — see CHANGELOG.)
+            // unaddressed content underneath it.
             guard targetCell.nestedTables.isEmpty else {
                 throw WordError.invalidParameter(
                     "nested_table_index",
