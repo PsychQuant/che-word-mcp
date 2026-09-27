@@ -53,6 +53,10 @@ cd mcpb && zip -r che-word-mcp.mcpb .
 1. `mcpb/manifest.json` - version 欄位
 2. `CHANGELOG.md` - 新增版本條目
 3. `README.md` - 工具數量等資訊（如有變動）
+4. **新增／移除某工具的「目前未實作」註記時，同步更新 `README.md` 與
+   `README_zh-TW.md` 裡對該工具（或該工具所屬能力分類，如 Watermark CRUD）
+   的敘述**——工具數量不變時上面第 3 項不會觸發，但過度宣稱能力（description
+   誠實、README 卻仍寫成可用 CRUD）是使用者會直接被誤導的落差（#210）。
 
 ## GitHub Release
 
