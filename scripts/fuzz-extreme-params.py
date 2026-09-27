@@ -547,9 +547,53 @@ def run_seq(item):
     return ("ok", "SEQ", label, " | ".join(outs) + (f" | resident {mem:.0f} MB" if mem is not None else ""))
 
 
+def run_transport_depth_probe():
+    """R2 (#116 follow-up, `review-cwm450.md` C1): the vulnerability the
+    original #116 fix ('parseMathComponent' recursion depth cap) failed to
+    close lives one layer below any tool's own handler — in swift-sdk's raw
+    JSON decode/re-encode, BEFORE any che-word-mcp code runs at all. It is
+    reachable via ANY tool call carrying a deep enough JSON value anywhere
+    in its arguments, not specifically `insert_equation`. This probe sends
+    a raw JSON-RPC message whose structural nesting (200 levels, well past
+    both `maxMathComponentDepth`=24 and `transportMaxRawJSONDepth`=64 — see
+    those constants' own doc comments in `Server.swift`) is attached as
+    junk on `get_document_info`, a tool that never calls
+    `parseMathComponent` at all. Pre-fix (real binary, real stdio,
+    `wave1-crash.md` "R2"): the process dies with SIGBUS. Post-fix: the
+    wrapping `DepthLimitedTransport` must reject it with a JSON-RPC error
+    naming the depth problem and the process must keep responding — this
+    probe becomes a `swift test --filter FuzzExtremeParamsGateTests`
+    regression gate for exactly that, wired into the same crash/timeout
+    accounting as every other probe below.
+    """
+    label = "EXTRA transport_depth=200"
+    node = {"a": 1}
+    for _ in range(200):
+        node = {"a": [node]}
+    s = Session()
+    r = s.call("get_document_info", {"doc_id": "nonexistent", "junk": node}, timeout=30)
+    code, err = s.close()
+    if r is None:
+        fatal = next((l for l in err.splitlines() if "Fatal error" in l), "")
+        return ("CRASH", "TRANSPORT_DEPTH", label, fatal[:160] or f"exit={code}")
+    if r == "TIMEOUT":
+        return ("TIMEOUT", "TRANSPORT_DEPTH", label, "")
+    # DepthLimitedTransport short-circuits BEFORE swift-sdk's own
+    # request/response envelope, so this is a top-level JSON-RPC `error`,
+    # not a normal tool `result.isError` — receiving ANY well-formed
+    # response with the right id (which `Session.recv` already matched on)
+    # is itself proof the process is alive and still answering over the
+    # SAME connection; requiring "depth" in the error message on top of
+    # that pins the rejection to the right cause, not a coincidental error.
+    if not (isinstance(r, dict) and "error" in r and "depth" in str(r.get("error", {})).lower()):
+        return ("NOT_REJECTED", "TRANSPORT_DEPTH", label, json.dumps(r)[:160])
+    return ("ok", "TRANSPORT_DEPTH", label, json.dumps(r)[:160])
+
+
 t0 = time.time()
 with ThreadPoolExecutor(max_workers=int(os.environ.get("FUZZ_J", "8"))) as ex:
     results = list(ex.map(run, probes)) + list(ex.map(run_seq, seqs))
+results.append(run_transport_depth_probe())
 bad = [r for r in results if r[0] != "ok"]
 crashes = sum(1 for r in bad if r[0].startswith("CRASH"))
 timeouts = sum(1 for r in bad if r[0].startswith("TIMEOUT"))
