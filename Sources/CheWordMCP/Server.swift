@@ -4427,7 +4427,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）。不是 get_paragraphs 的 paragraph readback index（#141）")
                         ]),
                         "text": .object([
                             "type": .string("string"),
@@ -12738,14 +12738,26 @@ actor WordMCPServer {
 
         let position = try optionalInt(args, "position")
 
-        // 取得段落並插入文字
-        let paragraphs = doc.getParagraphs()
-        guard paragraphIndex >= 0 && paragraphIndex < paragraphs.count else {
+        // #141: bounds-check and the text this reads MUST use the same
+        // counting model `doc.updateParagraph(at:)` mutates with below —
+        // top-level `.paragraph` body children only, NOT `getParagraphs()`
+        // (which additionally recurses into block-level SDTs). Using the
+        // readback family here let an index that only existed because of an
+        // SDT-inner paragraph pass the bounds check, read `currentText`
+        // from that SDT-inner paragraph, and then have `updateParagraph`
+        // (which only ever resolves top-level ordinals) silently overwrite
+        // an unrelated top-level paragraph with it — reported as success
+        // while discarding that paragraph's own text.
+        let topLevelParagraphs: [Paragraph] = doc.body.children.compactMap {
+            if case .paragraph(let p) = $0 { return p }
+            return nil
+        }
+        guard paragraphIndex >= 0 && paragraphIndex < topLevelParagraphs.count else {
             throw WordError.invalidIndex(paragraphIndex)
         }
 
         // 取得現有文字並在指定位置插入
-        let currentText = paragraphs[paragraphIndex].getText()
+        let currentText = topLevelParagraphs[paragraphIndex].getText()
         let insertPosition = position ?? currentText.count
 
         let startIndex = currentText.startIndex
