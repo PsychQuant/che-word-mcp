@@ -10948,9 +10948,20 @@ actor WordMCPServer {
             } else {
                 // Inline mode: append OMML run to existing paragraph at
                 // `paragraph_index`. The pre-check above already rejected
-                // inline + nil paragraph_index, so `location` is guaranteed
-                // to be `.paragraphIndex(idx)` with a non-nil idx.
-                let idx = paragraphIndex!
+                // inline + nil paragraph_index, so this is unreachable with a
+                // nil `paragraphIndex` today.
+                //
+                // #127: kept as a thrown error instead of `paragraphIndex!`.
+                // A force-unwrap panics the whole MCP server *process* (a
+                // crash, not an error return) — every other open session goes
+                // down with it — if a future refactor of the anchor-
+                // resolution block above ever lets inline mode reach this
+                // branch with a nil index. This guard costs one branch and
+                // turns that failure mode into a structured per-call error
+                // instead.
+                guard let idx = paragraphIndex else {
+                    throw ToolRefusal("insert_equation: internal error — inline mode reached without paragraph_index (this should be unreachable; please report it as a che-word-mcp bug)")
+                }
                 // Bounds check matches lib's pattern at Document.swift:3990-3997
                 // (#91 Defect 2): count only top-level `.paragraph` body
                 // children, NOT recursing into block-level SDTs.
