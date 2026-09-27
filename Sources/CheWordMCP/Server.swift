@@ -25,6 +25,11 @@ import LaTeXMathSwift
 /// anything. A user who read-only-protected a document before sending it got
 /// an unprotected document *and was told otherwise*.
 ///
+/// `restrict_editing_region` has since been implemented for real (#184):
+/// the OOXML round-trips (`Paragraph.permissionRangeMarkers`, ooxml-swift
+/// #56 Phase 4) needed no upstream work, unlike its two siblings below,
+/// which remain honest failures.
+///
 /// Failing is worse than working and better than lying. An error costs the
 /// caller a workaround; a false success costs them the thing they were
 /// protecting against, and they find out from someone else.
@@ -5837,7 +5842,18 @@ actor WordMCPServer {
             // 11.8 restrict_editing_region - 限制編輯區域
             Tool(
                 name: "restrict_editing_region",
-                description: "設定可編輯區域（其他區域受保護）。目前未實作，呼叫會回 isError 並具名缺少的 OOXML（#172）",
+                description: """
+                在 [start_paragraph, end_paragraph]（含頭尾、索引對齊 get_paragraphs，僅計頂層段落，不含表格）\
+                前後寫入 <w:permStart>/<w:permEnd>，標出可編輯區域（#184）。\
+                start_paragraph 必須 >= 1：<w:permStart> 掛在前一段落的內容之後（緊接在目標範圍開始之前），\
+                ooxml-swift 目前只能把權限標記放在某個段落「內容之後」，沒有前一段落就無法用這個位置正確表達\
+                「從第 0 段開始」——遇到 start_paragraph == 0 會明確拒絕，不做近似。\
+                跨越表格的範圍（頂層段落之間夾了表格）與頭尾顛倒的範圍一律拒絕，不做靜默夾取。\
+                editor（→ w:ed，指名特定使用者）與 editor_group（→ w:edGrp，僅接受 everyone/administrators/\
+                contributors/editors/owners/current）互斥，最多給一個；兩者都省略時預設 \
+                editor_group="everyone"。呼叫端必須明確二選一或都不給，不會依字串內容用啟發式猜測是使用者\
+                名稱還是群組名稱。
+                """,
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -5847,15 +5863,19 @@ actor WordMCPServer {
                         ]),
                         "start_paragraph": .object([
                             "type": .string("integer"),
-                            "description": .string("可編輯區域起始段落索引")
+                            "description": .string("可編輯區域起始段落索引（>= 1；索引對齊 get_paragraphs，僅計頂層段落）")
                         ]),
                         "end_paragraph": .object([
                             "type": .string("integer"),
-                            "description": .string("可編輯區域結束段落索引")
+                            "description": .string("可編輯區域結束段落索引（含此段，須 >= start_paragraph）")
                         ]),
                         "editor": .object([
                             "type": .string("string"),
-                            "description": .string("允許編輯的使用者/群組（可選）")
+                            "description": .string("允許編輯的特定使用者名稱 → <w:permStart w:ed=\"...\">。與 editor_group 互斥。")
+                        ]),
+                        "editor_group": .object([
+                            "type": .string("string"),
+                            "description": .string("允許編輯的群組 → <w:permStart w:edGrp=\"...\">。僅接受：everyone、administrators、contributors、editors、owners、current。與 editor 互斥；兩者都省略時預設 everyone。")
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("start_paragraph"), .string("end_paragraph")])
@@ -17788,6 +17808,103 @@ actor WordMCPServer {
             missing: "decryption of the OLE Compound Document container (not an OOXML part)")
     }
 
+    /// The known `w:edGrp` values ECMA-376 `ST_EdGrp` defines. `editor_group`
+    /// is validated against this closed set rather than passed through, so a
+    /// typo produces a loud rejection instead of a silently-wrong permission.
+    static let permissionEditorGroups: Set<String> = [
+        "everyone", "administrators", "contributors", "editors", "owners", "current",
+    ]
+
+    /// True when a `.table` body child falls strictly between the top-level
+    /// paragraph at flattened index `startParagraph` and the one at
+    /// `endParagraph` (both inclusive, same counting `WordDocument.getParagraphs()`
+    /// uses — descends into content controls transparently, does not descend
+    /// into tables). che-word-mcp#184 Acceptance: "A range spanning a table…
+    /// is rejected rather than silently clamped" — `getParagraphs()` skips
+    /// tables entirely, so two paragraphs that look adjacent in its flattened
+    /// index space can have a whole table between them in real document flow.
+    static func restrictedRangeSpansTable(_ children: [BodyChild], startParagraph: Int, endParagraph: Int) -> Bool {
+        var count = 0
+        return spansTable(children, startParagraph: startParagraph, endParagraph: endParagraph, count: &count)
+    }
+
+    private static func spansTable(_ children: [BodyChild], startParagraph: Int, endParagraph: Int, count: inout Int) -> Bool {
+        for child in children {
+            switch child {
+            case .paragraph:
+                count += 1
+            case .table:
+                // The table sits in the gap between paragraph (count-1) and
+                // paragraph count. That gap is inside [start, end] exactly
+                // when a paragraph at-or-after start precedes it AND a
+                // paragraph at-or-before end follows it.
+                if count >= startParagraph + 1 && count <= endParagraph { return true }
+            case .contentControl(_, let kids):
+                if spansTable(kids, startParagraph: startParagraph, endParagraph: endParagraph, count: &count) { return true }
+            case .bookmarkMarker, .rawBlockElement:
+                break
+            }
+        }
+        return false
+    }
+
+    /// Applies `body` to the top-level paragraph at flattened index `target`
+    /// (same counting as `restrictedRangeSpansTable` / `getParagraphs()`),
+    /// mutating it in place inside `children`. Returns `false` if `target`
+    /// does not resolve to a paragraph (caller bug — indices are validated
+    /// against `getParagraphs().count` before this is ever called).
+    @discardableResult
+    static func mutateNthTopLevelParagraph(
+        in children: inout [BodyChild], target: Int, _ body: (inout Paragraph) -> Void
+    ) -> Bool {
+        var count = 0
+        return mutateNth(in: &children, target: target, count: &count, body)
+    }
+
+    private static func mutateNth(
+        in children: inout [BodyChild], target: Int, count: inout Int, _ body: (inout Paragraph) -> Void
+    ) -> Bool {
+        for i in children.indices {
+            switch children[i] {
+            case .paragraph(var para):
+                if count == target {
+                    body(&para)
+                    children[i] = .paragraph(para)
+                    return true
+                }
+                count += 1
+            case .table:
+                break
+            case .contentControl(let control, var kids):
+                if mutateNth(in: &kids, target: target, count: &count, body) {
+                    children[i] = .contentControl(control, children: kids)
+                    return true
+                }
+            case .bookmarkMarker, .rawBlockElement:
+                break
+            }
+        }
+        return false
+    }
+
+    /// A permission-range id that collides with nothing already in the
+    /// document (che-word-mcp#184 Acceptance: "id allocation does not
+    /// collide with existing permission ranges"). Scans every paragraph
+    /// (including inside tables — `getAllParagraphs()`, not just the
+    /// top-level paragraphs this tool targets) since OPC/`w:id` scoping for
+    /// `<w:permStart>`/`<w:permEnd>` is document-wide, not per-part. Starts
+    /// from one past the highest existing NUMERIC id (matching the
+    /// convention every writer observed so far uses), then walks upward
+    /// past any string collision — covers a hand-authored document whose
+    /// ids are not decimal integers at all.
+    static func nextPermissionRangeId(in document: WordDocument) -> String {
+        let existingIds = Set(document.getAllParagraphs().flatMap { $0.permissionRangeMarkers.map(\.id) })
+        let highestNumeric = existingIds.compactMap { Int($0) }.max() ?? 0
+        var candidate = highestNumeric + 1
+        while existingIds.contains(String(candidate)) { candidate += 1 }
+        return String(candidate)
+    }
+
     /// 限制編輯區域
     private func restrictEditingRegion(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
@@ -17799,25 +17916,93 @@ actor WordMCPServer {
         guard let endParagraph = try optionalInt(args, "end_paragraph") else {
             throw WordError.missingParameter("end_paragraph")
         }
-        guard let doc = openDocuments[docId] else {
+        guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
 
         let editor = args["editor"]?.stringValue
+        let editorGroupInput = args["editor_group"]?.stringValue
+        // Strict, non-overlapping mapping (#184 open design question,
+        // resolved as "take two arguments and refuse to guess"): a caller
+        // that wants BOTH a named editor and a group must be refused, not
+        // silently given one of them — nothing here infers which string is
+        // a user name and which is a group name from its spelling.
+        if editor != nil && editorGroupInput != nil {
+            throw WordError.invalidParameter(
+                "editor_group",
+                "cannot be given together with 'editor' — restrict_editing_region does not guess which one should win. Pass exactly one, or neither for the default (\"everyone\").")
+        }
+        if let editorGroupInput, !Self.permissionEditorGroups.contains(editorGroupInput) {
+            throw WordError.invalidParameter(
+                "editor_group",
+                "must be one of \(Self.permissionEditorGroups.sorted().joined(separator: ", ")); got \"\(editorGroupInput)\"")
+        }
+        // Only synthesize the "everyone" default when no named editor was
+        // given — an explicit `editor` must not also carry a group.
+        let editorGroup = editor == nil ? (editorGroupInput ?? "everyone") : nil
 
-        // 驗證段落範圍
-        let paragraphs = doc.getParagraphs()
-        guard startParagraph >= 0 && startParagraph < paragraphs.count else {
+        // 驗證段落範圍（索引對齊 get_paragraphs：僅頂層段落，透明穿過 content control，不含表格）
+        let paragraphCount = doc.getParagraphs().count
+        guard startParagraph >= 0 && startParagraph < paragraphCount else {
             throw WordError.invalidIndex(startParagraph)
         }
-        guard endParagraph >= startParagraph && endParagraph < paragraphs.count else {
+        guard endParagraph >= startParagraph && endParagraph < paragraphCount else {
             throw WordError.invalidIndex(endParagraph)
         }
+        // ooxml-swift can only place an API-appended <w:permStart> AFTER a
+        // paragraph's own content (Paragraph.toXML's post-content legacy
+        // path — an appended marker's `position` is always treated as "no
+        // source position", which sorts after every source-loaded child,
+        // never before). The only way to get <w:permStart> to land exactly
+        // at the region's start boundary is to attach it to the END of the
+        // PRECEDING paragraph. Paragraph 0 has no preceding paragraph, so
+        // that placement is not representable — refusing here (rather than
+        // silently attaching it inside paragraph 0, which would exclude
+        // paragraph 0's own content from the region) is the "reject rather
+        // than silently clamp" discipline the Acceptance criteria call for.
+        guard startParagraph >= 1 else {
+            throw WordError.invalidParameter(
+                "start_paragraph",
+                "must be >= 1 — ooxml-swift can only anchor <w:permStart> after a preceding paragraph's content, and paragraph 0 has none. There is no representable way to start the region exactly at paragraph 0 without also including whatever came before it, so this is refused rather than approximated.")
+        }
+        guard !Self.restrictedRangeSpansTable(doc.body.children, startParagraph: startParagraph, endParagraph: endParagraph) else {
+            throw WordError.invalidParameter(
+                "end_paragraph",
+                "the range [\(startParagraph), \(endParagraph)] spans a table — a table sits between two paragraphs that get_paragraphs() counts as adjacent. restrict_editing_region only supports a contiguous run of paragraphs with no table between them.")
+        }
 
-        _ = editor
-        throw ToolNotImplemented(
-            tool: "restrict_editing_region", issue: "#172",
-            missing: "<w:permStart>/<w:permEnd> around paragraphs \(startParagraph)..\(endParagraph)")
+        let id = Self.nextPermissionRangeId(in: doc)
+
+        // permStart: appended to the paragraph immediately BEFORE the
+        // region (see the start_paragraph >= 1 guard above) — document flow
+        // then places <w:permStart> exactly at the region's start boundary.
+        guard Self.mutateNthTopLevelParagraph(in: &doc.body.children, target: startParagraph - 1, { para in
+            para.permissionRangeMarkers.append(PermissionRangeMarker(
+                kind: .start, id: id, editorGroup: editorGroup, editor: editor))
+        }) else {
+            throw WordError.invalidIndex(startParagraph - 1)
+        }
+        // permEnd: appended to the LAST paragraph of the region itself — it
+        // emits after that paragraph's own content, so the region correctly
+        // includes all of end_paragraph.
+        guard Self.mutateNthTopLevelParagraph(in: &doc.body.children, target: endParagraph, { para in
+            para.permissionRangeMarkers.append(PermissionRangeMarker(kind: .end, id: id))
+        }) else {
+            throw WordError.invalidIndex(endParagraph)
+        }
+        // A direct `doc.body.children[...] = .paragraph(...)` mutation does
+        // not itself mark the part dirty — in overlay mode (a document
+        // opened from a real path) DocxWriter only re-emits a part when it
+        // appears in `modifiedParts`; skip this and the whole edit is
+        // silently discarded at save time in favor of the untouched archive
+        // bytes (same convention every other direct-mutation tool in this
+        // file follows, e.g. the OMML-anchor insertion above).
+        doc.markPartDirty("word/document.xml")
+
+        try await storeDocument(doc, for: docId)
+
+        let editorDescription = editor.map { "editor \"\($0)\"" } ?? "group \"\(editorGroup ?? "everyone")\""
+        return "Restricted editing region: paragraphs \(startParagraph)..\(endParagraph) editable by \(editorDescription) (permission id \(id))"
     }
 
     // MARK: - Phase 3: 學術功能
