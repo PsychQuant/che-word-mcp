@@ -4453,7 +4453,7 @@ actor WordMCPServer {
                     "type": .string("object"),
                     "properties": .object([
                         "doc_id": .object(["type": .string("string")]),
-                        "section_index": .object(["type": .string("integer"), "description": .string("必須 ≥ 1")]),
+                        "section_index": .object(["type": .string("integer"), "description": .string("必須介於 1 到文件目前的 section 數之間（目前函式庫是單一 section 模型，永遠只有 1）。此工具目前是 no-op stub，多 section 拆分留給未來 SDD")]),
                         "type": .object(["type": .string("string"), "description": .string("default / first / even")])
                     ]),
                     "required": .array([.string("doc_id"), .string("section_index"), .string("type")])
@@ -18200,6 +18200,20 @@ actor WordMCPServer {
         }
         guard sectionIndex >= 1 else {
             return "{ \"error\": \"out_of_bounds\", \"section_index\": \(sectionIndex), \"detail\": \"must be >= 1\" }"
+        }
+        // R2 (LOW-MEDIUM, independent review of #138/#139/#140/#141/#235):
+        // `insert_cross_reference`/`set_text_direction` are the other two
+        // stub tools with an index-shaped parameter — both got an upper
+        // bound so `Int.max` is rejected instead of reported as success.
+        // This tool previously only checked the lower bound, leaving that
+        // inconsistent. `doc.getAllSections()` always returns exactly one
+        // `SectionInfo` (single-section model, current limitation — see the
+        // comment below); its `count` is therefore always 1, and pinning
+        // the bound to it (rather than a hardcoded `1`) means this check
+        // automatically loosens if `getAllSections()` is ever extended to
+        // parse real multi-section documents.
+        guard sectionIndex <= doc.getAllSections().count else {
+            throw WordError.invalidIndex(sectionIndex)
         }
         // For single-section model (current limitation), this is a no-op
         // returning success — multi-section split lands in future SDD.
