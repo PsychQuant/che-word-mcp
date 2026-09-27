@@ -16347,28 +16347,99 @@ actor WordMCPServer {
         let leader: String?
     }
 
-    /// Extracts every `<w:tab .../>` self-closing element from a `<w:tabs>
-    /// ...</w:tabs>` raw XML string. Order-independent, attribute-order-
-    /// independent (handles both this tool's own previously-written output
-    /// and a real Word document's `<w:tabs>`, which is never guaranteed to
-    /// list `val` before `pos`). A `<w:tab>` with no `w:pos` (schema-invalid,
-    /// should not occur) is skipped rather than crashing.
-    private func parseExistingTabStops(fromTabsXML xml: String) -> [TabStopEntry] {
-        guard let tabRegex = try? NSRegularExpression(pattern: "<w:tab\\b([^>]*)/>") else { return [] }
-        let ns = xml as NSString
-        func attr(_ name: String, in attrsXML: String) -> String? {
-            guard let regex = try? NSRegularExpression(pattern: "\(name)=\"([^\"]*)\"") else { return nil }
-            let attrsNS = attrsXML as NSString
-            guard let match = regex.firstMatch(in: attrsXML, range: NSRange(location: 0, length: attrsNS.length))
-            else { return nil }
-            return attrsNS.substring(with: match.range(at: 1))
+    /// ECMA-376 Part 1 §17.18.96 — the WordprocessingML namespace URI every
+    /// real `<w:tabs>`/`<w:tab>` element belongs to. `RawElement.xml`
+    /// fragments never carry their own `xmlns:w` declaration (they were cut
+    /// out of a `<w:pPr>` living inside a `<w:document>` that declares it
+    /// once, at the root) — `parseExistingTabStops` re-declares it on a
+    /// synthetic wrapper element so `XMLDocument` can parse the fragment
+    /// standalone at all (an undeclared `w:` prefix is a parse error, not a
+    /// silently-ignored one).
+    private static let wordprocessingMLNamespaceURI = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+    /// #245-1 (independent review, `review-cwm-misc.md` finding #245-1,
+    /// MEDIUM) — the original implementation used a hand-rolled regex
+    /// (`<w:tab\b([^>]*)/>`) that only matched the SELF-CLOSING form. A
+    /// real Word document (or any non-ooxml-swift writer) is free to emit
+    /// the non-self-closing `<w:tab ...></w:tab>` instead — both are
+    /// equally valid XML/OOXML, ECMA-376 does not mandate self-closing for
+    /// an empty element — and the regex matched zero times against it,
+    /// silently dropping that tab stop the next time `insert_tab_stop` ran
+    /// (parse existing → rebuild `<w:tabs>` from what parsed → the
+    /// unrecognized entry never made it into the rebuild).
+    ///
+    /// Fixed by parsing for real instead of pattern-matching: wrap the
+    /// fragment in a synthetic root that declares `xmlns:w`, parse with
+    /// `XMLDocument`, and read `<w:tab>` children via `elements(forName:)`/
+    /// `attribute(forName:)` — both forms parse identically once real XML
+    /// parsing is involved, and attribute order was already a non-issue
+    /// (`attribute(forName:)` looks up by name, not position).
+    ///
+    /// Per #245-1's explicit requirement, this throws rather than silently
+    /// dropping anything it cannot make sense of: a parse failure (broken
+    /// XML) or a `<w:tab>` missing a valid `w:pos` (schema-invalid, should
+    /// not occur) both refuse the whole `insert_tab_stop` call instead of
+    /// rebuilding `<w:tabs>` from a partial read.
+    ///
+    /// **Reachability note (found while verifying the fix, not assumed):**
+    /// a document opened via `open_document` can never actually present a
+    /// non-self-closing `<w:tab>` to THIS function, because
+    /// `DocxReader.parseParagraphProperties` — the code that captures
+    /// `tabs` into `rawChildren` in the first place — serializes every raw
+    /// child with `XMLNode.Options.nodeCompactEmptyElement`
+    /// (`.build/checkouts/ooxml-swift/Sources/OOXMLSwift/IO/DocxReader.swift`,
+    /// the raw-capture site), which collapses a genuinely empty element
+    /// (including one written non-self-closing, and even one containing
+    /// only whitespace) to self-closing form BEFORE it ever reaches
+    /// `rawChildren` — confirmed by round-tripping a hand-built
+    /// non-self-closing fixture through `DocxWriter.write` →
+    /// `open_document` and observing it arrives here already
+    /// self-closed. The fix is kept anyway — parsing real XML instead of
+    /// a regex is strictly more correct with no downside, and it is
+    /// defense-in-depth against that upstream normalization ever
+    /// changing, or any future code path constructing a `rawChildren`
+    /// entry directly without going through `DocxReader` at all. The
+    /// part of #245-1 that IS independently reachable through a normal
+    /// `open_document` round trip — a `<w:tab>` missing `w:pos` no longer
+    /// silently dropped, now refused — is covered by
+    /// `testInsertTabStopRejectsWhenExistingTabIsUnparseable`.
+    private func parseExistingTabStops(fromTabsXML xml: String) throws -> [TabStopEntry] {
+        let wrapped = "<root xmlns:w=\"\(Self.wordprocessingMLNamespaceURI)\">\(xml)</root>"
+        guard let wrappedData = wrapped.data(using: .utf8) else {
+            throw ToolRefusal(
+                "insert_tab_stop: the paragraph's existing <w:tabs> content is not valid UTF-8; "
+                    + "refusing to rebuild it (which would silently drop it). "
+                    + "Use clear_tab_stops first if you want to discard the existing tab stops.")
+        }
+        let doc: XMLDocument
+        do {
+            doc = try XMLDocument(data: wrappedData, options: [])
+        } catch {
+            throw ToolRefusal(
+                "insert_tab_stop: the paragraph's existing <w:tabs> content could not be parsed as XML "
+                    + "(\(error.localizedDescription)); refusing to rebuild it, which would silently drop it. "
+                    + "Use clear_tab_stops first if you want to discard the existing tab stops.")
+        }
+        guard let root = doc.rootElement() else {
+            throw ToolRefusal("insert_tab_stop: the paragraph's existing <w:tabs> content parsed to no root element")
+        }
+        // `xml` is the FULL `<w:tabs>...</w:tabs>` element, so after
+        // wrapping in the synthetic `<root>`, the `<w:tab>` children sit
+        // one level deeper than `root` itself — under the `<w:tabs>` child
+        // `root` now has.
+        guard let tabsElement = root.elements(forName: "w:tabs").first else {
+            throw ToolRefusal("insert_tab_stop: the paragraph's existing content has no <w:tabs> root element to read tab stops from")
         }
         var results: [TabStopEntry] = []
-        for match in tabRegex.matches(in: xml, range: NSRange(location: 0, length: ns.length)) {
-            let attrsXML = ns.substring(with: match.range(at: 1))
-            guard let posStr = attr("w:pos", in: attrsXML), let pos = Int(posStr) else { continue }
-            let val = attr("w:val", in: attrsXML) ?? "left"
-            let leader = attr("w:leader", in: attrsXML)
+        for tab in tabsElement.elements(forName: "w:tab") {
+            guard let posString = tab.attribute(forName: "w:pos")?.stringValue, let pos = Int(posString) else {
+                throw ToolRefusal(
+                    "insert_tab_stop: an existing <w:tab> is missing a valid w:pos attribute; "
+                        + "refusing to rebuild <w:tabs> without it, which would silently drop it. "
+                        + "Use clear_tab_stops first if you want to discard the existing tab stops.")
+            }
+            let val = tab.attribute(forName: "w:val")?.stringValue ?? "left"
+            let leader = tab.attribute(forName: "w:leader")?.stringValue
             results.append(TabStopEntry(position: pos, alignment: val, leader: leader))
         }
         return results
@@ -16439,7 +16510,7 @@ actor WordMCPServer {
         var stops: [TabStopEntry]
         let existingTabsIndex = para.properties.rawChildren.firstIndex { $0.name == "tabs" }
         if let existingTabsIndex {
-            stops = parseExistingTabStops(fromTabsXML: para.properties.rawChildren[existingTabsIndex].xml)
+            stops = try parseExistingTabStops(fromTabsXML: para.properties.rawChildren[existingTabsIndex].xml)
             // Word replaces any existing tab stop at the same position
             // rather than stacking two on top of each other.
             stops.removeAll { $0.position == position }

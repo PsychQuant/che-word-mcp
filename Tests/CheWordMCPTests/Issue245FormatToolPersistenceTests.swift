@@ -345,6 +345,105 @@ final class Issue245FormatToolPersistenceTests: XCTestCase {
         XCTAssertEqual(r.isError, true)
     }
 
+    // MARK: - insert_tab_stop R2 (#245-1, MEDIUM) — external (Word-style) <w:tabs> forms
+
+    /// A fixture whose paragraph 0 already carries a `<w:tabs>` element in
+    /// the non-self-closing form (`<w:tab ...></w:tab>`, valid XML/OOXML,
+    /// ECMA-376 does not mandate self-closing for an empty element) with
+    /// attributes in a different order than this tool's own writer uses —
+    /// simulating what `DocxReader` would have captured verbatim into
+    /// `rawChildren` from a document some OTHER tool (real Word, or
+    /// anything not ooxml-swift) produced.
+    private func makeFixtureWithExternalStyleTabs(suffix: String) throws -> URL {
+        var doc = WordDocument()
+        var para = Paragraph(runs: [Run(text: "hello")])
+        para.properties.rawChildren.append(
+            RawElement(
+                name: "tabs",
+                xml: "<w:tabs><w:tab w:pos=\"720\" w:val=\"left\"></w:tab></w:tabs>"
+            ))
+        doc.body.children.append(.paragraph(para))
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("issue245_extern-tabs_\(suffix)_\(UUID().uuidString).docx")
+        try DocxWriter.write(doc, to: url)
+        return url
+    }
+
+    /// #245-1: an independent review flagged the pre-fix regex
+    /// (`<w:tab\b([^>]*)/>`, self-closing only) as unable to match this
+    /// non-self-closing form. **Honesty note**: this fixture's non-self-
+    /// closing `<w:tab>` does NOT actually reach the regex in its
+    /// non-self-closing form via a real `open_document` round trip —
+    /// `DocxReader`'s own raw-capture normalizes every genuinely-empty
+    /// element to self-closing (`.nodeCompactEmptyElement`) before
+    /// `rawChildren` ever sees it, confirmed while building this test (see
+    /// `parseExistingTabStops`'s own doc comment for the full trace). So
+    /// this test does NOT reproduce a live silent-drop bug — the OLD regex
+    /// passes it too, for the same upstream-normalization reason. It is
+    /// kept as a direct correctness/robustness check of the new
+    /// `XMLDocument`-based parser against the form #245-1 named (defense-
+    /// in-depth: the new parser handles it correctly regardless of whether
+    /// today's upstream normalization keeps doing the same), and to
+    /// satisfy #245-1's explicit request for "an external (Word-style)
+    /// `<w:tabs>` fixture". The genuinely reachable part of #245-1 — a
+    /// `<w:tab>` missing `w:pos`, previously silently dropped — IS a real
+    /// RED→GREEN regression guard; see
+    /// `testInsertTabStopRejectsWhenExistingTabIsUnparseable` below.
+    func testInsertTabStopPreservesExternalNonSelfClosingTabForm() async throws {
+        let fixture = try makeFixtureWithExternalStyleTabs(suffix: "preserve")
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let savePath = fixture.path + ".out.docx"
+        defer { try? FileManager.default.removeItem(atPath: savePath) }
+        let server = await WordMCPServer()
+
+        let r = try await openAndSave(
+            server, fixture: fixture, docId: "ext1", savePath: savePath,
+            toolName: "insert_tab_stop",
+            arguments: [
+                "doc_id": .string("ext1"), "paragraph_index": .int(0), "position": .int(1440),
+                "alignment": .string("right"),
+            ]
+        )
+        XCTAssertFalse(r.isError == true, textOf(r))
+
+        var saved = try DocxReader.read(from: URL(fileURLWithPath: savePath))
+        defer { saved.close() }
+        let tabsRaw = try XCTUnwrap(saved.getParagraphs().first?.properties.rawChildren.first { $0.name == "tabs" })
+        XCTAssertTrue(
+            tabsRaw.xml.contains("w:pos=\"720\""),
+            "the pre-existing, non-self-closing tab stop must survive the rebuild, not silently vanish. got: \(tabsRaw.xml)"
+        )
+        XCTAssertTrue(tabsRaw.xml.contains("w:pos=\"1440\""), "the newly inserted tab stop must also be present. got: \(tabsRaw.xml)")
+        let tabCount = tabsRaw.xml.components(separatedBy: "<w:tab ").count - 1
+        XCTAssertEqual(tabCount, 2, "exactly two tab stops, none dropped, none duplicated. got: \(tabsRaw.xml)")
+    }
+
+    /// A fixture whose existing `<w:tab>` is missing `w:pos` entirely —
+    /// genuinely unparseable in the sense that matters (no position to
+    /// preserve). Per #245-1's explicit requirement, this must refuse
+    /// (isError) rather than silently rebuild `<w:tabs>` without it.
+    func testInsertTabStopRejectsWhenExistingTabIsUnparseable() async throws {
+        var doc = WordDocument()
+        var para = Paragraph(runs: [Run(text: "hello")])
+        para.properties.rawChildren.append(
+            RawElement(name: "tabs", xml: "<w:tabs><w:tab w:val=\"left\"/></w:tabs>"))
+        doc.body.children.append(.paragraph(para))
+        let fixture = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("issue245_unparseable-tabs_\(UUID().uuidString).docx")
+        try DocxWriter.write(doc, to: fixture)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "open_document", arguments: ["path": .string(fixture.path), "doc_id": .string("ext2")]
+        )
+        let r = await server.invokeToolForTesting(
+            name: "insert_tab_stop",
+            arguments: ["doc_id": .string("ext2"), "paragraph_index": .int(0), "position": .int(1440)]
+        )
+        XCTAssertEqual(r.isError, true, "must refuse rather than silently drop the unparseable existing tab. got: \(textOf(r))")
+    }
+
     // MARK: - set_outline_level
 
     func testSetOutlineLevelWritesOutlineLvl() async throws {
