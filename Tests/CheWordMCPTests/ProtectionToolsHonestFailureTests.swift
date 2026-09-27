@@ -11,6 +11,13 @@ import MCP
 /// carried a comment naming the OOXML it was not writing — the code documented
 /// its own dishonesty and nobody acted on it.
 ///
+/// `restrict_editing_region` has since been implemented for real (#184) —
+/// its honest-failure coverage moved to `Issue184RestrictEditingRegionTests`,
+/// which exercises the (now real) success path and its own explicit
+/// rejections (start_paragraph == 0, a range spanning a table, an inverted
+/// range, ambiguous editor/editor_group). The other four remain unimplemented
+/// and stay covered here.
+///
 /// `set_document_password` was the worst by consequence: it echoed the password
 /// *length* back, which reads as confirmation the password was received and
 /// applied.
@@ -73,16 +80,6 @@ final class ProtectionToolsHonestFailureTests: XCTestCase {
             name: "remove_document_password",
             arguments: ["doc_id": .string("d"), "current_password": .string("hunter2")]),
                      "remove_document_password")
-    }
-
-    func testRestrictEditingRegionFailsInsteadOfClaimingSuccess() async {
-        let server = await WordMCPServer()
-        await openDoc(server)
-        assertErrors(await server.invokeToolForTesting(
-            name: "restrict_editing_region",
-            arguments: ["doc_id": .string("d"),
-                        "start_paragraph": .int(0), "end_paragraph": .int(0)]),
-                     "restrict_editing_region")
     }
 
     /// Argument validation must still come first: a caller passing a bad
