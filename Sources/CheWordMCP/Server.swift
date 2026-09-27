@@ -94,6 +94,41 @@ struct StructuredRefusal: StructuredToolFailure {
     init(_ jsonPayload: String) { self.jsonPayload = jsonPayload }
 }
 
+/// #192 — a place for a handler to say "this succeeded, but there is
+/// something you should know" without either failing the call or the
+/// message disappearing into a log file the caller never reads.
+///
+/// Mutable accumulator for ONE tool call's advisories. A plain class, not a
+/// struct: `AdvisoryCollector.current` hands out the SAME box to every
+/// function in a call's async chain, so a deeply nested call (`storeDocument`
+/// called from a mutating handler) can append to the box the top-level
+/// `handleToolCall` will read back — `inout` parameter threading would need
+/// every intermediate signature changed, which is exactly the invasive
+/// refactor #192 says NOT to do this round.
+///
+/// `@unchecked Sendable`: safety does not come from internal locking, it
+/// comes from SCOPE — `handleToolCall` allocates a fresh box and binds it
+/// via `AdvisoryCollector.$current.withValue(box)` only around that one
+/// call's `executeToolTask` invocation, so no two concurrent tool calls ever
+/// share a box (task-local values are scoped to a task's own call tree, not
+/// visible to sibling tasks). A shared actor-isolated `var` was considered
+/// and rejected: `WordMCPServer` is reentrant at `await` points, so two
+/// interleaved tool calls could corrupt a single shared array.
+final class AdvisoryBox: @unchecked Sendable {
+    private var messages: [String] = []
+    func record(_ message: String) { messages.append(message) }
+    var all: [String] { messages }
+}
+
+/// Task-local slot for the current tool call's `AdvisoryBox`, if any.
+/// `nil` outside a tool call (e.g. shutdown flush) — `recordAdvisory` is a
+/// no-op in that case, which is the deliberate #192 scope: shutdown/startup
+/// warnings stay stderr-only because there is no `CallTool.Result` for them
+/// to ride on.
+enum AdvisoryCollector {
+    @TaskLocal static var current: AdvisoryBox?
+}
+
 actor WordMCPServer {
     private let server: Server
     /// R2 (#116 follow-up): wraps `StdioTransport` with a depth check on
@@ -1149,7 +1184,12 @@ actor WordMCPServer {
         // sidecar instead of clobbering the original (R1 security S2 / logic H1).
         if let refusal = imageConsistencySaveRefusal(doc, docId: docId) {
             let sidecar = try writeRefusedStateSidecar(doc, docId: docId, sourcePath: path)
+            // stderr wording unchanged (#192 keeps the existing log channel
+            // intact — this ADDS a channel, it does not replace one).
             FileHandle.standardError.write(Data("Warning: autosave for '\(docId)' refused by the image-consistency gate; state written to \(sidecar) instead of the source file.\nError: \(refusal)\n".utf8))
+            // #192: this happens mid-mutation, inside a tool call — the
+            // caller can now see it too, not just whoever reads stderr.
+            recordAdvisory("autosave for '\(docId)' refused by the image-consistency gate; state written to \(sidecar) instead of the source file. \(refusal)")
             return
         }
         try persistDocumentToDisk(doc, docId: docId, path: path)
@@ -1183,6 +1223,10 @@ actor WordMCPServer {
             FileHandle.standardError.write(
                 Data("Warning: autosave checkpoint failed for '\(docId)' at '\(autosaveURL.path)': \(error.localizedDescription)\n".utf8)
             )
+            // #192: the concrete failure this issue's body names — dispatched
+            // from inside a mutating tool call (`storeDocument`), so a scope
+            // is always active here.
+            recordAdvisory("autosave checkpoint failed for '\(docId)' at '\(autosaveURL.path)': \(error.localizedDescription)")
         }
     }
 
@@ -7061,21 +7105,51 @@ actor WordMCPServer {
     func handleToolCall(_ params: CallTool.Parameters) async throws -> CallTool.Result {
         let name = params.name
         let args = params.arguments ?? [:]
+        // #192: a fresh box per call, bound to the task-local slot only for
+        // the duration of `executeToolTask` — any advisory recorded anywhere
+        // in that call's async chain (e.g. `storeDocument`'s autosave
+        // checkpoint) lands here, and nowhere else, once the scope ends.
+        let advisoryBox = AdvisoryBox()
 
         do {
-            let result = try await executeToolTask(name: name, args: args)
-            return CallTool.Result(content: [.text(result)])
+            let result = try await AdvisoryCollector.$current.withValue(advisoryBox) {
+                try await executeToolTask(name: name, args: args)
+            }
+            return CallTool.Result(content: buildResultContent(mainText: result, advisories: advisoryBox.all))
         } catch let structured as StructuredToolFailure {
             // #182: the payload IS the body — no "Error: " prose wrapper,
             // so a caller can parse it with the same schema a success would
             // have used.
-            return CallTool.Result(content: [.text(structured.jsonPayload)], isError: true)
+            return CallTool.Result(
+                content: buildResultContent(mainText: structured.jsonPayload, advisories: advisoryBox.all),
+                isError: true)
         } catch {
             return CallTool.Result(
-                content: [.text("Error: \(error.localizedDescription)")],
+                content: buildResultContent(mainText: "Error: \(error.localizedDescription)", advisories: advisoryBox.all),
                 isError: true
             )
         }
+    }
+
+    /// #192 — the primary content block, followed by one `Advisory: `-prefixed
+    /// block per accumulated advisory, in the order they were recorded.
+    /// `isError` is set by the caller, independent of this: an advisory can
+    /// ride alongside either a success or a failure.
+    private func buildResultContent(mainText: String, advisories: [String]) -> [Tool.Content] {
+        var content: [Tool.Content] = [.text(mainText)]
+        for advisory in advisories {
+            content.append(.text("Advisory: \(advisory)"))
+        }
+        return content
+    }
+
+    /// #192 — record a non-fatal advisory for the tool call currently in
+    /// progress. A no-op when no call is in scope (`AdvisoryCollector.current
+    /// == nil`) — that is the deliberate boundary: shutdown flush and any
+    /// other work outside a `CallTool` request have no `CallTool.Result` for
+    /// an advisory to ride on, so they stay stderr-only.
+    func recordAdvisory(_ message: String) {
+        AdvisoryCollector.current?.record(message)
     }
 
     private func executeToolTask(name: String, args: [String: Value]) async throws -> String {
