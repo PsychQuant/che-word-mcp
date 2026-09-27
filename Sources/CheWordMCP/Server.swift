@@ -1883,7 +1883,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "get_tables",
-                description: "取得文件中所有表格的完整內容（支援 Direct Mode）。預設回傳每個表格的所有列、所有欄、每格完整文字；傳 summarize: true 才做省略（列／欄／長文字三種省略都會標示）。儲存格內嵌有巢狀表格時，會在該列下方以「Nested table at Table N, row R, col C > nested table K: ...」列出其內容（#188）；K 即 update_cell 的 nested_table_index。",
+                description: "取得文件中所有表格的完整內容（支援 Direct Mode）。預設回傳每個表格的所有列、所有欄、每格完整文字；傳 summarize: true 才做省略（列／欄／長文字三種省略都會標示）。儲存格內嵌有巢狀表格時，會在該列下方以「Nested table at Table N, row R, col C > nested table K: ...」列出其內容（#188）；K 即 update_cell 的 nested_table_index。**已知限制**：若看到「nested table K > nested table K'」這種兩層以上的巢狀（本工具本身唯讀、不受影響），文件之後若經 save_document 存檔可能失敗或卡住，根因追蹤於 ooxml-swift，詳見 CHANGELOG。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1901,7 +1901,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "update_cell",
-                description: "更新表格儲存格內容：把儲存格第一段的文字換成 text，保留該段的段落格式。儲存格有多個段落時，只改第一段，其餘段落原樣保留（不會被刪除）；要改其他段落請用 update_cell_paragraph。目標段落已有 run 時沿用該 run 的格式（字型／粗體等）；完全沒有 run 時（常見於表單待填欄位），改採同列其他儲存格的字型，同列也沒有時改採文件內最常見的宣告字型（#191），仍找不到才維持無格式（落到 docDefaults）。\n\n【巢狀表格】table_index/row/col 定址的儲存格內若還嵌了一層表格（常見於官方表單的子檢核清單），額外傳 nested_table_index（該儲存格內第幾個巢狀表格，從 0 開始；用 get_tables 的輸出確認）＋nested_row／nested_col（巢狀表格內的列／欄），即可寫入巢狀表格的儲存格；三者需一併提供。只支援一層巢狀（#188）。",
+                description: "更新表格儲存格內容：把儲存格第一段的文字換成 text，保留該段的段落格式。儲存格有多個段落時，只改第一段，其餘段落原樣保留（不會被刪除）；要改其他段落請用 update_cell_paragraph。目標段落已有 run 時完整沿用該 run 原本的格式（字型／粗體／顏色等，原封不動）；完全沒有 run 時（常見於表單待填欄位），**只繼承字型**（rFonts 四軸／字級／語言，不含粗體／顏色／底線／highlight 等其他格式），依序找：同列其他儲存格的宣告字型 → 文件內最常見的宣告字型（#191），仍找不到才維持無格式（落到 docDefaults）。\n\n【巢狀表格】table_index/row/col 定址的儲存格內若還嵌了一層表格（常見於官方表單的子檢核清單），額外傳 nested_table_index（該儲存格內第幾個巢狀表格，從 0 開始；用 get_tables 的輸出確認）＋nested_row／nested_col（巢狀表格內的列／欄），即可寫入巢狀表格的儲存格；三者需一併提供。只支援一層巢狀（#188）——定址到的巢狀儲存格若自己又內含更深一層巢狀表格，會明確拒絕並說明只支援一層，不會靜默寫入。**已知限制**：文件中若存在兩層以上巢狀表格（不論是否透過本工具寫入），save_document 目前可能失敗或卡住，根因追蹤於 ooxml-swift，詳見 CHANGELOG。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -8798,11 +8798,30 @@ actor WordMCPServer {
             rawMatches.append(RawMatch(sRunIdx: sRunIdx, eRunIdx: eRunIdx, sOffset: sOffset, eOffsetExclusive: eOffsetExclusive))
         }
 
-        let crossRunMatches = rawMatches.filter { $0.eRunIdx > $0.sRunIdx }
+        // R2 review Finding 5: when a match's last character is exactly the
+        // last character of a run, `map[endCharIdx]` (one index past the
+        // match) resolves to offset 0 of the NEXT run — a run the match
+        // never actually touches. Using that raw `eRunIdx` to decide "does
+        // this match span multiple differently-formatted runs" would
+        // over-include that untouched neighbour. `effectiveEndRunIndex` is
+        // the last run the match actually has any characters in; used ONLY
+        // for classification (is this a cross-run match at all? does
+        // formatting genuinely differ across it?) below. Segment-building
+        // further down deliberately keeps using the raw `eRunIdx`/
+        // `eOffsetExclusive` — that already matches `TextReplacementEngine`'s
+        // own post-mutation run layout exactly (confirmed against a real
+        // binary: the spillover run's prefix/suffix math reconstructs it
+        // byte-unchanged either way), so narrowing it there would be an
+        // unnecessary, unproven behaviour change to already-correct code.
+        func effectiveEndRunIndex(_ m: RawMatch) -> Int {
+            (m.eOffsetExclusive == 0 && m.eRunIdx > m.sRunIdx) ? m.eRunIdx - 1 : m.eRunIdx
+        }
+
+        let crossRunMatches = rawMatches.filter { effectiveEndRunIndex($0) > $0.sRunIdx }
         guard !crossRunMatches.isEmpty else { return (nil, 0) }
 
         func spanFormatDiffers(_ m: RawMatch) -> Bool {
-            let props = (m.sRunIdx...m.eRunIdx).map { runs[$0].properties }
+            let props = (m.sRunIdx...effectiveEndRunIndex(m)).map { runs[$0].properties }
             return props.dropFirst().contains { $0 != props[0] }
         }
         let formatAffectingCount = crossRunMatches.filter(spanFormatDiffers).count
@@ -8876,6 +8895,17 @@ actor WordMCPServer {
             guard !text.isEmpty else { continue }
             newRuns.append(Run(text: text, properties: segment.properties))
         }
+        // R2 review Finding 6: `planCrossRunRepair`'s `find.count ==
+        // replacementLength` guard is the only thing that currently
+        // guarantees every character of `replacement` gets consumed by the
+        // segments above — this is a second, independent check at the
+        // point of use, so a future change that loosens or bypasses that
+        // upstream guard (e.g. to attempt regex repair) fails loudly here
+        // instead of silently truncating `replacement`'s trailing
+        // characters. Mutation-testing this guard away (temporarily, while
+        // developing R2) confirmed it is currently reachable and would
+        // otherwise silently drop text with no error.
+        guard cursor == replacement.endIndex else { return false }
         guard !newRuns.isEmpty else { return false }
         runs.replaceSubrange(plan.startRunIndex...endPos, with: newRuns)
         return true
@@ -8996,6 +9026,14 @@ actor WordMCPServer {
     /// could not be recovered. Regex retries aren't attempted — a stripped
     /// pattern doesn't have a well-defined relationship to the original
     /// pattern's semantics.
+    ///
+    /// **Consistency with `search_text` (R2 review Finding 3)**: the retry
+    /// compares `stripWhitespace(find)` against the runs' own unstripped
+    /// text (via `doc.replaceText` → `TextReplacementEngine`) — never a
+    /// stripped copy of the document's text. `search_text`'s fallback was
+    /// changed to perform the identical comparison, so for the same
+    /// find/query against the same document, both tools now always agree on
+    /// whether a normalized match exists.
     private func replaceTextWithWhitespaceFallback(
         doc: inout WordDocument, find: String, replacement: String, options: ReplaceOptions
     ) throws -> (count: Int, repaired: Int, collapsedUnrepaired: Int, usedNormalizedFallback: Bool) {
@@ -9005,7 +9043,7 @@ actor WordMCPServer {
         guard count == 0, !options.regex, find.contains(where: isWhitespaceCharacter) else {
             return (count, repaired, collapsedUnrepaired, false)
         }
-        let strippedFind = stripWhitespaceWithMap(find).stripped
+        let strippedFind = stripWhitespace(find)
         guard !strippedFind.isEmpty, strippedFind != find else {
             return (count, repaired, collapsedUnrepaired, false)
         }
@@ -9817,6 +9855,38 @@ actor WordMCPServer {
         return counts.values.max(by: { $0.count < $1.count })?.properties
     }
 
+    /// che-word-mcp#191 (R2 review Finding 2 hardening): builds a
+    /// `RunProperties` carrying ONLY the font-determining fields from
+    /// `donor` — `rFonts` (all 4 axes), the legacy single-axis `fontName`,
+    /// `fontSize` (OOXML `<w:sz>`; ooxml-swift's typed `RunProperties` does
+    /// not model a separate complex-script size field, so `fontSize` is the
+    /// only size axis available to copy), and `lang`. Every other field
+    /// (`bold`, `italic`, `underline`, `strikethrough`, `color`,
+    /// `highlight`, `verticalAlign`, `characterSpacing`, `textEffect`,
+    /// `rStyle`, `kern`, `noProof`, ...) is left at `RunProperties()`'s
+    /// default.
+    ///
+    /// Why this matters: `fallbackCellRunProperties` picks a donor run only
+    /// because it's the *nearest* one that happens to declare a font — nothing
+    /// about that selection says the donor's OTHER formatting is appropriate
+    /// to copy. A form's "*必填" (required) label is routinely bold, red,
+    /// and/or shaded — exactly the kind of donor `fallbackCellRunProperties`
+    /// picks when it's the only formatted run in the row. Without this
+    /// narrowing, the value a caller fills in next to that label would
+    /// silently inherit the label's emphasis too (confirmed against a real
+    /// binary before this fix: a plain paragraph of filled-in text came back
+    /// bold and red) — the exact "text layer is correct, appearance is wrong,
+    /// nobody notices until a human opens the file" failure mode this whole
+    /// issue cluster is about, reintroduced by the fix meant to prevent it.
+    private func fontOnlyProperties(from donor: RunProperties) -> RunProperties {
+        var result = RunProperties()
+        result.rFonts = donor.rFonts
+        result.fontName = donor.fontName
+        result.fontSize = donor.fontSize
+        result.lang = donor.lang
+        return result
+    }
+
     /// che-word-mcp#191: pick a fallback `RunProperties` for a cell that has
     /// no existing run to inherit from — `updateCell`'s own "if the cell
     /// already has a run, reuse its `rPr`" branch (ooxml-swift, unmodified)
@@ -9830,19 +9900,27 @@ actor WordMCPServer {
     /// Returns `nil` when neither search finds anything — the new run then
     /// stays unformatted, matching pre-#191 behaviour rather than fabricating
     /// a font out of nothing.
+    ///
+    /// The result always passes through `fontOnlyProperties` — donor runs
+    /// are searched for by "has a declared font", but what's copied is never
+    /// more than the font itself (R2 review Finding 2; see that function's
+    /// doc comment). Both callers (the top-level `update_cell` path and the
+    /// #188 nested-table path, via `applyCellTextWrite`) get this narrowing
+    /// for free since they both consume this function's return value
+    /// directly.
     private func fallbackCellRunProperties(doc: WordDocument, table: Table, row: Int, excludingCol: Int) -> RunProperties? {
         if row < table.rows.count {
             for (colIndex, cell) in table.rows[row].cells.enumerated() where colIndex != excludingCol {
                 for paragraph in cell.paragraphs {
                     for run in paragraph.runs where !run.text.isEmpty {
                         if hasDeclaredFont(run.properties) {
-                            return run.properties
+                            return fontOnlyProperties(from: run.properties)
                         }
                     }
                 }
             }
         }
-        return dominantDeclaredFontProperties(in: doc)
+        return dominantDeclaredFontProperties(in: doc).map(fontOnlyProperties(from:))
     }
 
     /// The `body.children` index of the `tableIndex`-th top-level `.table`
@@ -9957,6 +10035,25 @@ actor WordMCPServer {
             }
 
             var targetCell = nested.rows[nestedRow].cells[nestedCol]
+            // R2 review Finding 4 / coordinator item 3: this path only
+            // supports ONE level of nesting (`nested_table_index` addresses
+            // a table directly inside the host cell — there is no parameter
+            // to go a level deeper). A target cell that itself contains
+            // another nested table is refused explicitly here, rather than
+            // silently writing text into its paragraph while leaving its own
+            // `nestedTables` untouched-but-now-orphaned-looking and reporting
+            // success — a caller would have no way to tell, from this tool's
+            // response alone, that the cell they just "updated" still has
+            // unaddressed content underneath it. (Separately, per the
+            // coordinator: documents with depth-2+ nesting anywhere can hit
+            // a known ooxml-swift serialization issue on save — tracked
+            // upstream, not specific to this write path — see CHANGELOG.)
+            guard targetCell.nestedTables.isEmpty else {
+                throw WordError.invalidParameter(
+                    "nested_table_index",
+                    "cell table[\(tableIndex)][\(row)][\(col)] > nested table \(nestedTableIndex)[\(nestedRow)][\(nestedCol)] itself contains \(targetCell.nestedTables.count) more nested table(s) — only one level of nesting is supported by nested_table_index/nested_row/nested_col"
+                )
+            }
             let cellHasNoRuns = targetCell.paragraphs.first?.runs.first == nil
             let fallbackProperties = cellHasNoRuns
                 ? fallbackCellRunProperties(doc: doc, table: nested, row: nestedRow, excludingCol: nestedCol)
@@ -14363,19 +14460,14 @@ actor WordMCPServer {
         char.unicodeScalars.allSatisfy { CharacterSet.whitespacesAndNewlines.contains($0) }
     }
 
-    /// #187: `s` with every whitespace character removed, plus a map from
-    /// each surviving character's index in the stripped string back to its
-    /// index in `s`. Used only as a *fallback* when a literal search finds
-    /// nothing — see `searchText`'s doc comment for why the fallback exists
-    /// and what it does and doesn't fix.
-    private func stripWhitespaceWithMap(_ s: String) -> (stripped: String, map: [Int]) {
-        var stripped = ""
-        var map: [Int] = []
-        for (idx, ch) in s.enumerated() where !isWhitespaceCharacter(ch) {
-            map.append(idx)
-            stripped.append(ch)
-        }
-        return (stripped, map)
+    /// #187: `s` with every whitespace character removed. Used only to build
+    /// the *query*/`find` side of a fallback comparison when a literal
+    /// search/replace finds nothing — the fallback compares this stripped
+    /// string against the paragraph's RAW (unstripped) parsed text, never a
+    /// stripped copy of the haystack (R2 review Finding 3 — see
+    /// `searchText`'s doc comment for why that distinction matters).
+    private func stripWhitespace(_ s: String) -> String {
+        String(s.filter { !isWhitespaceCharacter($0) })
     }
 
     /// #188: recursively walks a table's nested tables (`TableCell.
@@ -14415,12 +14507,28 @@ actor WordMCPServer {
     /// verbatim out of the source XML can then find nothing even though the
     /// text is right there in the file. When that happens AND `query`
     /// contains whitespace, this tool retries with whitespace stripped from
-    /// both the query and each paragraph's text, and reports any hits with
-    /// `(normalized match — literal text may differ by whitespace; see tool
-    /// description)`. The literal pass is completely unchanged (same code,
-    /// same output) whenever it finds at least one match — the fallback only
-    /// ever adds results it would otherwise have silently omitted, never
-    /// replaces or reorders existing ones.
+    /// the *query only*, matched against each paragraph's RAW parsed text.
+    /// The literal pass is completely unchanged (same code, same output)
+    /// whenever it finds at least one match — the fallback only ever adds
+    /// results it would otherwise have silently omitted, never replaces or
+    /// reorders existing ones.
+    ///
+    /// **Consistency with `replace_text` (R2 review Finding 3)**: the
+    /// fallback here is deliberately the exact same comparison
+    /// `replace_text`'s own fallback performs (matching a whitespace-
+    /// stripped `find` against the runs' unstripped text via
+    /// `doc.replaceText`) — for the same query/find against the same
+    /// document, the two tools now always agree on whether a normalized
+    /// match exists. An earlier version of this fallback stripped BOTH
+    /// sides (query AND the paragraph's text), which made `search_text`
+    /// report a "normalized match" merely because the query's whitespace
+    /// *amount* differed from the document's — even when the document's own
+    /// whitespace was intact and never lost — while `replace_text`, asked
+    /// the identical question, correctly reported zero matches. Because a
+    /// hit now requires the document's raw parsed text to have NO
+    /// whitespace at all where the query expects some, a "normalized match"
+    /// label is only ever shown when that specific, unambiguous kind of
+    /// difference is present — see the result suffix text below.
     ///
     /// #188: recurses into nested tables (`TableCell.nestedTables`) that a
     /// pre-#188 version of this tool never visited — those cells were
@@ -14456,32 +14564,37 @@ actor WordMCPServer {
             }
         }
 
-        // #187 fallback pass: same paragraph text, whitespace stripped from
-        // both sides, with a map back to original-text character offsets so
-        // the reported position still anchors into the real file.
+        // #187 fallback pass (R2 review Finding 3 hardening): compares the
+        // whitespace-stripped query against the paragraph's RAW (unstripped)
+        // text — NOT a whitespace-stripped copy of the haystack. This is
+        // deliberately the exact same comparison `replace_text`'s fallback
+        // already performs (it calls `doc.replaceText(find: strippedFind,
+        // ...)`, which matches `strippedFind` against the runs' own
+        // unstripped text). Stripping the haystack too, as a pre-R2 version
+        // of this function did, made `search_text` report a "normalized
+        // match" whenever the query's whitespace *count* merely differed
+        // from the document's — even when the document's own whitespace was
+        // never lost at all (e.g. query "否  □是" with a typo'd extra space
+        // against a document that correctly has "否 □是") — while
+        // `replace_text`, asked the identical question, reported zero
+        // matches for the same input. Matching against the raw haystack
+        // means a hit can only occur when the document's parsed text has
+        // NO whitespace at all between the characters the query expects it
+        // between (the literal signature of a whitespace-only run's content
+        // having been dropped during parsing) — the two tools now agree,
+        // for any given query, on whether a normalized match exists.
         func searchInParagraphNormalized(_ para: Paragraph, location: String, strippedQuery: String) {
             let paraText = para.getText()
-            let (strippedText, map) = stripWhitespaceWithMap(paraText)
-            guard !strippedText.isEmpty else { return }
-            let haystack = caseSensitive ? strippedText : strippedText.lowercased()
+            guard !paraText.isEmpty else { return }
+            let haystack = caseSensitive ? paraText : paraText.lowercased()
             let needle = caseSensitive ? strippedQuery : strippedQuery.lowercased()
             guard !needle.isEmpty else { return }
 
             var searchStart = haystack.startIndex
             while let range = haystack.range(of: needle, range: searchStart..<haystack.endIndex) {
-                let strippedStart = haystack.distance(from: haystack.startIndex, to: range.lowerBound)
-                let strippedEnd = haystack.distance(from: haystack.startIndex, to: range.upperBound)
-                guard strippedStart < map.count else { break }
-                let originalStart = map[strippedStart]
-                // Exclusive end: one past the original index of the last
-                // matched (non-whitespace) character, or the paragraph's
-                // full length if the match runs to the end of the text.
-                let originalEndExclusive = (strippedEnd - 1 < map.count) ? map[strippedEnd - 1] + 1 : paraText.count
-                let lo = paraText.index(paraText.startIndex, offsetBy: originalStart)
-                let hi = paraText.index(paraText.startIndex, offsetBy: originalEndExclusive)
-                results.append(SearchResult(
-                    location: location, startPosition: originalStart, text: String(paraText[lo..<hi]), normalized: true
-                ))
+                let position = haystack.distance(from: haystack.startIndex, to: range.lowerBound)
+                let matchedText = String(paraText[range])
+                results.append(SearchResult(location: location, startPosition: position, text: matchedText, normalized: true))
                 searchStart = range.upperBound
             }
         }
@@ -14540,7 +14653,7 @@ actor WordMCPServer {
         // query actually contains whitespace (otherwise stripping changes
         // nothing and re-running would just waste a full document walk).
         if results.isEmpty, query.contains(where: isWhitespaceCharacter) {
-            let strippedQuery = stripWhitespaceWithMap(query).stripped
+            let strippedQuery = stripWhitespace(query)
             if !strippedQuery.isEmpty {
                 paraIndex = 0
                 tableIndex = 0
@@ -14555,7 +14668,7 @@ actor WordMCPServer {
         var output = "Found \(results.count) match(es) for '\(query)':\n"
         for result in results {
             let suffix = result.normalized
-                ? " (normalized match — literal text differs by whitespace; a whitespace-only run may be missing from the parsed text, see search_text's tool description)"
+                ? " (normalized match — the parsed document text has NO whitespace between these characters even though the query does; a whitespace-only run may be missing from the parsed document, see search_text's tool description)"
                 : ""
             output += "- \(result.location), position \(result.startPosition): \"\(result.text)\"\(suffix)\n"
         }
