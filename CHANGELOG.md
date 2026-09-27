@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.7.0] - 2026-09-28
+
+> 多個過去回報成功卻沒有真的寫入的工具（六個格式工具、浮水印三件組、欄位代碼與內容控制的越界索引）改為真的寫入或回 `isError`；JSON-RPC batch 內有請求超過深度上限時整批不執行；`list_images`／`get_document_info` 的輸出多了欄位；字串參數的型別與列舉值改為嚴格驗證（見文末「升級注意」）。依本專案先例 bump minor。
+
 ### Added
 
 - **`replace_text` / `replace_text_batch` 現在說明該用哪個勾選字元**（#189）。把表單的 `□`
