@@ -5018,7 +5018,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "estimate_paragraph_for_page",
-                description: "估算 Word UI 第 N 頁大約落在哪些 get_paragraphs 段落索引。OOXML 不儲存頁面邊界；此工具使用 section page size / margins 與字元數啟發式估計，回傳 JSON、confidence 與 warning（支援 Direct Mode）。",
+                description: "估算 Word UI 第 N 頁大約落在哪些 get_paragraphs 段落索引。OOXML 不儲存頁面邊界；此工具使用 section page size / margins 與字元數啟發式估計（表格／圖片／顯示公式段落另有結構權重，見 #142），回傳 JSON、confidence 與 warning（支援 Direct Mode）。`confidence` 三級＋`confidence_reason`（#143）：`high`／`caller_provided_chars_per_page`＝caller 提供了 chars_per_page；`medium`／`default_heuristic_simple_layout`＝用預設推導、無表格圖片顯示公式、且段落數 >= 10；`low`／`beyond_estimated_document`＝目標頁超出估計總頁數（優先於其他判斷，caller 校準也救不回來）；`low`／`complex_layout_default_heuristic`＝用預設推導但含表格圖片顯示公式；`low`／`short_doc_or_fallback_layout`＝用預設推導、簡單版面但段落數 < 10。`page`／`chars_per_page`／`context_paragraphs` 超出範圍或文件無段落（empty_document）皆回結構化錯誤（isError=true），不會回報成功（#145）。`chars_per_page` 預設推導公式、confidence 各檔案完整說明、`assumed_chars_per_page` 命名取捨（見 `layout_basis` 欄位）、與 raw per-paragraph char breakdown 的 Option A/B 取捨（#147，暫不做，見文件），一律見 docs/estimate-paragraph-for-page.md。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -14356,15 +14356,18 @@ actor WordMCPServer {
             }
         }
 
+        // #145: this used to `return` a `{ "error": "empty_document", ... }`
+        // string as if it were a normal successful result — `isError` was
+        // never set, so a caller that only checks `isError` (rather than
+        // parsing the body as JSON looking for an "error" key) believed the
+        // call had succeeded, and the response shape (missing `confidence_
+        // reason`/`layout_basis`/`page`/`structural_breakdown`/…) diverged
+        // from the happy path with no schema documentation of either fact.
+        // Same class of bug as #238 (`create_numbering_definition`); same
+        // fix — throw, so this funnels through the one error convention
+        // every other rejection in this function already uses.
         guard !bodyParagraphs.isEmpty else {
-            return try Self.renderJSONString([
-                "error": "empty_document",
-                "estimated_paragraph_range": [],
-                "confidence": "low",
-                "method": "char_count_heuristic_v2",
-                "assumed_chars_per_page": charsPerPage,
-                "warning": Self.pageEstimateWarning,
-            ])
+            throw ToolRefusal("estimate_paragraph_for_page: document has no paragraphs to estimate against (empty_document)")
         }
 
         // #142: per-paragraph spans align with bodyParagraphs index, but the
@@ -14431,9 +14434,47 @@ actor WordMCPServer {
 
         let startIndex = max(0, rawStart - contextParagraphs)
         let endIndex = min(bodyParagraphs.count - 1, rawEnd + contextParagraphs)
-        let confidence = (!beyondEstimatedDocument && layoutBasis == "section_properties" && bodyParagraphs.count >= 3)
-            ? "medium"
-            : "low"
+
+        // #143: confidence must reflect actual reliability, not merely
+        // "did the caller skip providing chars_per_page". The pre-fix
+        // branch only ever granted "medium" when layout_basis ==
+        // "section_properties" — a caller who measured their own render
+        // pipeline and passed chars_per_page could never score above
+        // "low", which is a semantic inversion (caller calibration is MORE
+        // trustworthy than the server's own guess, not less). Ordering
+        // below is significant and each branch is mutually exclusive:
+        //   1. Extrapolating past the estimated document is unreliable no
+        //      matter how chars_per_page was obtained — this must outrank
+        //      caller calibration, not lose to it.
+        //   2. Caller-provided chars_per_page is the most reliable
+        //      remaining case.
+        //   3. Complex layout (tables / images / display equations) under
+        //      the DEFAULT heuristic is the least reliable remaining case —
+        //      these are exactly the structural weights (#142) that are the
+        //      roughest approximations (fixed per-row/per-drawing/per-
+        //      equation constants, not measured from the actual document).
+        //   4. A longer simple-layout document under the default heuristic
+        //      gets more confidence than a short one, because char-count
+        //      noise has more paragraphs to average out over.
+        let hasComplexLayout = tablesCounted > 0 || imageOnlyCount > 0 || displayEqCount > 0
+        let confidence: String
+        let confidenceReason: String
+        if beyondEstimatedDocument {
+            confidence = "low"
+            confidenceReason = "beyond_estimated_document"
+        } else if layoutBasis == "caller_chars_per_page" {
+            confidence = "high"
+            confidenceReason = "caller_provided_chars_per_page"
+        } else if hasComplexLayout {
+            confidence = "low"
+            confidenceReason = "complex_layout_default_heuristic"
+        } else if bodyParagraphs.count >= 10 {
+            confidence = "medium"
+            confidenceReason = "default_heuristic_simple_layout"
+        } else {
+            confidence = "low"
+            confidenceReason = "short_doc_or_fallback_layout"
+        }
 
         // #142 structural_breakdown: per-block-type tally so callers can see
         // what the heuristic counted.
@@ -14453,6 +14494,7 @@ actor WordMCPServer {
             "estimated_paragraph_range": [startIndex, endIndex],
             "raw_estimated_paragraph_range": [rawStart, rawEnd],
             "confidence": confidence,
+            "confidence_reason": confidenceReason,
             "method": "char_count_heuristic_v2",
             "layout_basis": layoutBasis,
             "page": page,

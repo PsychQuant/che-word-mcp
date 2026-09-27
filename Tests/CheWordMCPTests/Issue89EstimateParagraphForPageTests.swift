@@ -36,6 +36,11 @@ final class Issue89EstimateParagraphForPageTests: XCTestCase {
         XCTAssertEqual(json["estimated_total_pages"] as? Int, 4)
         XCTAssertEqual(json["requested_page_beyond_estimated_document"] as? Bool, false)
         XCTAssertTrue((json["warning"] as? String ?? "").contains("OOXML does not store page boundaries"))
+        // #143: caller-provided calibration must NOT score below the default
+        // heuristic — it is strictly more trustworthy than a guess derived
+        // from section page size, so it must be "high", never "low"/"medium".
+        XCTAssertEqual(json["confidence"] as? String, "high")
+        XCTAssertEqual(json["confidence_reason"] as? String, "caller_provided_chars_per_page")
     }
 
     func testEstimateParagraphForPageMarksBeyondEstimatedDocument() async throws {
@@ -56,7 +61,13 @@ final class Issue89EstimateParagraphForPageTests: XCTestCase {
         let json = try jsonObject(from: textOf(result))
         XCTAssertEqual(intArray(json["estimated_paragraph_range"]), [11, 11])
         XCTAssertEqual(json["requested_page_beyond_estimated_document"] as? Bool, true)
+        // #143: extrapolating past the estimated document stays "low" even
+        // though `chars_per_page` here is caller-provided — "beyond the
+        // document" must outrank "caller calibrated" in the confidence
+        // ordering, because no calibration source makes an extrapolation
+        // trustworthy.
         XCTAssertEqual(json["confidence"] as? String, "low")
+        XCTAssertEqual(json["confidence_reason"] as? String, "beyond_estimated_document")
     }
 
     func testEstimateParagraphForPageRejectsInvalidPageAndCalibration() async throws {
