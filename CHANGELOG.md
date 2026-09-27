@@ -24,14 +24,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 升級注意
 - `insert_equation` 同時給 `components` 與 `latex`、其中一個型別不對時（例如 `components` 給了陣列、`latex` 給了合法字串），過去會**靜默丟棄型別錯的那一邊、用另一邊的值成功插入**（不報任何錯誤，呼叫端可能以為送出的 `components`生效了，其實根本沒被使用）；現在一律回衝突錯誤（「pass either 'components' OR 'latex', not both」），不會再靜默丟棄任一邊、也不會再回報成功。只有其中一邊是合法值、另一邊完全沒給（或給的是 JSON `null`）的呼叫不受影響。
 - **`list_comments`／`find_unresolved_comments`／`find_inline_math_gaps` 加上輸出筆數上限，不再靜默截斷**（#131）。三個工具原本沒有任何筆數上限：文件裡有幾百則註解，或掃描出上萬筆疑似遺失符號的 gap，就會回傳等比例大小的單次 JSON。現在都加上 `limit`（`list_comments`／`find_unresolved_comments` 預設 200、上限 2000；`find_inline_math_gaps` 預設 500、上限 5000）與 `offset` 兩個選用參數，JSON 輸出改包成 `{"total", "offset", "returned", "truncated", "comments"/"gaps": [...]}`，明講總筆數與本次回傳範圍，不再讓呼叫端自己猜有沒有被截斷。`limit` 傳 0 或負數會直接回錯誤。每筆 `flattened_text` 另加 `summarize`（預設 `false`，維持完整文字），依既有的截斷政策（#178）超過 5000 字才省略成頭尾各 30 字。
-- **`bulk_resolve_comments` 對重複 ID 不再重複計數，一次呼叫也加上筆數上限**（#132）。`comment_ids: [5, 5, 5]` 過去會回 `{"resolved":3}`，實際上只解決了一則註解；現在去重後只算一次。單次最多接受 1000 筆 ID，超過會整次回 `isError`（不會只處理前 1000 筆再假裝成功）。查找方式也從線性掃描改成雜湊表，大文件加大量 ID 的呼叫不再卡住。
+- **`bulk_resolve_comments` 對重複 ID 不再重複計數，一次呼叫也加上筆數上限**（#132）。`comment_ids: [5, 5, 5]` 過去會回 `{"resolved":3}`，實際上只解決了一則註解；現在去重後只算一次。上限是對**去重後**的不重複 ID 數量檢查（最多 1000 筆）：帶 1001 個不同的 ID 會整次回 `isError`，但帶 1001 個重複的同一個 ID（去重後只有 1 筆）仍會成功。查找方式也從線性掃描改成雜湊表，大文件加大量 ID 的呼叫不再卡住。
 - **`add_comment_reply`／`reply_to_comment` 現在都接受 `comment_id` 與 `parent_comment_id` 兩個別名，且至少要給一個**（#133）。過去兩邊 schema 不對稱：`add_comment_reply` 只列 `comment_id`、`reply_to_comment` 只列 `parent_comment_id`，實際上 handler 兩個別名都收；現在兩邊 schema 都列出兩個別名，並要求至少提供其中一個，嚴格驗證 schema 的呼叫端才不會被擋在門外。
 - **批次解決或回覆註解後，Word 有機會忽略剛寫入的已解決／回覆狀態的問題已修正**（#134）。文件原本沒有任何已解決或回覆過的註解時，第一次呼叫 `bulk_resolve_comments`／`add_comment_reply`／`resolve_comment` 會寫出 `word/commentsExtended.xml`，但沒有同步在 `[Content_Types].xml`／`word/_rels/document.xml.rels` 宣告這個部件——Word 開啟文件時會忽略沒被宣告的部件，剛標記的已解決／回覆狀態因此可能不會顯示。現在三個工具都會在文件第一次出現已解決／回覆狀態時，同步宣告這兩處。
 - **`list_comments`／`find_unresolved_comments` 統一了回覆（reply）的顯示規則，並補上 `parent_id` 欄位**（#135）。過去 `list_comments` 在 `include_context: true` 時會連 reply 一起列出（reply 的 anchor 相關欄位全部是 `null`，卻沒有任何欄位說明「這是一則 reply」），`find_unresolved_comments` 則一律排除 reply——兩個工具行為不一致。現在兩者預設都只列 thread root，加上 `include_replies: true` 才會列出 reply；每筆註解（不論是不是 reply）都多一個 `parent_id` 欄位，thread root 固定是 `null`。
 - **`add_comment_reply`／`reply_to_comment` 拒絕「回覆一則回覆」與「把一則回覆標記為已解決」**（#137）。Word 的註解討論串只有一層：一則回覆不能再有自己的回覆，`commentsExtended.xml` 也只能記錄一個直接上層。過去這兩個工具沒檢查，允許對一則 reply 呼叫，寫入的巢狀關係存進文件後 Word 的顯示會跟實際請求不一致。現在對 reply 呼叫這兩個工具（無論是否帶 `resolve: true`）一律回 `isError`，並具名說明要回覆／解決的是 thread root，不是這則 reply。
 - `list_comments`（`include_context: true` 時）／`find_unresolved_comments`／`find_inline_math_gaps` 的 JSON 輸出，本版起一律包成 `{"total", "offset", "returned", "truncated", "comments"/"gaps": [...]}`，不再是裸陣列；純文字模式的 `list_comments`（`include_context` 省略或為 `false`）文字內容不變，只在超過 `limit` 時多一行「還有幾筆沒顯示」的提示。
+### 升級注意
+- `list_comments`（`include_context: true` 時）／`find_unresolved_comments`／`find_inline_math_gaps` 的 JSON 輸出，本版起一律包成 `{"total", "offset", "returned", "truncated", "comments"/"gaps": [...]}`，不再是裸陣列。
+- 純文字模式的 `list_comments`（`include_context` 省略或為 `false`）：一旦 `offset`／`limit` 造成只顯示部分結果，標頭本身會從 `"Comments (N):"` 變成 `"Comments (total N, showing A-B):"`，並在最後多一行「還有幾筆沒顯示」的提示；`offset` 超過總筆數時改印一行明講「offset 超出範圍、共 N 筆、本次 0 筆」，不會再印出容易誤讀成「有結果」的 `showing 0-N`。未觸發分頁的一般呼叫，文字內容不變。
 - `list_comments`／`find_unresolved_comments`（JSON 模式）預設不再列出 reply（回覆），需傳 `include_replies: true` 才會列出；`list_comments` 過去在 `include_context: true` 時會連 reply 一起列出，本版起預設排除。
-- `bulk_resolve_comments` 的 `comment_ids` 帶超過 1000 筆時，本版起整次呼叫回 `isError`；過去沒有上限，會全部處理。
+- `bulk_resolve_comments` 的 `comment_ids` 去重後超過 1000 筆不重複 ID 時，本版起整次呼叫回 `isError`；過去沒有上限，會全部處理。
 - `add_comment_reply`／`reply_to_comment` 對「已經是 reply 的 comment_id」呼叫，本版起一律回 `isError`（不論是否帶 `resolve: true`）；過去會成功寫入巢狀 reply。
 
 ## [4.5.0] - 2026-09-27
