@@ -11914,9 +11914,17 @@ actor WordMCPServer {
         // the same id — which resolve exactly one comment — were rejected
         // outright even though the actual work is trivial. Issue #132's own
         // Strategy dedupes first and only then checks `uniqueIds.count`;
-        // the cap now applies there instead (see below, after the dedup
-        // loop), so it bounds real work, not array literal length.
+        // the cap now applies inside the dedup loop below, so it bounds real
+        // work, not array literal length.
         let maxBulkResolveIds = 1000
+        // The unique-id cap bounds the resolving work, but the raw array needs
+        // a ceiling too: each wrong-typed element adds a line to `failed`, so
+        // an unbounded array produced an unbounded response. 100 times the
+        // unique cap leaves room for any realistic amount of duplication.
+        let maxBulkResolveRawElements = 100_000
+        guard ids.count <= maxBulkResolveRawElements else {
+            throw WordError.invalidParameter("comment_ids", "陣列最多 \(maxBulkResolveRawElements) 個元素（含重複），收到 \(ids.count) 個")
+        }
 
         var failed: [String] = []
         // #132: dedupe by parsed id before touching the document — `[5, 5, 5]`
@@ -11951,17 +11959,12 @@ actor WordMCPServer {
             }
             if seenIds.insert(id).inserted {
                 uniqueIds.append(id)
+                // Refuse as soon as the cap is crossed; the rest of the array
+                // cannot change the outcome.
+                guard uniqueIds.count <= maxBulkResolveIds else {
+                    throw WordError.invalidParameter("comment_ids", "去重後不重複的 ID 超過 \(maxBulkResolveIds) 筆（在第 \(index) 個元素處超過上限）")
+                }
             }
-        }
-
-        // R2 fix (review finding 2 / DEFECT-B): checked here, against the
-        // deduped count, not against `ids.count` above — matches issue
-        // #132's own Strategy (`let uniqueIds = Array(Set(...))` THEN
-        // `guard uniqueIds.count <= MAX_BULK`). `[<id>, <id>, ...]` repeated
-        // 1001+ times is exactly one id's worth of real work and SHALL NOT
-        // be refused; 1001+ genuinely distinct ids SHALL be.
-        guard uniqueIds.count <= maxBulkResolveIds else {
-            throw WordError.invalidParameter("comment_ids", "去重後最多一次處理 \(maxBulkResolveIds) 筆，收到 \(uniqueIds.count) 筆不重複的 ID")
         }
 
         // #132: O(M+N) — one pass over the document builds an id→index map,
