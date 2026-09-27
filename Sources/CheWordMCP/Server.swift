@@ -707,6 +707,28 @@ actor WordMCPServer {
         }
     }
 
+    /// #129 — formats a JSON value for inclusion in an argument-validation
+    /// error message so a caller can see exactly what it sent, instead of
+    /// having to guess from just the parameter name and the expected type.
+    /// English labels (unlike `jsonTypeName` above) to match the English
+    /// wording of the `insert_equation` messages this currently backs;
+    /// truncates strings so a large sentinel value cannot inflate the
+    /// message.
+    static func formatReceivedValue(_ value: Value, max: Int = 80) -> String {
+        switch value {
+        case .string(let s):
+            let truncated = s.count > max ? String(s.prefix(max)) + "..." : s
+            return "\"\(truncated)\""
+        case .int(let i): return "\(i)"
+        case .double(let d): return "\(d)"
+        case .bool(let b): return "\(b)"
+        case .null: return "null"
+        case .data: return "<binary data>"
+        case .array(let a): return "<array of \(a.count)>"
+        case .object: return "<object>"
+        }
+    }
+
     /// One emitted log event. `event` is the dotted name (e.g. `storeDocument.entry`),
     /// `keyValues` is the structured payload.
     struct DebugLogEvent: Sendable, Equatable {
@@ -10740,12 +10762,28 @@ actor WordMCPServer {
         // which produces broken plain-text OOXML — see Insert step below for
         // full rationale. Path origin is preserved in error messages but the
         // insertion mechanic is unified.
-        if args["components"] != nil && args["latex"] != nil {
-            throw ToolRefusal("insert_equation: pass either 'components' (JSON tree) OR 'latex' (LaTeX subset), not both")
+        // #122 / #125: presence is type-filtered (`.objectValue` / `.stringValue`),
+        // not `!= nil` key-existence, matching the `anchorPresence` convention
+        // (`Self.anchorPresence`, near the top of this file). A caller sending
+        // `{components: {...}, latex: null}` — some JSON-RPC clients populate
+        // every schema field, `null` for the ones they left blank — has not
+        // actually passed "both"; the old key-existence check rejected them
+        // anyway with a message that named a conflict they never created.
+        // `latex: null` / `components: null` now behave like an absent key on
+        // both sides of this check, matching the `display_mode: null` ≡
+        // absent decision already shipped for #232 R1. (#122 was filed under
+        // a title copied from a different issue in this batch — its actual
+        // body is this exact problem, and it is the same fix as #125's
+        // `latex` half; both are closed by this change.)
+        let componentsPresent = args["components"]?.objectValue != nil
+        let latexPresent = args["latex"]?.stringValue != nil
+        if componentsPresent && latexPresent,
+           let componentsValue = args["components"], let latexValue = args["latex"] {
+            throw ToolRefusal("insert_equation: pass either 'components' (JSON tree) OR 'latex' (LaTeX subset), not both (received components: \(WordMCPServer.formatReceivedValue(componentsValue)), latex: \(WordMCPServer.formatReceivedValue(latexValue)))")
         }
 
         let components: [MathComponent]
-        if let componentsValue = args["components"] {
+        if componentsPresent, let componentsValue = args["components"] {
             do {
                 components = [try parseMathComponent(from: componentsValue)]
             } catch MathParseError.unknownType(let t) {
@@ -10755,7 +10793,7 @@ actor WordMCPServer {
             } catch MathParseError.invalidStructure(let msg) {
                 throw ToolRefusal("insert_equation: invalid components structure: \(msg)")
             }
-        } else if let latex = args["latex"]?.stringValue {
+        } else if latexPresent, let latex = args["latex"]?.stringValue {
             do {
                 components = try parseLatex(latex)
             } catch LaTeXParseError.unrecognizedToken(let tok) {
@@ -10772,13 +10810,17 @@ actor WordMCPServer {
         // Not folded into `optionalBool` (#232): Issue98InsertEquationLibBypassTests
         // pins an error message that names both "display_mode" and (English)
         // "boolean" — `optionalBool`'s message is in Chinese, matching this
-        // file's other invalidParameter messages, and changing the pinned
-        // wording is out of scope here. Same "present-but-mistyped errors"
-        // contract either way.
+        // file's other invalidParameter messages, and changing that core
+        // wording is still out of scope here. #129 only appends the
+        // *received* value as a parenthetical suffix: the pinned test only
+        // asserts `.contains("display_mode")` and `.contains("boolean")`
+        // case-insensitively, so text appended after the pinned sentence
+        // does not break it. Same "present-but-mistyped errors" contract
+        // either way.
         let displayMode: Bool
         if let displayModeValue = args["display_mode"], displayModeValue != .null {
             guard let bool = displayModeValue.boolValue else {
-                throw ToolRefusal("insert_equation: display_mode must be a boolean true/false, not a string or other JSON type")
+                throw ToolRefusal("insert_equation: display_mode must be a boolean true/false, not a string or other JSON type (received \(WordMCPServer.formatReceivedValue(displayModeValue)))")
             }
             displayMode = bool
         } else {
