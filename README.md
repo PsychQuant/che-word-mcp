@@ -31,7 +31,7 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 - **Save Durability Stack (v3.5.3+)**: atomic-rename save ([#36](https://github.com/PsychQuant/che-word-mcp/issues/36)), actor-based concurrency safety ([#39](https://github.com/PsychQuant/che-word-mcp/issues/39)), `keep_bak` opt-in rollback ([#38](https://github.com/PsychQuant/che-word-mcp/issues/38)), `autosave_every` Design B pre-mutation snapshot with explicit `recover_from_autosave` ([#37](https://github.com/PsychQuant/che-word-mcp/issues/37), [#40](https://github.com/PsychQuant/che-word-mcp/issues/40) v3.7.0). Default `autosave_every: 1` (every mutation snapshots prior state). Pass `autosave_every: 0` to opt out.
 - **Dual-Mode Access**: Direct Mode (read-only, one step via `source_path`) and Session Mode (full lifecycle via `doc_id`)
 - **True Byte-preservation Round-trip Fidelity (v3.5.0+)**: `save_document` overlay mode uses `WordDocument.modifiedParts` dirty tracking — untouched typed parts (`document.xml`, `styles.xml`, `fontTable.xml`, `header*.xml`, `footer*.xml`, `comments.xml`, `footnotes.xml`, `endnotes.xml`) and unknown parts (`theme/`, `webSettings.xml`, `people.xml`, `commentsExtended/Extensible/Ids`, `glossary/`, `customXml/`) byte-for-byte preserved. NTPU thesis no-op `save_document` round-trip retains 13 fontTable entries + 6 distinct headers + 4 footers + three-segment PAGE field + `<w15:presenceInfo>` identity.
-- **Theme + Header/Footer CRUD + Watermark read (v3.3.0+)**: `word/theme/theme1.xml` editing, header/footer enumeration + deletion, watermark VML detection (`list_watermarks` / `get_watermark`). Watermark write-side tools (`insert_watermark` / `insert_image_watermark` / `remove_watermark`) are not implemented — they throw `isError` instead of claiming success ([#201](https://github.com/PsychQuant/che-word-mcp/issues/201); tracked for real implementation at [#208](https://github.com/PsychQuant/che-word-mcp/issues/208)). NTPU thesis Chinese font fix path: `update_theme_fonts({ minor: { ea: "DFKai-SB" } })`.
+- **Theme + Header/Footer CRUD + Watermark read/write (v3.3.0+, write-side [#208](https://github.com/PsychQuant/che-word-mcp/issues/208))**: `word/theme/theme1.xml` editing, header/footer enumeration + deletion, watermark VML detection (`list_watermarks` / `get_watermark` — recognises both the `PowerPlusWaterMarkObject` text fingerprint and Word's own `WordPictureWatermark` image fingerprint, [#209](https://github.com/PsychQuant/che-word-mcp/issues/209)) and real writes (`insert_watermark` / `insert_image_watermark` / `remove_watermark` — VML `<w:pict>` shapes into every header part; image watermarks need a document opened from an existing `.docx`). NTPU thesis Chinese font fix path: `update_theme_fonts({ minor: { ea: "DFKai-SB" } })`.
 - **Comment Threads + People + Notes Update + Web Settings (v3.4.0+)**: 13 tools for collaborative comment metadata, `people.xml` author records (dual identity: GUID + legacy author), in-place endnote/footnote editing (preserves IDs), `webSettings.xml` configuration.
 - **Full LaTeX Subset for `insert_equation` (v3.2.0+)**: Delegated to [`latex-math-swift`](https://github.com/PsychQuant/latex-math-swift). Supports `\frac`, `\sqrt`, `\hat`/`\bar`/`\tilde` accents, `\left/\right` delimiters, `\sum`/`\int`/`\prod` n-ary with bounds, function names, limits, `\text{}`, all Greek letters (including `\varepsilon` variants), and common operators.
 - **Text-Anchor Insertion**: Insert captions / images relative to matched text (`after_text` / `before_text`), no pre-search call required
@@ -453,7 +453,7 @@ Read + delete tools (8, **v3.3.0+**, closes #26 #27):
 | `list_headers` | Enumerate header parts with type (default/first/even) + section_id + has_watermark |
 | `get_header` | Read text + full XML + watermark structure |
 | `delete_header` | Remove typed model entry + tempDir file + Relationship + Content_Types Override |
-| `list_watermarks` | Scan all headers for VML `PowerPlusWaterMarkObject` shapes (text or image) |
+| `list_watermarks` | Scan all headers for VML watermark shapes — text (`PowerPlusWaterMarkObject`) or image (`WordPictureWatermark`, [#209](https://github.com/PsychQuant/che-word-mcp/issues/209)) |
 | `get_watermark` | Single-header watermark detail (returns `null` if no watermark) |
 | `list_footers` | Enumerate footer parts with type + section_id + has_page_number |
 | `get_footer` | Read text + XML + parsed field structure (PAGE / NUMPAGES / REF / STYLEREF) |
@@ -481,11 +481,11 @@ Even/odd + section linkage (4, **v3.11.0**):
 | Tool | Description |
 |------|-------------|
 | `insert_image` | Insert inline image (PNG, JPEG) |
-| `insert_image_from_path` | **v2.0.0+** — width/height optional (auto-aspect via `ImageDimensions.detect`), supports `into_table_cell` + `after_text` / `before_text` anchors |
-| `insert_floating_image` | Insert floating image with text wrap |
+| `insert_image_from_path` | **v2.0.0+** — width/height optional (auto-aspect via `ImageDimensions.detect`), supports `into_table_cell` + `after_text` / `before_text` anchors. PNG/JPEG, and PDF (rasterizes the `page`-th page via native PDFKit/CoreGraphics, [#16](https://github.com/PsychQuant/che-word-mcp/issues/16)) |
+| `insert_floating_image` | Insert floating image with text wrap; `relative_to_h` / `relative_to_v` set the anchor's reference point ([#233](https://github.com/PsychQuant/che-word-mcp/issues/233)) |
 | `update_image` | Update image properties |
 | `delete_image` | Delete image |
-| `list_images` | List all images |
+| `list_images` | List images — document body + header/footer, each flagged `referenced: yes/orphan/unknown` against the same package scan `save_document`'s consistency gate uses ([#199](https://github.com/PsychQuant/che-word-mcp/issues/199), [#219](https://github.com/PsychQuant/che-word-mcp/issues/219)) |
 | `set_image_style` | Set image border and effects |
 
 ### Captions (5 tools)
