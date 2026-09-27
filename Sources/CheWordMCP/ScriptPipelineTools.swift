@@ -55,6 +55,21 @@ struct ParagraphsOnlyExportSummary: Sendable {
     let slotCount: Int
 }
 
+/// Summary of an oplog-sourced export (#169 — parity with the CLI's
+/// `--from-oplog`). A different shape again, for the same reason
+/// `ParagraphsOnlyExportSummary` is: this script comes from the sidecar's
+/// recorded edit HISTORY, not from `ReverseExtractor` analyzing the current
+/// docx bytes, so it has no `dslParts` / `formGapsEmpty` (those are
+/// part-level channel classifications the reverse extraction computes —
+/// meaningless for a log nobody derived from the package's XML) — `opCount`
+/// is this path's own evidence of what was exported.
+struct ScriptExportFromOplogSummary: Sendable {
+    /// Number of entries in the sidecar's operation log.
+    let opCount: Int
+    /// Number of slot designations baked into the exported script.
+    let slotCount: Int
+}
+
 struct ScriptCoverageReport: Sendable {
     let parts: [ScriptCoverageRow]
     let aggregateRatio: Double
@@ -94,6 +109,33 @@ struct ParagraphsOnlySidecarConflict: LocalizedError {
             + "macdoc word reverse 在這種情況會改匯出 sidecar 的操作紀錄、忽略 --paragraphs-only；"
             + "export_script 不讀 sidecar，產不出同一份腳本，所以拒絕 paragraphs_only。"
             + "要段落腳本請先移開 sidecar；要 sidecar 的腳本請改用 macdoc word reverse。"
+    }
+}
+
+/// `from_oplog: true` was given but no oplog sidecar sits next to the
+/// source (#169). Strict, matching the CLI's `--from-oplog`: this is an
+/// explicit opt-in, so a caller who asked for the sidecar-sourced script
+/// never silently gets a reverse-extracted one instead — it is refused,
+/// loudly, naming the exact path that was missing.
+struct OplogSidecarMissing: LocalizedError {
+    let sidecarPath: String
+
+    var errorDescription: String? {
+        "from_oplog: true，但來源檔旁沒有 oplog sidecar（找過 \(sidecarPath)，含 legacy <stem>.oplog.jsonl 命名）。"
+            + "export_script 不會在缺少 sidecar 時悄悄改用一般的反向擷取——要嘛先產生 sidecar（透過會寫入操作紀錄的編輯流程），要嘛移除 from_oplog。"
+    }
+}
+
+/// `from_oplog: true` and `paragraphs_only: true` were both given (#169).
+/// The two paths disagree about what a sidecar means: paragraphs-only
+/// REFUSES when one exists (`ParagraphsOnlySidecarConflict` — it cannot
+/// reproduce what the CLI would export instead), while from_oplog REQUIRES
+/// one. Letting one silently win would replicate exactly the kind of
+/// silent-precedence bug this repo keeps having to remove.
+struct FromOplogParagraphsOnlyConflict: LocalizedError {
+    var errorDescription: String? {
+        "from_oplog 與 paragraphs_only 不能同時為 true：兩者對「旁邊有 sidecar 時該怎麼做」的立場互斥"
+            + "（paragraphs_only 遇到 sidecar 會拒絕，from_oplog 則要求一定要有）。請只選一個。"
     }
 }
 
@@ -207,6 +249,35 @@ func scriptPipelineExportParagraphsOnly(
         slotCount: slots.count)
 }
 
+/// docx → full-fidelity `.mdocx.swift`, sourced from an oplog SIDECAR's
+/// recorded edit history (#169 — parity with `macdoc word reverse
+/// --from-oplog`). Unlike `scriptPipelineExport`, this never calls
+/// `ReverseExtractor.reverse` — the script comes straight from the log
+/// `SidecarStore.loadLog` returns, the same call the CLI's oplog branch
+/// makes. Strict, explicit opt-in: no sidecar → `OplogSidecarMissing`, never
+/// a silent fallback to the reverse-extracted script (that fallback is what
+/// the CLI's DEFAULT, no-flag path does; `from_oplog` does not replicate it,
+/// per the issue's own framing — the CLI's silent default preference is a
+/// separate, already-shipped behavior this tool does not need to copy to
+/// close the parity gap #169 names).
+func scriptPipelineExportFromOplog(
+    sourcePath: String,
+    outputPath: String,
+    slots: [SlotDesignation] = []
+) throws -> ScriptExportFromOplogSummary {
+    let sourceURL = URL(fileURLWithPath: sourcePath)
+    guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+        throw ScriptPipelineError.fileNotFound(sourcePath)
+    }
+    guard let log = try SidecarStore.loadLog(alongside: sourceURL) else {
+        throw OplogSidecarMissing(sidecarPath: SidecarStore.oplogURL(for: sourceURL).path)
+    }
+    let source = try ScriptExporter.exportSwift(log: log, slots: slots)
+    try source.write(to: URL(fileURLWithPath: outputPath),
+                     atomically: true, encoding: .utf8)
+    return ScriptExportFromOplogSummary(opCount: log.entries.count, slotCount: slots.count)
+}
+
 /// The `omitted_body_blocks` label the MCP response has carried since #227:
 /// the `BodyChild` case name. Kept byte-for-byte so existing clients see no
 /// change now that the reason comes from a closed enum. No `default`: a new
@@ -268,6 +339,37 @@ extension WordMCPServer {
                     "paragraphs_only", "必須是布林值（收到非布林型別）")
             }
             paragraphsOnly = flag
+        }
+        // #169: same strict typing — present-but-mistyped errors, explicit
+        // null counts as absent.
+        var fromOplog = false
+        if let rawFlag = args["from_oplog"], rawFlag != .null {
+            guard let flag = rawFlag.boolValue else {
+                throw WordError.invalidParameter(
+                    "from_oplog", "必須是布林值（收到非布林型別）")
+            }
+            fromOplog = flag
+        }
+        guard !(fromOplog && paragraphsOnly) else {
+            throw FromOplogParagraphsOnlyConflict()
+        }
+
+        if fromOplog {
+            let summary = try Self.mappingTranscodeErrors {
+                try scriptPipelineExportFromOplog(
+                    sourcePath: sourcePath, outputPath: outputPath, slots: slots)
+            }
+            // A separate response shape on purpose, matching the
+            // paragraphs_only precedent above: no dsl_parts / form_gaps_empty
+            // (those are ReverseExtractor's part-level channel classification
+            // — this script never went through that path), op_count is this
+            // path's own evidence of what was exported.
+            return try scriptPipelineJSON([
+                "from_oplog": true,
+                "op_count": summary.opCount,
+                "slot_count": summary.slotCount,
+                "output_path": outputPath,
+            ])
         }
 
         if paragraphsOnly {
