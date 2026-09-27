@@ -3714,7 +3714,7 @@ actor WordMCPServer {
             // 8.2 浮動圖片
             Tool(
                 name: "insert_floating_image",
-                description: "插入浮動圖片（可設定位置和文繞方式）",
+                description: "插入浮動圖片（可設定位置和文繞方式）。#233：schema 與 handler 曾經不一致——handler 只讀 path，從不讀 base64／file_name（schema 卻宣告後者必填，完全照 schema 呼叫必然收到 Missing required parameter: path）；現以 handler 實際行為為準，schema 改宣告 path",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -3722,13 +3722,9 @@ actor WordMCPServer {
                             "type": .string("string"),
                             "description": .string("文件識別碼")
                         ]),
-                        "base64": .object([
+                        "path": .object([
                             "type": .string("string"),
-                            "description": .string("圖片的 Base64 編碼資料")
-                        ]),
-                        "file_name": .object([
-                            "type": .string("string"),
-                            "description": .string("圖片檔名（包含副檔名）")
+                            "description": .string("圖片檔案的完整路徑")
                         ]),
                         "width": .object([
                             "type": .string("integer"),
@@ -3782,14 +3778,14 @@ actor WordMCPServer {
                         ]),
                         "relative_to_h": .object([
                             "type": .string("string"),
-                            "description": .string("水平相對於：margin, page, column, character")
+                            "description": .string("水平相對於：margin, page, column（預設）, character, leftMargin, rightMargin, insideMargin, outsideMargin。#233：先前 handler 讀的是 schema 沒宣告的 horizontal_relative，這個參數從未被讀取；現已接線，非法值回 invalidParameter。仍接受 horizontal_relative 作為相容別名")
                         ]),
                         "relative_to_v": .object([
                             "type": .string("string"),
-                            "description": .string("垂直相對於：margin, page, paragraph, line")
+                            "description": .string("垂直相對於：margin, page, paragraph（預設）, line, topMargin, bottomMargin, insideMargin, outsideMargin。#233：先前完全沒有對應的讀取邏輯，垂直參照點永遠是預設值；現已接線，非法值回 invalidParameter")
                         ])
                     ]),
-                    "required": .array([.string("doc_id"), .string("base64"), .string("file_name"), .string("width"), .string("height")])
+                    "required": .array([.string("doc_id"), .string("path"), .string("width"), .string("height")])
                 ])
             ),
 
@@ -12527,7 +12523,38 @@ actor WordMCPServer {
                 "必須是 \(allowedWrapTypes.joined(separator: "/")) 之一（不分大小寫），不接受 '\(wrapTypeRaw ?? "")'"
             )
         }
-        let horizontalRelative = args["horizontal_relative"]?.stringValue ?? "column"
+        // #233: the schema declares `relative_to_h`/`relative_to_v`; the
+        // handler used to read only the undocumented `horizontal_relative`
+        // (kept here as a compat fallback for anyone who discovered it by
+        // reading source, since it was never in the schema for a caller to
+        // rely on per-contract) and never read `relative_to_v` at all — the
+        // vertical reference point was always the AnchorPosition default
+        // (`.paragraph`), silently ignoring whatever the caller sent. An
+        // invalid value now fails loudly naming the parameter, rather than
+        // being swallowed by the previous `if let hrel = ... { }` (no `else`)
+        // that just left the default in place.
+        let relativeToHRaw = try Self.optionalStrictString(args, "relative_to_h")
+            ?? args["horizontal_relative"]?.stringValue
+        var horizontalRelativeFrom: HorizontalRelativeFrom = .column
+        if let raw = relativeToHRaw {
+            guard let hrel = HorizontalRelativeFrom(rawValue: raw) else {
+                throw WordError.invalidParameter(
+                    "relative_to_h",
+                    "必須是合法的參照點 margin/page/column/character/leftMargin/rightMargin/insideMargin/outsideMargin，不接受 '\(raw)'"
+                )
+            }
+            horizontalRelativeFrom = hrel
+        }
+        var verticalRelativeFrom: VerticalRelativeFrom = .paragraph
+        if let raw = try Self.optionalStrictString(args, "relative_to_v") {
+            guard let vrel = VerticalRelativeFrom(rawValue: raw) else {
+                throw WordError.invalidParameter(
+                    "relative_to_v",
+                    "必須是合法的參照點 margin/page/paragraph/line/topMargin/bottomMargin/insideMargin/outsideMargin，不接受 '\(raw)'"
+                )
+            }
+            verticalRelativeFrom = vrel
+        }
         let allowOverlap = try optionalBool(args, "allow_overlap") ?? true
 
         // 讀取圖片數據
@@ -12565,11 +12592,8 @@ actor WordMCPServer {
             anchorPosition.verticalOffset = verticalOffset ?? 0
         }
         anchorPosition.allowOverlap = allowOverlap
-
-        // 設定水平參照點
-        if let hrel = HorizontalRelativeFrom(rawValue: horizontalRelative) {
-            anchorPosition.horizontalRelativeFrom = hrel
-        }
+        anchorPosition.horizontalRelativeFrom = horizontalRelativeFrom
+        anchorPosition.verticalRelativeFrom = verticalRelativeFrom
 
         // 設定文繞圖類型
         switch wrapTypeStr.lowercased() {
