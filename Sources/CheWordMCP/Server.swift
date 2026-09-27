@@ -1504,7 +1504,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "get_document_info",
-                description: "取得文件資訊（段落數、字數等）（支援 Direct Mode）",
+                description: "取得文件資訊（段落數、字數、圖片等）。Images 欄位以 PackageInspector 的 body/header/footer 引用掃描為準，不是 relationship 裸數（#217）：回報「N referenced」，若有孤兒 relationship（宣告了、沒有任何 part 引用）另外具名數量並提醒 save_document 會拒絕（除非 allow_orphan_images: true）；查不到 body 引用時列出宣告數並註明未知。支援 Direct Mode",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -2642,7 +2642,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "list_images",
-                description: "列出文件中所有圖片（支援 Direct Mode）",
+                description: "列出文件中的圖片：word/document.xml 的 body 圖片（含尺寸）＋ 每個 header/footer 的圖片關係（#199/#219）。每列帶 `referenced: yes|NO (orphan)|unknown` —— 以序列化後的 package 用 PackageInspector 實際掃描為準（與 save_document 的 E_IMAGE_CONSISTENCY 閘門同一份真相），relationship 存在但該 part 沒有 <w:drawing>／<v:imagedata> 引用的孤兒會被具名標示，不會被當成「存在」。孤兒會讓下次 save_document 拒絕（除非 allow_orphan_images: true）。支援 Direct Mode",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -8227,13 +8227,162 @@ actor WordMCPServer {
 
         let info = doc.getInfo()
         let label = args["doc_id"]?.stringValue ?? args["source_path"]?.stringValue ?? "unknown"
+        let rows = Self.collectImageRows(doc)
+        let (report, failureReason) = imageConsistencyInspection(forDoc: doc, args: args)
+        let imagesLine = Self.documentInfoImagesLine(rows: rows, report: report, inspectionFailureReason: failureReason)
         return """
         Document Info (\(label)):
         - Paragraphs: \(info.paragraphCount)
         - Characters: \(info.characterCount)
         - Words: \(info.wordCount)
         - Tables: \(info.tableCount)
+        - Images: \(imagesLine)
         """
+    }
+
+    /// #199/#217/#219 shared row model: one entry per image relationship this
+    /// reader can name. Document-part rows come from `doc.getImages()` (rels
+    /// authority already, per v0.13.1) and always carry a concrete pixel size
+    /// (0x0 for a body relationship with no matching `<w:drawing>` — a real
+    /// value, not a placeholder for "unknown"). Header/footer rows come from
+    /// each container's own `relationships.imageRelationships` (#219) — this
+    /// reader has no typed pixel size for those, so `widthPx`/`heightPx` are
+    /// `nil` ("not applicable here", not "zero").
+    static func collectImageRows(_ doc: WordDocument) -> [(part: String, id: String, fileName: String, widthPx: Int?, heightPx: Int?)] {
+        var rows: [(part: String, id: String, fileName: String, widthPx: Int?, heightPx: Int?)] = []
+        for img in doc.getImages() {
+            rows.append((part: "word/document.xml", id: img.id, fileName: img.fileName, widthPx: img.widthPx, heightPx: img.heightPx))
+        }
+        for header in doc.headers {
+            for rel in header.relationships.imageRelationships {
+                rows.append((part: "word/\(header.fileName)", id: rel.id, fileName: (rel.target as NSString).lastPathComponent, widthPx: nil, heightPx: nil))
+            }
+        }
+        for footer in doc.footers {
+            for rel in footer.relationships.imageRelationships {
+                rows.append((part: "word/\(footer.fileName)", id: rel.id, fileName: (rel.target as NSString).lastPathComponent, widthPx: nil, heightPx: nil))
+            }
+        }
+        return rows
+    }
+
+    /// #199 — the same authoritative signal `imageConsistencySaveRefusal`
+    /// (the save gate) reads: `PackageInspector.imageConsistencyReport` over
+    /// the serialized package bytes (Direct Mode: the bytes on disk; Session
+    /// Mode: `DocxWriter.writeData(doc)`, a pure call that does not dirty the
+    /// session). `report == nil` means the check itself could not run — the
+    /// caller gets `failureReason`, never a silent "assume consistent".
+    private func imageConsistencyInspection(forDoc doc: WordDocument, args: [String: Value]) -> (report: ImageConsistencyReport?, failureReason: String?) {
+        let packageData: Data?
+        if let sourcePath = args["source_path"]?.stringValue {
+            packageData = FileManager.default.contents(atPath: sourcePath)
+        } else {
+            packageData = try? DocxWriter.writeData(doc)
+        }
+        guard let packageData else { return (nil, "package bytes unavailable") }
+        do {
+            return (try PackageInspector.imageConsistencyReport(of: packageData), nil)
+        } catch {
+            return (nil, error.localizedDescription)
+        }
+    }
+
+    /// #217 — one-line image summary for `get_document_info`. Never reports a
+    /// bare relationship count as if it were "images that exist": counts are
+    /// always split into referenced vs. orphan once the check ran.
+    static func documentInfoImagesLine(
+        rows: [(part: String, id: String, fileName: String, widthPx: Int?, heightPx: Int?)],
+        report: ImageConsistencyReport?,
+        inspectionFailureReason: String?
+    ) -> String {
+        guard !rows.isEmpty else {
+            if let report, report.imageRelationshipCount > 0 {
+                return "0 referenced here, but the package declares \(report.imageRelationshipCount) image relationship(s) elsewhere (see list_images)"
+            }
+            return "0"
+        }
+        guard let report else {
+            return "\(rows.count) declared (referenced/orphan status unknown: \(inspectionFailureReason ?? "check unavailable"); see list_images)"
+        }
+        let orphanSet = Set(report.orphanImageRelationshipRefs)
+        let knownRefs = rows.map { ImageRelationshipRef(part: $0.part, id: $0.id) }
+        let orphanCount = knownRefs.filter { orphanSet.contains($0) }.count
+        let referencedCount = rows.count - orphanCount
+        if orphanCount > 0 {
+            return "\(referencedCount) referenced, \(orphanCount) orphan (declared but not referenced in their own part — see list_images; save_document refuses to write NEW orphans unless allow_orphan_images: true)"
+        }
+        return "\(referencedCount) referenced"
+    }
+
+    /// #199/#219 — package-authoritative image listing text. `report` is the
+    /// same signal `save_document`'s gate reads (see
+    /// `imageConsistencyInspection`); a row's `referenced` status here can
+    /// never diverge from what a subsequent save would refuse on.
+    static func imageListing(
+        rows: [(part: String, id: String, fileName: String, widthPx: Int?, heightPx: Int?)],
+        report: ImageConsistencyReport?,
+        inspectionFailureReason: String?
+    ) -> String {
+        if rows.isEmpty {
+            if let report, report.imageRelationshipCount > 0 {
+                return "Document part and known header/footer parts have no images; the package declares \(report.imageRelationshipCount) image relationship(s) elsewhere (not listed here).\n"
+                    + "Package: bodyDrawings=\(report.bodyDrawingCount), imageRelationships=\(report.imageRelationshipCount), mediaEntries=\(report.mediaEntryCount)"
+            }
+            return "No images in document"
+        }
+
+        let orphanSet = Set(report?.orphanImageRelationshipRefs ?? [])
+        let knownRefs = Set(rows.map { ImageRelationshipRef(part: $0.part, id: $0.id) })
+        var referencedCount = 0
+        var orphanCount = 0
+        var rowLines: [String] = []
+        for row in rows {
+            let ref = ImageRelationshipRef(part: row.part, id: row.id)
+            let status: String
+            if report == nil {
+                status = "unknown"
+            } else if orphanSet.contains(ref) {
+                status = "NO (orphan)"; orphanCount += 1
+            } else {
+                status = "yes"; referencedCount += 1
+            }
+            var line = "- part: \(row.part), id: \(row.id), file: \(row.fileName)"
+            if let w = row.widthPx, let h = row.heightPx { line += ", size: \(w)x\(h)px" }
+            line += ", referenced: \(status)"
+            rowLines.append(line)
+        }
+
+        let headerLine = report == nil
+            ? "Found \(rows.count) image(s):"
+            : "Found \(rows.count) image(s) — \(referencedCount) referenced, \(orphanCount) orphan (relationship declared, no reference in its own part):"
+
+        var blocks: [String] = [([headerLine] + rowLines).joined(separator: "\n")]
+
+        if let inspectionFailureReason {
+            blocks.append("⚠ body-reference check unavailable: \(inspectionFailureReason)")
+        }
+
+        if orphanCount > 0, let report {
+            let namedOrphans = report.orphanImageRelationshipRefs.filter { knownRefs.contains($0) }.map(\.qualified)
+            blocks.append((["⚠ Orphan image relationship(s) — declared but not referenced in their own part (PsychQuant/macdoc#175 signature). save_document will refuse (E_IMAGE_CONSISTENCY) unless allow_orphan_images: true:"]
+                + namedOrphans.map { "  - \($0)" }).joined(separator: "\n"))
+        }
+
+        if let report {
+            let otherRefs = (report.declaredImageRelationshipRefs + report.orphanImageRelationshipRefs)
+                .filter { !knownRefs.contains($0) }
+            let otherUnique = Array(Set(otherRefs)).sorted { $0.qualified < $1.qualified }
+            if !otherUnique.isEmpty {
+                blocks.append("⚠ Declared elsewhere in the package (not listed above — this reader only enumerates word/document.xml + headers/footers): "
+                    + otherUnique.map(\.qualified).joined(separator: ", "))
+            }
+            if !report.unparsableParts.isEmpty {
+                blocks.append("⚠ package parts that could not be inspected (image references there are unknown): " + report.unparsableParts.joined(separator: ", "))
+            }
+            blocks.append("Package: bodyDrawings=\(report.bodyDrawingCount), imageRelationships=\(report.imageRelationshipCount), mediaEntries=\(report.mediaEntryCount)")
+        }
+
+        return blocks.joined(separator: "\n\n") + "\n"
     }
 
     // MARK: - Content Operations
@@ -10150,19 +10299,9 @@ actor WordMCPServer {
 
     private func listImages(args: [String: Value]) async throws -> String {
         let (doc, _) = try await resolveDocument(args: args)
-
-        let images = doc.getImages()
-
-        if images.isEmpty {
-            return "No images in document"
-        }
-
-        var result = "Found \(images.count) image(s):\n"
-        for img in images {
-            result += "- id: \(img.id), file: \(img.fileName), size: \(img.widthPx)x\(img.heightPx)px\n"
-        }
-
-        return result
+        let rows = Self.collectImageRows(doc)
+        let (report, failureReason) = imageConsistencyInspection(forDoc: doc, args: args)
+        return Self.imageListing(rows: rows, report: report, inspectionFailureReason: failureReason)
     }
 
     // MARK: - 9.17 export_image - 匯出單一圖片
