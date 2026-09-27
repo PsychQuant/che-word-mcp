@@ -28,15 +28,16 @@ final class Issue210NotImplementedDescriptionTests: XCTestCase {
     /// Kept as a literal list (not derived by scanning source) so this test
     /// fails loudly — not silently narrows its own coverage — if a future
     /// refactor changes how stubs are registered.
+    /// #208: `insert_watermark` / `insert_image_watermark` / `remove_watermark`
+    /// have been removed from this list — they no longer throw
+    /// `ToolNotImplemented` (see `WatermarkToolsHonestFailureTests`, which now
+    /// pins their real behavior).
     private static let notImplementedTools: Set<String> = [
         "protect_document",
         "unprotect_document",
         "set_document_password",
         "remove_document_password",
         "restrict_editing_region",
-        "insert_watermark",
-        "insert_image_watermark",
-        "remove_watermark",
     ]
 
     func testEveryNotImplementedToolDisclosesItInItsDescription() async throws {
