@@ -329,7 +329,7 @@ for the per-tool inventory before reusing an index across tools.
 |------|-------------|
 | `get_text` | Get plain text content |
 | `get_paragraphs` | Get all paragraphs with formatting |
-| `estimate_paragraph_for_page` | **v3.18.0+** — estimate a Word UI page number to a `get_paragraphs` candidate range (heuristic JSON with confidence + warning) |
+| `estimate_paragraph_for_page` | **v3.18.0+** — estimate a Word UI page number to a `get_paragraphs` candidate range (heuristic JSON with confidence + warning). See [docs/estimate-paragraph-for-page.md](docs/estimate-paragraph-for-page.md) for the `chars_per_page` derivation formula, confidence-tier table, and known limitations. |
 | `insert_paragraph` | Insert a new paragraph |
 | `update_paragraph` | Update paragraph content |
 | `delete_paragraph` | Delete a paragraph |
