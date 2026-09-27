@@ -35,6 +35,36 @@ VERSION="${1:-}"
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
+# che-word-mcp#211: three version-string blind spots — mcpb/manifest.json
+# and server.json had no gate at all (only CLAUDE.md's checklist, which a
+# human can forget), and `Implementation(version:)` (now the
+# `WordMCPServer.serverVersion` constant, Server.swift) sat stale on an old
+# release for two major versions with nothing comparing it to the tag being
+# cut. This step is cheap (no build yet) so it runs first; server.json's
+# `fileSha256` cannot be checked here (only known after the binary exists) —
+# see the "[5.5/7]" step below for that half.
+echo "→ [0.3/7] pre-flight: version-string consistency (manifest.json / server.json / Server.swift)"
+grep -q "static let serverVersion = \"$VERSION\"" Sources/CheWordMCP/Server.swift \
+    || { echo "error: Sources/CheWordMCP/Server.swift's 'static let serverVersion' does not say \"$VERSION\" — update it before releasing (che-word-mcp#211)" >&2; exit 2; }
+MANIFEST_VERSION=$(python3 -c "import json,sys; print(json.load(open('mcpb/manifest.json'))['version'])") \
+    || { echo "error: cannot read 'version' from mcpb/manifest.json" >&2; exit 2; }
+[[ "$MANIFEST_VERSION" == "$VERSION" ]] \
+    || { echo "error: mcpb/manifest.json version is '$MANIFEST_VERSION', expected '$VERSION' — bump it before releasing" >&2; exit 2; }
+SERVER_JSON_VERSION=$(python3 -c "import json,sys; print(json.load(open('server.json'))['version'])") \
+    || { echo "error: cannot read 'version' from server.json" >&2; exit 2; }
+[[ "$SERVER_JSON_VERSION" == "$VERSION" ]] \
+    || { echo "error: server.json top-level version is '$SERVER_JSON_VERSION', expected '$VERSION' — server.json has no other gate (che-word-mcp#211); bump 'version', 'packages[0].version', and 'packages[0].identifier' by hand, then re-run" >&2; exit 2; }
+SERVER_JSON_PKG_VERSION=$(python3 -c "import json,sys; print(json.load(open('server.json'))['packages'][0]['version'])") \
+    || { echo "error: cannot read 'packages[0].version' from server.json" >&2; exit 2; }
+[[ "$SERVER_JSON_PKG_VERSION" == "$VERSION" ]] \
+    || { echo "error: server.json packages[0].version is '$SERVER_JSON_PKG_VERSION', expected '$VERSION'" >&2; exit 2; }
+SERVER_JSON_IDENTIFIER=$(python3 -c "import json,sys; print(json.load(open('server.json'))['packages'][0]['identifier'])") \
+    || { echo "error: cannot read 'packages[0].identifier' from server.json" >&2; exit 2; }
+case "$SERVER_JSON_IDENTIFIER" in
+    *"/v$VERSION/"*) ;;
+    *) echo "error: server.json packages[0].identifier ('$SERVER_JSON_IDENTIFIER') does not contain '/v$VERSION/' — update the download URL to point at this release" >&2; exit 2 ;;
+esac
+
 echo "→ [0/7] pre-flight: notary profile alive?"
 xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1 \
     || { echo "error: notary profile '$NOTARY_PROFILE' unusable — run: xcrun notarytool store-credentials $NOTARY_PROFILE (interactive, user-only)" >&2; exit 3; }
@@ -116,6 +146,20 @@ echo "$NOTARY_OUT" | grep -q "status: Accepted" \
 echo "→ [5/7] sha256 asset"
 cp "$BIN" "$WORKDIR/$BINARY_NAME"
 shasum -a 256 "$WORKDIR/$BINARY_NAME" | awk '{print $1}' > "$WORKDIR/$BINARY_NAME.sha256"
+
+# che-word-mcp#211 (second half — see "[0.3/7]" above): server.json's
+# fileSha256 can only be known now that the actual release binary exists.
+# This necessarily runs after notarization, so a mismatch here wastes that
+# notarization submission — the same fail-late trade-off the FINAL GATE
+# below already accepts. Failing HERE, before "[7/7]", still guarantees no
+# GitHub release is ever created with a server.json that lies about the
+# binary it points at.
+echo "→ [5.5/7] verify server.json fileSha256 matches this release's binary"
+SERVER_JSON_SHA=$(python3 -c "import json,sys; print(json.load(open('server.json'))['packages'][0]['fileSha256'])") \
+    || { echo "error: cannot read 'packages[0].fileSha256' from server.json" >&2; exit 5; }
+ACTUAL_SHA=$(cat "$WORKDIR/$BINARY_NAME.sha256")
+[[ "$SERVER_JSON_SHA" == "$ACTUAL_SHA" ]] \
+    || { echo "error: server.json packages[0].fileSha256 ('$SERVER_JSON_SHA') does not match this release's actual binary sha256 ('$ACTUAL_SHA') — update server.json's fileSha256 (compute it locally with 'shasum -a 256' against a rebuild, or from this run's log above), commit it, then re-run scripts/release.sh $VERSION" >&2; exit 5; }
 
 echo "→ [6/7] FINAL GATE — re-verify the exact upload artifact (TOCTOU guard)"
 codesign --verify --strict -R "$REQUIREMENT" "$WORKDIR/$BINARY_NAME" \
