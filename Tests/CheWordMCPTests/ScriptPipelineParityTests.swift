@@ -271,7 +271,10 @@ final class ScriptPipelineParityTests: XCTestCase {
                 + "(no hardcoded literal is asserted here — see testCLICrossCheckAgainstMacdocBinary for that)")
         }
         let dir = try makeScratch()
-        let cliAggregate = try Self.liveCLICoverageAggregate(cliPath: cliPath, template: template, in: dir)
+        // strict: false — CLI is an optional bonus comparison for THIS test
+        // (gated on MACDOC_TEMPLATE_DIR alone); a malformed invocation stays
+        // a skip, not a failure (see liveCLICoverageAggregate's doc comment).
+        let cliAggregate = try Self.liveCLICoverageAggregate(cliPath: cliPath, template: template, in: dir, strict: false)
         XCTAssertEqual(aggregate, cliAggregate, accuracy: 1e-9,
                        "MCP aggregate must equal the live CLI aggregate for this file")
     }
@@ -840,7 +843,11 @@ final class ScriptPipelineParityTests: XCTestCase {
 
         // (4) Coverage aggregate vs the LIVE CLI --coverage report (verify
         //     R2 #2 — no more reliance on the documented 0.535 literal).
-        let cliAggregate = try Self.liveCLICoverageAggregate(cliPath: cliPath, template: template, in: dir)
+        // strict: true — MACDOC_CLI_PATH is this test's ONLY gate, so the
+        // CLI is guaranteed to exist here; a crash or reformatted
+        // --coverage output is a real regression and must FAIL, not vanish
+        // as a skip (#175 R2, MEDIUM M3).
+        let cliAggregate = try Self.liveCLICoverageAggregate(cliPath: cliPath, template: template, in: dir, strict: true)
 
         let coverage = await server.invokeToolForTesting(name: "get_script_coverage", arguments: [
             "source_path": .string(template.path),
@@ -852,6 +859,16 @@ final class ScriptPipelineParityTests: XCTestCase {
                        "MCP aggregate must equal the live CLI aggregate")
     }
 
+    /// A malformed/failed live-CLI coverage invocation, for the `strict`
+    /// callers of `liveCLICoverageAggregate` below (#175 R2, MEDIUM M3): a
+    /// real XCTest FAILURE, never an `XCTSkip` — skipping here would let a
+    /// genuinely broken or reformatted CLI binary disappear as "skipped"
+    /// instead of surfacing as the regression it is.
+    private struct CLICoverageOutputMalformed: LocalizedError {
+        let reason: String
+        var errorDescription: String? { reason }
+    }
+
     /// Runs `macdoc word reverse <template> --coverage` and parses its
     /// "--- Aggregate: NN.N% DSL (X / Y XML bytes across N parts) ---" line
     /// into a ratio. Shared by `testCLICrossCheckAgainstMacdocBinary`'s part
@@ -859,7 +876,26 @@ final class ScriptPipelineParityTests: XCTestCase {
     /// used to compare against a hardcoded 0.535 literal that could drift
     /// silently after an ooxml-swift bump; both now compare against
     /// whatever the CLI ACTUALLY reports for the file at hand, live.
-    private static func liveCLICoverageAggregate(cliPath: String, template: URL, in dir: URL) throws -> Double {
+    ///
+    /// `strict` decides how a malformed invocation is reported (#175 R2,
+    /// MEDIUM M3): `testCLICrossCheckAgainstMacdocBinary`'s ONLY gate is
+    /// `MACDOC_CLI_PATH` — once that guard has passed, the CLI is GUARANTEED
+    /// to exist for that test, so a crash or a reformatted `--coverage`
+    /// output there is a real regression and MUST fail (`strict: true`,
+    /// throws `CLICoverageOutputMalformed`), never silently vanish as
+    /// "skipped". `testGetScriptCoverageJPATemplateParity` gates on
+    /// `MACDOC_TEMPLATE_DIR` alone — the CLI binary is an OPTIONAL bonus
+    /// comparison layered on top of a test that has already asserted
+    /// everything it needs without it, so a malformed CLI invocation there
+    /// stays `XCTSkip` (`strict: false`): "cannot verify further" is an
+    /// honest description of that situation, not a cover-up.
+    private static func liveCLICoverageAggregate(
+        cliPath: String, template: URL, in dir: URL, strict: Bool
+    ) throws -> Double {
+        func fail(_ message: String) throws -> Never {
+            if strict { throw CLICoverageOutputMalformed(reason: message) }
+            throw XCTSkip(message)
+        }
         let covScript = dir.appendingPathComponent("cov-\(UUID().uuidString).mdocx.swift")
         let covProcess = Process()
         covProcess.executableURL = URL(fileURLWithPath: cliPath)
@@ -872,19 +908,56 @@ final class ScriptPipelineParityTests: XCTestCase {
         let covData = covPipe.fileHandleForReading.readDataToEndOfFile()
         covProcess.waitUntilExit()
         guard covProcess.terminationStatus == 0 else {
-            throw XCTSkip("macdoc word reverse --coverage exited \(covProcess.terminationStatus)")
+            try fail("macdoc word reverse --coverage exited \(covProcess.terminationStatus)")
         }
         let covOut = String(decoding: covData, as: UTF8.self)
         // "--- Aggregate: 53.5% DSL (71771 / 134050 XML bytes across 13 parts) ---"
         guard let fraction = covOut.components(separatedBy: "(").last?
             .components(separatedBy: " XML bytes").first else {
-            throw XCTSkip("CLI coverage output did not carry the byte fraction; got: \(covOut)")
+            try fail("CLI coverage output did not carry the byte fraction; got: \(covOut)")
         }
         let numbers = fraction.components(separatedBy: " / ").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
         guard numbers.count == 2, numbers[1] != 0 else {
-            throw XCTSkip("unexpected CLI coverage fraction shape: \(fraction)")
+            try fail("unexpected CLI coverage fraction shape: \(fraction)")
         }
         return Double(numbers[0]) / Double(numbers[1])
+    }
+
+    // MARK: - #175 R2 (MEDIUM M3): strict vs skip, unit-tested ungated
+    //
+    // `/usr/bin/true` stands in for a "CLI" here: it exits 0 but prints
+    // nothing, so `liveCLICoverageAggregate` always reaches the "no byte
+    // fraction in the output" malformed-output path — the exact shape a
+    // crashed or reformatted real CLI would produce. `XCTSkip` is caught
+    // explicitly (not allowed to propagate) so catching it here proves what
+    // was thrown without also skipping THIS test.
+
+    func testLiveCLICoverageAggregateStrictFailsRatherThanSkipsOnMalformedOutput() throws {
+        let dir = try makeScratch()
+        do {
+            _ = try Self.liveCLICoverageAggregate(
+                cliPath: "/usr/bin/true", template: dir.appendingPathComponent("unused.docx"),
+                in: dir, strict: true)
+            XCTFail("expected liveCLICoverageAggregate to throw on empty CLI output")
+        } catch is XCTSkip {
+            XCTFail("strict: true must be a real failure, never XCTSkip, for the CLI-guaranteed caller")
+        } catch is CLICoverageOutputMalformed {
+            // expected
+        }
+    }
+
+    func testLiveCLICoverageAggregateNonStrictSkipsOnMalformedOutput() throws {
+        let dir = try makeScratch()
+        do {
+            _ = try Self.liveCLICoverageAggregate(
+                cliPath: "/usr/bin/true", template: dir.appendingPathComponent("unused.docx"),
+                in: dir, strict: false)
+            XCTFail("expected liveCLICoverageAggregate to throw on empty CLI output")
+        } catch is XCTSkip {
+            // expected — the CLI-optional caller may skip a malformed invocation
+        } catch {
+            XCTFail("strict: false must throw XCTSkip, not \(error)")
+        }
     }
 
     // MARK: - Layer 2b: gated paragraphs-only cross-check (#227)
