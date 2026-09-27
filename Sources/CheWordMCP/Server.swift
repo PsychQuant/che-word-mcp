@@ -1491,10 +1491,15 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "list_open_documents",
-                description: "列出所有已開啟的文件",
+                description: "列出所有已開啟的文件（不需要任何參數）",
+                // #236: no parameters — an explicit empty `"properties":
+                // {}` is legal JSON Schema but some client transcoders
+                // reject a top-level object schema with empty properties;
+                // omitting the key entirely (still a valid, unconstrained
+                // object schema) sidesteps that without asserting anything
+                // false about the tool's arguments.
                 inputSchema: .object([
-                    "type": .string("object"),
-                    "properties": .object([:])
+                    "type": .string("object")
                 ])
             ),
             Tool(
@@ -1680,7 +1685,18 @@ actor WordMCPServer {
                         ]),
                         "replacements": .object([
                             "type": .string("array"),
-                            "description": .string("取代清單。每項 format: { find: string, replace: string, scope?: 'body'|'all', regex?: bool, match_case?: bool }。item-level 設定 override default。")
+                            "description": .string("取代清單。每項 format: { find: string, replace: string, scope?: 'body'|'all', regex?: bool, match_case?: bool }。item-level 設定 override default。"),
+                            "items": .object([
+                                "type": .string("object"),
+                                "properties": .object([
+                                    "find": .object(["type": .string("string")]),
+                                    "replace": .object(["type": .string("string")]),
+                                    "scope": .object(["type": .string("string"), "enum": .array([.string("body"), .string("all")])]),
+                                    "regex": .object(["type": .string("boolean")]),
+                                    "match_case": .object(["type": .string("boolean")])
+                                ]),
+                                "required": .array([.string("find"), .string("replace")])
+                            ])
                         ]),
                         "stop_on_first_failure": .object([
                             "type": .string("boolean"),
@@ -1844,7 +1860,11 @@ actor WordMCPServer {
                         ]),
                         "data": .object([
                             "type": .string("array"),
-                            "description": .string("表格資料（二維陣列）")
+                            "description": .string("表格資料（二維陣列）"),
+                            "items": .object([
+                                "type": .string("array"),
+                                "items": .object(["type": .string("string")])
+                            ])
                         ]),
                         "index": .object([
                             "type": .string("integer"),
@@ -2194,7 +2214,8 @@ actor WordMCPServer {
                         ]),
                         "items": .object([
                             "type": .string("array"),
-                            "description": .string("清單項目（字串陣列）")
+                            "description": .string("清單項目（字串陣列）"),
+                            "items": .object(["type": .string("string")])
                         ]),
                         "index": .object([
                             "type": .string("integer"),
@@ -2216,7 +2237,8 @@ actor WordMCPServer {
                         ]),
                         "items": .object([
                             "type": .string("array"),
-                            "description": .string("清單項目（字串陣列）")
+                            "description": .string("清單項目（字串陣列）"),
+                            "items": .object(["type": .string("string")])
                         ]),
                         "index": .object([
                             "type": .string("integer"),
@@ -3369,7 +3391,8 @@ actor WordMCPServer {
                         ]),
                         "options": .object([
                             "type": .string("array"),
-                            "description": .string("選項列表（JSON 陣列格式）")
+                            "description": .string("選項列表（JSON 陣列格式）"),
+                            "items": .object(["type": .string("string")])
                         ]),
                         "selected_index": .object([
                             "type": .string("integer"),
@@ -3671,7 +3694,8 @@ actor WordMCPServer {
                         ]),
                         "comment_ids": .object([
                             "type": .string("array"),
-                            "description": .string("要標記為 resolved 的註解 ID 陣列（重複值會被去重；去重後最多 1000 筆不重複的 ID）")
+                            "description": .string("要標記為 resolved 的註解 ID 陣列（重複值會被去重；去重後最多 1000 筆不重複的 ID）"),
+                            "items": .object(["type": .string("integer")])
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("comment_ids")])
@@ -3997,7 +4021,8 @@ actor WordMCPServer {
                         ]),
                         "items": .object([
                             "type": .string("array"),
-                            "description": .string("初始項目內容（字串陣列）")
+                            "description": .string("初始項目內容（字串陣列）"),
+                            "items": .object(["type": .string("string")])
                         ]),
                         "allow_insert_delete_sections": .object([
                             "type": .string("boolean"),
@@ -4147,7 +4172,21 @@ actor WordMCPServer {
                     "type": .string("object"),
                     "properties": .object([
                         "doc_id": .object(["type": .string("string")]),
-                        "latent_styles": .object(["type": .string("array"), "description": .string("[{name, ui_priority?, semi_hidden?, unhide_when_used?, q_format?}]")])
+                        "latent_styles": .object([
+                            "type": .string("array"),
+                            "description": .string("[{name, ui_priority?, semi_hidden?, unhide_when_used?, q_format?}]"),
+                            "items": .object([
+                                "type": .string("object"),
+                                "properties": .object([
+                                    "name": .object(["type": .string("string")]),
+                                    "ui_priority": .object(["type": .string("integer")]),
+                                    "semi_hidden": .object(["type": .string("boolean")]),
+                                    "unhide_when_used": .object(["type": .string("boolean")]),
+                                    "q_format": .object(["type": .string("boolean")])
+                                ]),
+                                "required": .array([.string("name")])
+                            ])
+                        ])
                     ]),
                     "required": .array([.string("doc_id"), .string("latent_styles")])
                 ])
@@ -4198,7 +4237,20 @@ actor WordMCPServer {
                     "type": .string("object"),
                     "properties": .object([
                         "doc_id": .object(["type": .string("string")]),
-                        "levels": .object(["type": .string("array"), "description": .string("[{ilvl, num_format, lvl_text, start?}]")])
+                        "levels": .object([
+                            "type": .string("array"),
+                            "description": .string("[{ilvl, num_format, lvl_text, start?}]"),
+                            "items": .object([
+                                "type": .string("object"),
+                                "properties": .object([
+                                    "ilvl": .object(["type": .string("integer")]),
+                                    "num_format": .object(["type": .string("string")]),
+                                    "lvl_text": .object(["type": .string("string")]),
+                                    "start": .object(["type": .string("integer")])
+                                ]),
+                                "required": .array([.string("ilvl"), .string("num_format"), .string("lvl_text")])
+                            ])
+                        ])
                     ]),
                     "required": .array([.string("doc_id"), .string("levels")])
                 ])
@@ -4666,7 +4718,23 @@ actor WordMCPServer {
                         ]),
                         "queries": .object([
                             "type": .string("array"),
-                            "description": .string("query 陣列。每項可為 plain string 或 { query: string, case_sensitive?: bool } object。")
+                            "description": .string("query 陣列。每項可為 plain string 或 { query: string, case_sensitive?: bool } object。"),
+                            // #236: each item is EITHER a plain string OR an
+                            // object — `anyOf`/`oneOf` composition is
+                            // avoidable-by-precedent (see this file's other
+                            // R8/R9 comments on why `type` arrays and
+                            // `anyOf` were both rejected for
+                            // insert_floating_image's position parameters:
+                            // inconsistent support across Gemini API
+                            // versions). An `items` schema with no `type`
+                            // key is a legal (if permissive) OpenAPI 3.0
+                            // Schema Object — `type` is optional — so this
+                            // satisfies "arrays MUST declare items" without
+                            // over- or under-constraining a genuinely
+                            // mixed-type element.
+                            "items": .object([
+                                "description": .string("string 或 { query: string, case_sensitive?: bool } 物件")
+                            ])
                         ])
                     ]),
                     "required": .array([.string("queries")])
@@ -5011,11 +5079,13 @@ actor WordMCPServer {
                         ]),
                         "section_markers": .object([
                             "type": .string("array"),
-                            "description": .string("區段分隔標記文字陣列（如 [\"Abstract\", \"Introduction\", \"References\"]）")
+                            "description": .string("區段分隔標記文字陣列（如 [\"Abstract\", \"Introduction\", \"References\"]）"),
+                            "items": .object(["type": .string("string")])
                         ]),
                         "exclude_sections": .object([
                             "type": .string("array"),
-                            "description": .string("不計入總字數的區段名稱（如 [\"References\", \"Appendix\"]）")
+                            "description": .string("不計入總字數的區段名稱（如 [\"References\", \"Appendix\"]）"),
+                            "items": .object(["type": .string("string")])
                         ])
                     ])
                 ])
@@ -5157,8 +5227,11 @@ actor WordMCPServer {
                         "source_path": .object(["type": .string("string"), "description": .string("檔案路徑（Direct Mode）")]),
                         "author_aliases": .object([
                             "type": .string("object"),
-                            "description": .string("作者別名對應表（raw author -> canonical name）。例：{\"kllay's PC\": \"Lay\"}"),
-                            "additionalProperties": .object(["type": .string("string")])
+                            // #236: `additionalProperties` is valid OpenAPI
+                            // 3.0 but not in Gemini's `Schema` field list —
+                            // moved out of the schema and into prose here
+                            // instead of declared as a keyword.
+                            "description": .string("作者別名對應表（raw author -> canonical name），任意鍵對應字串值。例：{\"kllay's PC\": \"Lay\"}")
                         ]),
                         "detect_old_pattern": .object(["type": .string("boolean"), "description": .string("是否偵測 'Old: <quoted>\\n<new>' 非正式回覆 pattern（預設 false）")]),
                         "format": .object([
@@ -6579,7 +6652,8 @@ actor WordMCPServer {
                         ]),
                         "data": .object([
                             "type": .string("array"),
-                            "description": .string("新列的儲存格資料陣列")
+                            "description": .string("新列的儲存格資料陣列"),
+                            "items": .object(["type": .string("string")])
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("table_index")])
@@ -6611,7 +6685,8 @@ actor WordMCPServer {
                         ]),
                         "data": .object([
                             "type": .string("array"),
-                            "description": .string("新欄的儲存格資料陣列")
+                            "description": .string("新欄的儲存格資料陣列"),
+                            "items": .object(["type": .string("string")])
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("table_index")])
