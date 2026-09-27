@@ -1874,7 +1874,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "update_cell",
-                description: "更新表格儲存格內容",
+                description: "更新表格儲存格內容：把儲存格第一段的文字換成 text，保留該段的段落格式。儲存格有多個段落時，只改第一段，其餘段落原樣保留（不會被刪除）；要改其他段落請用 update_cell_paragraph。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
