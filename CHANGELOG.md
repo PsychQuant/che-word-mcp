@@ -58,6 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **儲存前的圖片一致性守門現在檢查的是「即將寫出的位元組」，不再是 `writeData` 的 scratch 序列化**（#220）。`save_document` 實際走 `DocxWriter.write(_:to:)` 的 overlay 模式，會保留來源檔案裡 typed model 管不到的 parts（例如 charts）；守門過去改用 `writeData`，這條路徑永遠是 scratch 模式，只吐出 typed model 認得的 parts。一份文件如果只在 chart part 裡帶著孤兒圖片關聯，守門過去完全看不到——不是「判斷錯」，是那個 part 在守門檢查的位元組裡根本不存在。現在守門改成把文件寫到一個拋棄式暫存路徑（用 `persistDocumentToDisk` 同一個 `DocxWriter.write(_:to:)` 入口）再讀回來檢查，看到的位元組與實際存檔完全一致。
 
+- **讀取不受信任的 .docx 時有解壓大小上限與一致的路徑安全檢查**（ooxml-swift 3.17.0）。`open_document` 與所有 Direct Mode（`source_path`）工具都經過 `DocxReader.read`，現在對謊報大小的 zip bomb 在解壓進行中就中止，不會先把整份內容寫到磁碟或讀進記憶體；entry 路徑一律經過同一套安全相對路徑檢查；解析錯誤訊息中嵌入的檔案內容會被跳脫並限制長度。
+
 ### Testing
 
 - **新增 `StructuredJSONRefusalSweepTests`**（#214），比照 #202 的 `RefusalIsErrorSweepTests` 寫法，
@@ -120,6 +122,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   需要改成只信任第一個區塊是主要結果，其餘視為附加建議（#192）。
 
 - **`save_document`／`finalize_document`／`checkpoint` 的圖片一致性守門變嚴格：過去看不到、現在看得到 overlay 模式保留但 typed model 不管理的 parts（例如 chart）裡的孤兒圖片關聯**（#220）。方向明確：只會讓過去被放過的存檔現在被 `E_IMAGE_CONSISTENCY` 擋下，不會反過來讓過去被擋的存檔通過。會被新擋下的情況僅限於：文件在 session 中對某個 typed-model 不管理的 part 新增了孤兒圖片關聯（目前沒有任何 MCP 工具能編輯 chart 等此類 part，所以一般使用情境下不會觸發）；開檔當下就已存在的孤兒（含 chart part 裡的）不受影響，`documentImageOrphanBaseline` 一律以開檔時的真實磁碟位元組為基準。呼叫端若真的遇到這個新的擋下：可用既有的 `allow_orphan_images: true` 逃生閥，或先用 `list_images`／Direct Mode 讀回實際檔案確認孤兒是否為預期後再決定是否覆寫。
+
+- 讀取 .docx 時套用 ooxml-swift 3.17.0 的預設上限：單一 entry 512 MB、解壓總量 4 GiB、壓縮比 500×、entry 數 50000。超過任一上限的文件會被拒絕並回 `isError`（訊息指名是哪一項上限與實際值）。一般文件遠低於這些值；內嵌大量未壓縮高解析圖片、總量超過 4 GiB 的文件目前無法開啟。
 
 ## [4.7.0] - 2026-09-28
 
