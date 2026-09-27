@@ -6,7 +6,7 @@ import OOXMLSwift
 /// PsychQuant/che-word-mcp#97 — pin the current paragraph-index convention
 /// split without changing public API behavior.
 ///
-/// #140 (verify of #113 follow-up): the original fixture here was
+/// #141 (verify of #113 follow-up): the original fixture here was
 /// `[paragraph, table, blockSDT, paragraph]` (4 elements) — one paragraph
 /// short of what actually differentiates `body.children` insertion index
 /// from top-level paragraph ordinal at "index 1" (inline-mode `insert_equation`
@@ -18,7 +18,7 @@ import OOXMLSwift
 /// rejection (the two P1/P2 cases the mega-test's fixture couldn't reach).
 final class Issue97ParagraphIndexConventionTests: XCTestCase {
 
-    // MARK: - Fixture (5 elements; #140)
+    // MARK: - Fixture (5 elements; #141)
 
     /// `body.children` = [paragraph0("p0"), table, paragraph2("p2"),
     /// contentControl(SDT wrapping paragraph("sdt-inner")), paragraph4("p4")].
@@ -55,7 +55,7 @@ final class Issue97ParagraphIndexConventionTests: XCTestCase {
         return url
     }
 
-    // MARK: - Named per-family tests (#140)
+    // MARK: - Named per-family tests (#141)
 
     func testGetParagraphsRecursesIntoSDTButSkipsTables() throws {
         let doc = conventionFixture()
@@ -211,7 +211,7 @@ final class Issue97ParagraphIndexConventionTests: XCTestCase {
         XCTAssertNil(sdtInner.properties.border, "top-level paragraph ordinal must not target the block-level SDT child paragraph")
     }
 
-    // MARK: - Frozen snapshot (renamed; #140)
+    // MARK: - Frozen snapshot (renamed; #141)
 
     /// Frozen until PsychQuant/ooxml-swift#10 picks the canonical
     /// cross-family convention. When the lib picks one and refactors, THIS

@@ -3,7 +3,7 @@ import MCP
 import OOXMLSwift
 @testable import CheWordMCP
 
-/// PsychQuant/che-word-mcp#141 — `insert_text` bounds-checks `paragraph_index`
+/// PsychQuant/che-word-mcp#140 — `insert_text` bounds-checks `paragraph_index`
 /// against `doc.getParagraphs()` (the readback family, which recurses into
 /// block-level SDTs) but mutates via `doc.updateParagraph(at:)`, which walks
 /// only TOP-LEVEL `.paragraph` body children. In a document with a
@@ -18,7 +18,7 @@ import OOXMLSwift
 /// `getParagraphs()` (readback) = [P0, P1, sdt-inner, P2] (count 4).
 /// Top-level `.paragraph` ordinals = [P0, P1, P2] (count 3).
 /// `paragraph_index: 2` is readback's `sdt-inner` but top-level's `P2`.
-final class Issue141InsertTextCrossFamilyTests: XCTestCase {
+final class Issue140InsertTextCrossFamilyTests: XCTestCase {
 
     private func mixedShapeFixture() throws -> URL {
         var doc = WordDocument()
