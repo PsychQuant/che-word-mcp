@@ -18122,10 +18122,26 @@ actor WordMCPServer {
     /// already permissive, but adding `<v:shape` and `o:spt="136"` co-detection
     /// reduces false positives on non-watermark VML (e.g., logos with the same
     /// PowerPlus naming legacy).
+    /// #209: Word's own *image* watermark ("Picture...") uses a different VML
+    /// shape id — `WordPictureWatermark<N>` — from the *text* watermark's
+    /// `PowerPlusWaterMarkObject<N>`. Pre-#209 this function only recognised
+    /// the text fingerprint, so a header with an image watermark (real Word
+    /// output: `<v:shape id="WordPictureWatermark1" ... type="#_x0000_t75">`
+    /// `<v:imagedata r:id="rId1" .../></v:shape>`) silently read back as "no
+    /// watermark" — `list_watermarks` → `[]`, `get_watermark` → `null`, and
+    /// `list_headers`' `has_watermark` flag false, even though Word shows one.
+    /// `WordPictureWatermark` is Word's own internal naming convention (like
+    /// `PowerPlusWaterMarkObject`), specific enough to check alone — unlike
+    /// the generic `type="#_x0000_t75"` (any VML picture frame, not
+    /// necessarily a watermark), which is deliberately NOT used as a
+    /// fingerprint here to avoid false positives on ordinary VML pictures.
     private func headerHasWatermark(_ xml: String) -> Bool {
-        // VML watermark fingerprint: <v:shape ... id="PowerPlusWaterMarkObject<N>" o:spt="136" ...>
-        // Either signal alone is acceptable (some Word versions emit one without the other).
+        // VML watermark fingerprints — any one signal is acceptable (some Word
+        // versions emit a subset):
+        //   text  : <v:shape ... id="PowerPlusWaterMarkObject<N>" o:spt="136" ...>
+        //   image : <v:shape ... id="WordPictureWatermark<N>" ...><v:imagedata .../>
         if xml.contains("PowerPlusWaterMarkObject") { return true }
+        if xml.contains("WordPictureWatermark") { return true }
         if xml.range(of: #"<v:shape\b[^>]*\bo:spt="136""#, options: .regularExpression) != nil { return true }
         return false
     }
