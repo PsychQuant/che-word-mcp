@@ -5359,7 +5359,7 @@ actor WordMCPServer {
             // 11.4 protect_document - 文件保護
             Tool(
                 name: "protect_document",
-                description: "設定文件保護（限制編輯、唯讀等）",
+                description: "設定文件保護（限制編輯、唯讀等）。目前未實作，呼叫會回 isError 並具名缺少的 OOXML（#172）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -5383,7 +5383,7 @@ actor WordMCPServer {
             // 11.5 unprotect_document - 移除文件保護
             Tool(
                 name: "unprotect_document",
-                description: "移除文件保護",
+                description: "移除文件保護。目前未實作，呼叫會回 isError 並具名缺少的 OOXML（#172）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -5403,7 +5403,7 @@ actor WordMCPServer {
             // 11.6 set_document_password - 設定開啟密碼
             Tool(
                 name: "set_document_password",
-                description: "設定文件開啟密碼（加密保護）",
+                description: "設定文件開啟密碼（加密保護）。目前未實作，呼叫會回 isError——開啟密碼是整個 .docx 容器的 OLE Compound Document 加密，不屬於任何 OOXML part，非本堆疊觸及範圍（#172）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -5423,7 +5423,7 @@ actor WordMCPServer {
             // 11.7 remove_document_password - 移除開啟密碼
             Tool(
                 name: "remove_document_password",
-                description: "移除文件開啟密碼",
+                description: "移除文件開啟密碼。目前未實作，呼叫會回 isError——開啟密碼是整個 .docx 容器的 OLE Compound Document 加密，不屬於任何 OOXML part，非本堆疊觸及範圍（#172）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -5443,7 +5443,7 @@ actor WordMCPServer {
             // 11.8 restrict_editing_region - 限制編輯區域
             Tool(
                 name: "restrict_editing_region",
-                description: "設定可編輯區域（其他區域受保護）",
+                description: "設定可編輯區域（其他區域受保護）。目前未實作，呼叫會回 isError 並具名缺少的 OOXML（#172）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
