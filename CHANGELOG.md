@@ -7,6 +7,120 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`StructuredToolFailure`：讓 handler 能同時設 `isError: true` 並回傳結構化 JSON body**（#182）。
+  過去 `handleToolCall` 只有兩種形狀：`throw`（`isError: true`，但 body 是 `error.localizedDescription`
+  的散文）或 `return`（JSON body，但 `isError` 永遠不會被設）——沒有辦法讓一次失敗的呼叫同時保有
+  成功時的 schema。任何型別遵循新的 `StructuredToolFailure` protocol（提供一個已編碼好的
+  `jsonPayload: String`）並被 `throw` 出來時，`handleToolCall` 會把 `jsonPayload` 逐字當作
+  content 文字（**不**加 `Error: ` 前綴——因為 payload 本身就是 body，不是要包裝的訊息），
+  同時設 `isError: true`。已套用到 `execute_script` 的 Stage-B 驗證失敗
+  （`ScriptVerificationFailure`）：失敗時 body 現在是 `{"broken_parts":[...],"verified":false}`，
+  跟驗證通過時同一組欄位名稱，呼叫端不必再解析「以 `Error: ` 開頭的散文列出不符 part」。
+
+- **Advisory 通道：非致命建議現在能傳回呼叫端，不再只寫進 stderr**（#192）。過去 tool handler
+  遇到「做完了，但有一件事你該知道」的情境（例如 `storeDocument` 的 autosave checkpoint 失敗）
+  只能寫 `FileHandle.standardError`——在 MCP stdio transport 下這進的是 client 自己的 log 檔
+  （例如 `~/Library/Logs/Claude/mcp-server-<name>.log`），呼叫端（模型或使用者）永遠看不到。
+  現在這類建議會以**附加在 `CallTool.Result.content` 的獨立文字區塊**傳回，固定前綴
+  `Advisory: `，排在主要內容區塊之後；`isError` 不受影響，只讀第一個 content 區塊的既有 client
+  行為不變。內部提供 `recordAdvisory(_:)` 給 handler 呼叫，透過 `@TaskLocal` 的 `AdvisoryBox`
+  以「每次工具呼叫各自的累積範圍」隔離——`WordMCPServer` 允許 actor reentrancy（`await`
+  期間可能有另一次呼叫插進來執行），共用一個 actor-isolated 陣列會讓不同呼叫的 advisory 互相
+  混進對方的回應，task-local 則天生只在同一個呼叫的 async 呼叫鏈內可見。目前已套用到
+  `storeDocument` 的兩處：autosave checkpoint 寫入失敗（issue 具名的既有失效案例）、autosave
+  被 image-consistency gate 拒絕改寫 sidecar；兩處 stderr 輸出保留不變，advisory 是**新增**的
+  第二個通道，不是取代。`flushDirtyDocumentsOnShutdown` 的三處 `Warning:`（啟動／shutdown flush）
+  刻意維持只寫 stderr——那不是在一次 tool call 期間發生，沒有 `CallTool.Result` 可以附加。
+  `GlyphCoverageProbe`（#189）尚未接上這個通道，留給後續 issue。
+
+- **`export_script` 新增 `from_oplog` 參數，對齊 CLI 的 `macdoc word reverse --from-oplog`**（#169）。原本 `export_script` 只有一條路徑：對目前的 docx 位元組跑 `ReverseExtractor.reverse` 重新推導腳本；CLI 另外還有「改從來源檔旁的 oplog sidecar（`<docx>.oplog.jsonl`）匯出實際編輯歷史」這條路徑，MCP 端一直沒有對應參數——介面對等的小缺口（primary path 早已對等，這是 secondary path）。`from_oplog: true` 時直接把 `SidecarStore.loadLog` 讀到的操作紀錄丟給 `ScriptExporter.exportSwift`，不跑反向擷取；沒有 sidecar 時明確報錯（`OplogSidecarMissing`），不會悄悄退回一般匯出——這點刻意不對齊 CLI 不帶旗標時「有 sidecar 就優先用」的預設行為，`from_oplog` 是明確 opt-in，呼叫端要求了 sidecar 匯出就一定要嘛拿到、要嘛看到明確失敗。回傳 JSON 改用獨立形狀（`from_oplog`／`op_count`／`slot_count`／`output_path`），不含 `dsl_parts`／`form_gaps_empty`（那兩個欄位是反向擷取的 part-level channel 分類，對一份沒經過那條路徑的腳本沒有意義）。與既有的 `paragraphs_only` 互斥（兩者對「旁邊有 sidecar 時該怎麼做」的立場相反，同時給會明確報錯）。
+
+### Fixed
+
+- **`StructuredRefusal`：32 個寫側工具的 JSON 字面拒絕改為 `isError: true`**（#214）。#202
+  （PR #213）修過 115 個 `return "Error: …"` 拒絕，但另有 37 處拒絕寫成
+  `return "{ \"error\": … }"` JSON 字面——不帶 `Error: ` 前綴，既不在 #202 的站點盤點內、也不
+  被 #202 新增的 sweep test 涵蓋。逐站點盤點後分兩類：**5 處是讀側查詢落空**
+  （`getContentControl`、`listRepeatingSectionItems`、`getStyleInheritanceChain`、
+  `getNumberingDefinition`）——回應的是查詢結果不是拒絕，維持原樣、繼續 `return`；**32 處是寫側
+  拒絕**（`update_content_control_text`、`link_styles`、`delete_content_control`、
+  `assign_numbering_to_paragraph`、`set_table_indent` 等 23 個 handler，橫跨內容控制、樣式、
+  編號、分節、表格五類），`return` 都排在對文件的任何實際寫入之前——文件一個位元組沒改，
+  client 卻拿到 `isError` 未設的 success。這 32 處現在借用 #182 的 `StructuredToolFailure`
+  機制，把原本 `return` 的那段 JSON 字面**逐位元組不變**地改成 `throw StructuredRefusal(...)`：
+  body 完全相同，只有協定層的 `isError` 旗標翻轉。
+
+- **版本字串的三個盲點：`server.json` 沒有任何 checklist 或 gate 覆蓋、MCP handshake 版本靠內嵌字面量、發版流程不驗證三處是否一致**（#211）。`Sources/CheWordMCP/Server.swift` 新增 `static let serverVersion` 常數作為 MCP `initialize` handshake 回報版本的單一來源（`Server(...)` 建構時直接讀這個常數，不再是內嵌字面量——這個字面量過去曾經漏改超過兩個大版本）；新增 `Issue211VersionConsistencyTests` 把它跟 `mcpb/manifest.json` 的 `version` 欄位鎖在一起，`swift test` 每次都驗。`scripts/release.sh` 新增 `[0.3/7]` 前置步驟，建置前 fail-fast 檢查 `Server.swift` 的 `serverVersion`、`mcpb/manifest.json` 的 `version`、`server.json` 的 `version`／`packages[0].version`／`packages[0].identifier` 是否都與要發的 tag 一致；新增 `[5.5/7]` 步驟，在 sha256 算出後檢查 `server.json` 的 `packages[0].fileSha256` 是否與這次實際建出的 binary 相符（這個欄位只有建好 binary 才知道正確值，前置步驟驗不了）。`CLAUDE.md` 的版本更新 checklist 補上這兩項與對應的 gate 說明。**以此次修正驗證了 gate 確實會擋下真實存在的落差**：`server.json` 目前仍停在 `1.17.0`（本次未動它——沒有真正跑一次發版就沒有正確的 `fileSha256` 可填，硬填舊值只會讓檔案內部自相矛盾），下次執行 `scripts/release.sh` 會在 `[0.3/7]` 明確報錯而不是靜默過關，逼著在那之前先把 `server.json` 三個欄位補上。
+
+- **`restrict_editing_region` 不再回報「未實作」，實際寫入 `<w:permStart>`/`<w:permEnd>` 限制可編輯區域**（#184）。ooxml-swift 早已能 round-trip 這兩個標記（`Paragraph.permissionRangeMarkers`），缺的只是 che-word-mcp 這一側建立標記的程式；#172 當初把它跟另外兩個「真的缺上游能力」的保護工具（`protect_document`／`set_document_password`）歸在同一類是誤判。`start_paragraph` 必須 `>= 1`：ooxml-swift 只能把 API 附加的權限標記放在「某段落內容之後」，沒有前一段落時無法正確表達「從第 0 段開始」，遇到這個情況會明確拒絕、不做近似。範圍跨越表格（`get_paragraphs()` 的扁平索引會讓表格兩側的段落看起來相鄰，其實中間隔著表格）與頭尾顛倒的範圍同樣一律拒絕，不做靜默夾取。新增 `editor_group` 參數（`w:edGrp`，僅接受 `everyone`／`administrators`／`contributors`／`editors`／`owners`／`current`）與既有的 `editor`（`w:ed`）互斥，兩者都不給時預設 `editor_group="everyone"`——不會依字串內容用啟發式猜測呼叫端給的是使用者名稱還是群組名稱。
+
+- **儲存前的圖片一致性守門現在檢查的是「即將寫出的位元組」，不再是 `writeData` 的 scratch 序列化**（#220）。`save_document` 實際走 `DocxWriter.write(_:to:)` 的 overlay 模式，會保留來源檔案裡 typed model 管不到的 parts（例如 charts）；守門過去改用 `writeData`，這條路徑永遠是 scratch 模式，只吐出 typed model 認得的 parts。一份文件如果只在 chart part 裡帶著孤兒圖片關聯，守門過去完全看不到——不是「判斷錯」，是那個 part 在守門檢查的位元組裡根本不存在。現在守門改成把文件寫到一個拋棄式暫存路徑（用 `persistDocumentToDisk` 同一個 `DocxWriter.write(_:to:)` 入口）再讀回來檢查，看到的位元組與實際存檔完全一致。
+
+### Testing
+
+- **新增 `StructuredJSONRefusalSweepTests`**（#214），比照 #202 的 `RefusalIsErrorSweepTests` 寫法，
+  針對 JSON 字面拒絕（`return "{ \"error\": …`）這個不同的字串外衣做同一件事：(A) 原始碼掃描——
+  列出每個這種站點，enclosing function 不在 4 個讀側白名單（`walkBody` 代表
+  `getContentControl`、`listRepeatingSectionItems`、`getStyleInheritanceChain`、
+  `getNumberingDefinition`）內就判定失敗，防止下一個寫側拒絕又用 `return` 溜回去；
+  另一個測試反向鎖住白名單本身剛好是這 4 個，白名單漂移（例如某個讀側函式改名）一樣會被抓到。
+  (B) 協定層案例——內容控制／樣式／編號／分節／表格五類各取一個代表站點，斷言
+  `isError: true` 且 body 逐位元組等於修正前 `return` 的內容；並保留一個正控制組
+  （`get_content_control` 查無結果）確認讀側查詢不受影響、仍是 success。
+
+- **新增 `AdvisoryChannelTests`**（#192）。端到端案例：把 autosave checkpoint 的目的目錄設成
+  唯讀，逼出 issue 具名的那個既有失效（`dispatchAutosaveCheckpointIfDue` 的 `catch`），斷言
+  觸發那次 checkpoint 的**同一個** tool call 回應多出第二個 content 區塊，`Advisory: ` 開頭、
+  具名文件 id 與失敗原因，第一個區塊仍是原本的成功文字、`isError` 不受影響；正控制組確認一般
+  呼叫仍然只有一個 content 區塊；另一案例確認 shutdown flush（沒有作用中的 tool-call scope）
+  呼叫 `recordAdvisory` 的等效路徑不會 crash，維持設計上的「無 scope 時安全 no-op」。
+
+- **新增一個只需要 macdoc CLI binary（不需要私有 JPA 模板）就能跑的 MCP↔CLI cross-face byte-equal 測試**（#183）。唯一同時驅動兩個 binary 的測試（`testCLICrossCheckAgainstMacdocBinary`）過去雙重 gated（`MACDOC_TEMPLATE_DIR` 與 `MACDOC_CLI_PATH` 都要），在任何一般 `swift test`（含 CI）裡實際上從未跑過。新增 `Issue183CommittableFixtureCLICrossCheckTests`，用 #168 的 committable fixture 取代私有模板，只掛 `MACDOC_CLI_PATH` 一個 gate；刻意不改動既有的 `testCLICrossCheckAgainstMacdocBinary`（JPA 模板特定的斷言——slot 段落搜尋、涵蓋率基準線——值得原樣保留，而重構一段 150 行、在本次任務環境裡跑不起來驗證的 gated 整合測試去加條件式 fallback，風險大於效益）。**殘留（明確未處理）**：#183 另一半訴求——擴充 cross-face 斷言涵蓋 #180／#181 新增的介面（overwrite gate、failure-signal 是否兩面一致）——需要用 CLI 的 `--force` 旗標實際驅動並比對終止碼／stderr 形狀，CLI 原始碼在另一個不在本次任務範圍內的 repo，未能查證確切旗標語意，留待下一輪處理；`ScriptPipelineParityTests` 既有的 `testExecuteScriptToolFailedVerificationIsAToolError`／`testExecuteScriptToolRefusesExistingOutputWithoutOverwrite` 兩個 ungated 測試目前只覆蓋 MCP 這一面。
+
+- **兩個 env-gated cross-check 測試新增 ooxml-swift 版本對齊守門，並移除 `testGetScriptCoverageJPATemplateParity` 對硬編碼 `0.535±0.01` 的依賴**（#175）。`testCLICrossCheckAgainstMacdocBinary`／`testParagraphsOnlyCLICrossCheckAgainstMacdocBinary`／`testGetScriptCoverageJPATemplateParity` 三個測試現在都會在開頭檢查 `MACDOC_CLI_OOXML_SWIFT_VERSION`（選擇性環境變數，由維護者在跑 gated 套件時一併宣告 CLI 端建置用的 ooxml-swift 版本）是否與本套件 `Package.resolved` 解析出的版本一致，不一致時 `XCTSkip` 並具名兩邊版本——MCP 與 CLI binary 分別建置於不同 ooxml-swift 版本時，「位元組完全相同」的比對本來就沒有意義，過去這種情況會被誤判成真正的 regression（false failure）。這個守門是選擇性強化：沒設定 `MACDOC_CLI_OOXML_SWIFT_VERSION` 時行為與修正前相同（沒有能力判斷 CLI 端版本，不強制新增門檻）。`testGetScriptCoverageJPATemplateParity` 過去把 JPA 模板的 aggregate coverage 斷言死在 `0.535 ± 0.01`，upstream ooxml-swift 版本更新後這個數字會漂移，卻沒有東西會去更新它；現在改成：`MACDOC_CLI_PATH` 也可用時，抽出並重用 `testCLICrossCheckAgainstMacdocBinary` 已有的「即時比對 CLI `--coverage` 實際輸出」邏輯（`liveCLICoverageAggregate`），只有在 CLI 不可用、真的沒有東西可即時比對時才退回寬鬆的 sanity bound（0～1 之間），並具名原因跳過嚴格相等斷言——不再有任何寫死的比例數字。
+
+- **CI 現在有一份 committable fixture 能驗真實 Word 文件的 raw-channel 位元組保真，不再只靠 env-gated 的私有模板測試**（#168）。既有的 ungated Layer-1 fixture（`makeFiveLayerDocx`）是 authoring-built——用同一套 ooxml-swift writer 產生、同一套 reader 讀回，永遠只能驗證這一組 writer/reader 自己就同意的內容，碰不到真實 Word 文件會有、但 typed model 不管的 raw-channel 長尾（`DocxWriter` 自己的說明就點名 theme／webSettings／people／glossary 是 overlay 模式存在的理由）；能驗證這件事的測試過去只有 env-gated 的 `testCLICrossCheckAgainstMacdocBinary`／`testGetScriptCoverageJPATemplateParity`，兩者都需要私有的 JPA 模板，CI 上從未跑過。新增 `ScriptPipelineFixtures.writeWordStyleFixture`：typed-model 層（標題、編號清單、書籤、註解、表格）用 `WordDocument` 自己的 authoring API 建立，再用 zip 注入兩個 typed model 完全不管、但真實 Word 一定會有的 part（`word/theme/theme1.xml`、`word/webSettings.xml`）——這兩個 part 的內容是委託人自己手寫的標準 OOXML 樣板 XML（不是任何人的文件、不含機密或第三方內容），存成 `Tests/CheWordMCPTests/Fixtures/Issue168WordStyleFixture/` 底下可審閱的純文字檔，不是簽入版控的二進位 .docx。**誠實揭露**：這不是真實 Word 產生的文件——本任務執行環境跑不了真正的 Microsoft Word，即使跑得了，簽入 Word 產生的檔案也會牴觸本 repo 對第三方文件的 git 隱私邊界；這是「自己手寫最小 XML」的替代方案，覆蓋面是這兩個具名 part，不是真實 Word 輸出的完整長尾。新增 `Issue168CommittableWordStyleFixtureTests`（3 個 ungated 測試）：fixture 前提檢查、reverse→execute→Stage-B byte-equal（含兩個注入 part 的獨立逐位元組比對，用 `XCTUnwrap` 而非直接比較 Optional——mutation 驗證過：把兩側都變成 `nil` 時，直接 `XCTAssertEqual` 會靜默通過，`XCTUnwrap` 才會正確炸開）、MCP 工具面（`export_script`／`execute_script`）的同一組驗證。mutation 驗證：暫時讓 fixture 建構跳過注入步驟，前提測試與逐 part 比對測試立即由 GREEN 轉 RED，改回後轉綠。
+
+- **`scripts/fuzz-extreme-params.py` 的覆蓋率判定不再把任何成功回應（`isError: false`）當成「有走到目標參數」的證據**（#239）。獨立審查在 14 個參數上找到三種誤判：`isError: false` 但內容其實是另一個參數的錯誤（例如 `start_new_list` 其實被 `abstract_num_id=1` 擋下）；工具什麼都沒做就回 OK（例如 `set_table_style`）；用到該參數的分支根本沒被選到（例如 `set_line_numbers` 的 `enable` 預設 false）。三種都共用同一個根因：判定式有一條 `out.startswith("OK")` 的分支，任何成功回應都算數，不管內容跟目標參數有沒有關係。移除這條分支後，判定改成純正面證據：錯誤訊息指名參數／回顯數值，或回應內容含目標參數的 key 或 value。判定邏輯抽成獨立的 `parameter_reached()` 函式，新增 `scripts/tests/fuzz-coverage-judgment.py`（9 個案例，透過 `ast` 抽出函式原始碼獨立執行——腳本本體是頂層直接跑的程序化腳本，`import` 會在載入時就吃 argv 噴掉，不能直接 import）；mutation 驗證：暫時復原 `out.startswith("OK")` 分支，3 個案例立即由 GREEN 轉 RED（三個誤判 shape 各自對應一個案例），改回後轉綠。修正後針對目前的 245→255 個 schema 參數實際跑一次：`probes=1338 crashes=0 timeouts=0 other_failures=0`，`coverage: 216/255 (84.7%)`——誠實的覆蓋率確實比先前回報的數字低（獨立審查當時量到約 92.7%；schema 參數總數與那次審查時也已不同）。逐一核對 unreached 清單後修好一個明確可修的 `OV` 前置條件錯誤：`start_new_list` 的 `abstract_num_id` 被 `base_args` 的正則預設值（1）填成錯的，實際上文件裡唯一的編號定義是 `abstractNumId=0`（`Numbering.nextAbstractNumId` 對空清單從 0 起算），導致每個探測都在 `paragraph_index`（真正的目標參數）自己的驗證之前就被 `abstract_num_id: 1 not_found` 擋下；補上 `"start_new_list": {"abstract_num_id": 0}` 後這個參數轉為 reached（217/255）。**其餘 38 個 unreached 參數多數是「工具真的走到目標、也接受了極端值，但成功訊息剛好沒有回顯參數名或數值」（例如 `set_columns` 會把超大值夾到上限再回報夾過的數字，不是原始輸入值）——這不是 `OV`／`PRE` 能修的前置條件缺口，需要深入個別工具的回應語意或修改工具本身的訊息內容，超出本次腳本層修正的範圍，留待下一輪**。`FUZZ_MIN_COVERAGE` 預設值從 0.97 下修到 0.80（低於量到的 85.1% 留安全邊際，同時仍能擋下覆蓋率真正崩潰的迴歸）——0.97 是校準給舊的（會誤判的）判定式用的，換成誠實判定式後從未真正達到過。
+
+- **`(mem)` 序列的記憶體檢查改成量測整段序列期間的峰值，不再只讀最後一步結束時的單一數值**（#239）。過去 `resident_mb()` 只在所有步驟跑完、`save_document` 也回傳之後呼叫一次；如果真正的記憶體高峰發生在存檔中途（例如把 65,536 格的表格序列化成 XML 再壓縮成 zip 的過程），這個高峰永遠量不到。新增 `PeakMemSampler`：背景執行緒每 50ms 輪詢一次常駐記憶體，從序列第一步開始到 `Session.close()` 前結束，取樣期間的最大值取代單一讀數。
+
+- **`FuzzExtremeParamsGateTests` 的過期檢查現在也涵蓋 `Package.resolved`／`Package.swift`，不再只看 `Sources/`**（#239）。過去只比較 binary 的修改時間與 `Sources/` 底下最新的 `.swift` 檔案，依賴版本更新（例如 ooxml-swift bump）不會觸及 `Sources/` 任何檔案，binary 沒重編也能通過這個檢查，讓 fuzzer 實際上是在對舊版依賴跑、卻回報「對照目前程式碼零當機」。
+
+### 升級注意
+
+- `execute_script` 的 Stage-B byte-equal 驗證失敗，body 從純文字散文（`Error: byte-equal 驗證
+  失敗，未寫出任何檔案。以下 part 與參考檔不符：\n  - word/document.xml`）改為結構化 JSON
+  （`{"broken_parts":["word/document.xml"],"verified":false}`）；`isError: true` 不變。過去用
+  字串比對（例如找「byte-equal 驗證失敗」或逐行解析 `  - ` 開頭的 part 清單）的呼叫端需要改成
+  解析 JSON、讀 `verified`／`broken_parts` 欄位（#182）。
+
+- 23 個寫側工具（`update_content_control_text`／`replace_content_control_content`／
+  `delete_content_control`／`update_repeating_section_item`／`link_styles`／
+  `add_style_name_alias`／`override_numbering_level`／`assign_numbering_to_paragraph`／
+  `continue_list`／`start_new_list`／`set_line_numbers_for_section`／
+  `set_section_vertical_alignment`／`set_page_number_format`／`set_section_break_type`／
+  `set_title_page_distinct`／`set_section_header_footer_references`／
+  `set_table_conditional_style`／`insert_nested_table`／`set_table_layout`／
+  `set_header_row`／`set_table_indent`／`link_section_header_to_previous`／
+  `unlink_section_header_from_previous`）在特定拒絕分支（32 個站點，例如目標
+  id／num_id／table_index／section_index 不存在或越界）過去回報成功（`isError` 未設），
+  body 是帶 `"error"` 欄位的 JSON 字面；本版起這些分支改為 `isError: true`，**body 文字逐位元組
+  不變**。只檢查 `isError` 的呼叫端過去會把這些拒絕誤判為成功，現在會正確拿到失敗；解析 JSON
+  找 `error` key 的呼叫端不受影響，因為 body 沒有變（#214）。讀側查詢（`get_content_control`、
+  `list_repeating_section_items`、`get_style_inheritance_chain`、`get_numbering_definition`）
+  查無結果時仍是 `isError` 未設的 success，未受影響。
+
+- 部分工具的回應現在可能在主要 content 區塊之後多出一個或多個以 `Advisory: ` 開頭的獨立
+  content 區塊（`CallTool.Result.content[1...]`），例如 `open_document` 帶 `autosave_every`
+  時若後續某次呼叫的 autosave checkpoint 寫入失敗。`isError` 不受影響，只讀 `content.first`／
+  `content[0]` 的呼叫端完全不受影響；讀取整個 `content` 陣列並假設「一律只有一個區塊」的呼叫端
+  需要改成只信任第一個區塊是主要結果，其餘視為附加建議（#192）。
+
+- **`save_document`／`finalize_document`／`checkpoint` 的圖片一致性守門變嚴格：過去看不到、現在看得到 overlay 模式保留但 typed model 不管理的 parts（例如 chart）裡的孤兒圖片關聯**（#220）。方向明確：只會讓過去被放過的存檔現在被 `E_IMAGE_CONSISTENCY` 擋下，不會反過來讓過去被擋的存檔通過。會被新擋下的情況僅限於：文件在 session 中對某個 typed-model 不管理的 part 新增了孤兒圖片關聯（目前沒有任何 MCP 工具能編輯 chart 等此類 part，所以一般使用情境下不會觸發）；開檔當下就已存在的孤兒（含 chart part 裡的）不受影響，`documentImageOrphanBaseline` 一律以開檔時的真實磁碟位元組為基準。呼叫端若真的遇到這個新的擋下：可用既有的 `allow_orphan_images: true` 逃生閥，或先用 `list_images`／Direct Mode 讀回實際檔案確認孤兒是否為預期後再決定是否覆寫。
+
 ## [4.7.0] - 2026-09-28
 
 > 多個過去回報成功卻沒有真的寫入的工具（六個格式工具、浮水印三件組、欄位代碼與內容控制的越界索引）改為真的寫入或回 `isError`；JSON-RPC batch 內有請求超過深度上限時整批不執行；`list_images`／`get_document_info` 的輸出多了欄位；字串參數的型別與列舉值改為嚴格驗證（見文末「升級注意」）。依本專案先例 bump minor。
