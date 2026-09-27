@@ -1901,7 +1901,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "update_cell",
-                description: "更新表格儲存格內容：把儲存格第一段的文字換成 text，保留該段的段落格式。儲存格有多個段落時，只改第一段，其餘段落原樣保留（不會被刪除）；要改其他段落請用 update_cell_paragraph。",
+                description: "更新表格儲存格內容：把儲存格第一段的文字換成 text，保留該段的段落格式。儲存格有多個段落時，只改第一段，其餘段落原樣保留（不會被刪除）；要改其他段落請用 update_cell_paragraph。目標段落已有 run 時沿用該 run 的格式（字型／粗體等）；完全沒有 run 時（常見於表單待填欄位），改採同列其他儲存格的字型，同列也沒有時改採文件內最常見的宣告字型（#191），仍找不到才維持無格式（落到 docDefaults）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -9293,6 +9293,123 @@ actor WordMCPServer {
         return result
     }
 
+    /// che-word-mcp#191: does `RunProperties` declare any font at all (the
+    /// `rFonts` 4-axis struct or the legacy single-axis `fontName`)? A run
+    /// with no declared font renders in Word's `docDefaults` font, which is
+    /// exactly the failure mode this issue is about — so a "fallback" run's
+    /// properties only count as usable if they'd actually pin a font.
+    private func hasDeclaredFont(_ properties: RunProperties) -> Bool {
+        if let rFonts = properties.rFonts,
+           rFonts.ascii != nil || rFonts.hAnsi != nil || rFonts.eastAsia != nil || rFonts.cs != nil {
+            return true
+        }
+        return properties.fontName != nil
+    }
+
+    /// A short, stable key distinguishing declared fonts for frequency
+    /// counting. Not meant to be exhaustive over every `RunProperties` field
+    /// (bold/italic/etc. don't matter for "which font renders this text") —
+    /// only the axes that determine which face Word picks.
+    private func declaredFontFingerprint(_ properties: RunProperties) -> String {
+        if let rFonts = properties.rFonts {
+            return "rFonts:\(rFonts.ascii ?? "")|\(rFonts.hAnsi ?? "")|\(rFonts.eastAsia ?? "")|\(rFonts.cs ?? "")"
+        }
+        return "fontName:\(properties.fontName ?? "")"
+    }
+
+    /// che-word-mcp#191 Tier 2: the most common declared-font `RunProperties`
+    /// among every non-empty run in the document (body paragraphs, all table
+    /// cells, one level of nested tables, and block-level content-control
+    /// children). This is the document's "dominant" font — for a form whose
+    /// main body is entirely one font (890 `eastAsia="標楷體"` runs in the
+    /// #191 reproducer) with only `docDefaults` disagreeing, this recovers
+    /// the form's actual declared font rather than the default nobody chose.
+    private func dominantDeclaredFontProperties(in doc: WordDocument) -> RunProperties? {
+        var counts: [String: (count: Int, properties: RunProperties)] = [:]
+        func note(_ properties: RunProperties) {
+            guard hasDeclaredFont(properties) else { return }
+            let key = declaredFontFingerprint(properties)
+            if let existing = counts[key] {
+                counts[key] = (existing.count + 1, existing.properties)
+            } else {
+                counts[key] = (1, properties)
+            }
+        }
+        func walk(paragraph: Paragraph) {
+            for run in paragraph.runs where !run.text.isEmpty {
+                note(run.properties)
+            }
+        }
+        func walk(cell: TableCell) {
+            for paragraph in cell.paragraphs { walk(paragraph: paragraph) }
+            for nested in cell.nestedTables { walk(table: nested) }
+        }
+        func walk(table: Table) {
+            for row in table.rows {
+                for cell in row.cells { walk(cell: cell) }
+            }
+        }
+        func walk(children: [BodyChild]) {
+            for child in children {
+                switch child {
+                case .paragraph(let paragraph):
+                    walk(paragraph: paragraph)
+                case .table(let table):
+                    walk(table: table)
+                case .contentControl(_, let inner):
+                    walk(children: inner)
+                case .bookmarkMarker, .rawBlockElement:
+                    continue
+                }
+            }
+        }
+        walk(children: doc.body.children)
+        return counts.values.max(by: { $0.count < $1.count })?.properties
+    }
+
+    /// che-word-mcp#191: pick a fallback `RunProperties` for a cell that has
+    /// no existing run to inherit from — `updateCell`'s own "if the cell
+    /// already has a run, reuse its `rPr`" branch (ooxml-swift, unmodified)
+    /// only covers cells that already have *some* run. Priority:
+    /// 1. another cell in the *same row* of `table` that has a non-empty run
+    ///    with a declared font (any column, not just to the left — a caller
+    ///    filling column 0 of a row whose label lives in column 1 still gets
+    ///    the row's font);
+    /// 2. failing that, the document's dominant declared font (see
+    ///    `dominantDeclaredFontProperties`).
+    /// Returns `nil` when neither search finds anything — the new run then
+    /// stays unformatted, matching pre-#191 behaviour rather than fabricating
+    /// a font out of nothing.
+    private func fallbackCellRunProperties(doc: WordDocument, table: Table, row: Int, excludingCol: Int) -> RunProperties? {
+        if row < table.rows.count {
+            for (colIndex, cell) in table.rows[row].cells.enumerated() where colIndex != excludingCol {
+                for paragraph in cell.paragraphs {
+                    for run in paragraph.runs where !run.text.isEmpty {
+                        if hasDeclaredFont(run.properties) {
+                            return run.properties
+                        }
+                    }
+                }
+            }
+        }
+        return dominantDeclaredFontProperties(in: doc)
+    }
+
+    /// The `body.children` index of the `tableIndex`-th top-level `.table`
+    /// (mirrors ooxml-swift's own private `getTableIndices()` addressing —
+    /// che-word-mcp cannot call that directly, so this reimplements the same
+    /// "Nth `.table` case among direct body children" rule it documents).
+    private func topLevelTableBodyIndex(_ doc: WordDocument, tableIndex: Int) -> Int? {
+        var count = 0
+        for (i, child) in doc.body.children.enumerated() {
+            if case .table = child {
+                if count == tableIndex { return i }
+                count += 1
+            }
+        }
+        return nil
+    }
+
     private func updateCell(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -9313,7 +9430,41 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
+        // che-word-mcp#191: determine BEFORE the write whether the target
+        // cell has zero runs — that's the exact condition under which
+        // ooxml-swift's `updateCell` creates a brand-new, unformatted run
+        // (its "else" branch). Computed from a best-effort read; if the
+        // coordinates are invalid this silently skips the fallback and lets
+        // `doc.updateCell` below throw its own (better) validated error.
+        var fallbackProperties: RunProperties?
+        let tablesBeforeWrite = doc.getTables()
+        if tableIndex >= 0, tableIndex < tablesBeforeWrite.count {
+            let table = tablesBeforeWrite[tableIndex]
+            if row >= 0, row < table.rows.count, col >= 0, col < table.rows[row].cells.count {
+                let cellHasNoRuns = table.rows[row].cells[col].paragraphs.first?.runs.first == nil
+                if cellHasNoRuns {
+                    fallbackProperties = fallbackCellRunProperties(doc: doc, table: table, row: row, excludingCol: col)
+                }
+            }
+        }
+
         try doc.updateCell(tableIndex: tableIndex, row: row, col: col, text: text)
+
+        if let fallbackProperties,
+           let bodyIndex = topLevelTableBodyIndex(doc, tableIndex: tableIndex),
+           case .table(var table) = doc.body.children[bodyIndex],
+           row < table.rows.count, col < table.rows[row].cells.count,
+           var paragraph = table.rows[row].cells[col].paragraphs.first,
+           var newRun = paragraph.runs.first {
+            newRun.properties = fallbackProperties
+            paragraph.runs[0] = newRun
+            table.rows[row].cells[col].paragraphs[0] = paragraph
+            doc.body.children[bodyIndex] = .table(table)
+            if tableIndex < doc.body.tables.count {
+                doc.body.tables[tableIndex] = table
+            }
+        }
+
         try await storeDocument(doc, for: docId)
 
         return "Updated cell at table[\(tableIndex)][\(row)][\(col)]"
