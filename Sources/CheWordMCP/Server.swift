@@ -3649,7 +3649,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）。若超出 top-level 段落數但仍在 get_paragraphs 的 readback 範圍內，函式庫目前會改在文件末尾附加一個新段落，不會報錯（#138 已知殘留行為，見 docs/paragraph-index-conventions.md）")
                         ]),
                         "left_operand": .object([
                             "type": .string("string"),
@@ -3687,7 +3687,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）。若超出 top-level 段落數但仍在 get_paragraphs 的 readback 範圍內，函式庫目前會改在文件末尾附加一個新段落，不會報錯（#138 已知殘留行為，見 docs/paragraph-index-conventions.md）")
                         ]),
                         "expression": .object([
                             "type": .string("string"),
@@ -3713,7 +3713,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）。若超出 top-level 段落數但仍在 get_paragraphs 的 readback 範圍內，函式庫目前會改在文件末尾附加一個新段落，不會報錯（#138 已知殘留行為，見 docs/paragraph-index-conventions.md）")
                         ]),
                         "type": .object([
                             "type": .string("string"),
@@ -3739,7 +3739,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）。若超出 top-level 段落數但仍在 get_paragraphs 的 readback 範圍內，函式庫目前會改在文件末尾附加一個新段落，不會報錯（#138 已知殘留行為，見 docs/paragraph-index-conventions.md）")
                         ]),
                         "type": .object([
                             "type": .string("string"),
@@ -3761,7 +3761,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）。若超出 top-level 段落數但仍在 get_paragraphs 的 readback 範圍內，函式庫目前會改在文件末尾附加一個新段落，不會報錯（#138 已知殘留行為，見 docs/paragraph-index-conventions.md）")
                         ]),
                         "field_name": .object([
                             "type": .string("string"),
@@ -3791,7 +3791,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）。若超出 top-level 段落數但仍在 get_paragraphs 的 readback 範圍內，函式庫目前會改在文件末尾附加一個新段落，不會報錯（#138 已知殘留行為，見 docs/paragraph-index-conventions.md）")
                         ]),
                         "identifier": .object([
                             "type": .string("string"),
@@ -3823,7 +3823,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）。若超出 top-level 段落數但仍在 get_paragraphs 的 readback 範圍內，函式庫目前會改在文件末尾附加一個新段落，不會報錯（#138 已知殘留行為，見 docs/paragraph-index-conventions.md）")
                         ]),
                         "type": .object([
                             "type": .string("string"),
@@ -5085,7 +5085,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("get_paragraphs readback index（從 0 開始；top-level paragraphs + block-level SDT 內段落，不含 table-cell paragraphs）")
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("paragraph_index")])
@@ -5189,7 +5189,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）")
                         ]),
                         "char": .object([
                             "type": .string("string"),
@@ -5245,7 +5245,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）")
                         ]),
                         "type": .object([
                             "type": .string("string"),
@@ -5281,7 +5281,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始），水平線會加在該段落下方")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs），水平線會加在該段落下方")
                         ]),
                         "style": .object([
                             "type": .string("string"),
@@ -5313,7 +5313,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始），不指定則套用全文件")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs），不指定則套用全文件")
                         ]),
                         "enable": .object([
                             "type": .string("boolean"),
@@ -5337,7 +5337,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）")
                         ]),
                         "enable": .object([
                             "type": .string("boolean"),
@@ -6268,7 +6268,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）")
                         ]),
                         "enable": .object([
                             "type": .string("boolean"),
@@ -6292,7 +6292,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("get_paragraphs readback index（從 0 開始；top-level paragraphs + block-level SDT 內段落，不含 table-cell paragraphs）")
                         ]),
                         "position": .object([
                             "type": .string("integer"),
@@ -6324,7 +6324,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("get_paragraphs readback index（從 0 開始；top-level paragraphs + block-level SDT 內段落，不含 table-cell paragraphs）")
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("paragraph_index")])
@@ -6344,7 +6344,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("top-level paragraph ordinal（從 0 開始；只計直接位於 body.children 的 `.paragraph`，不計 tables / block-level SDTs）")
                         ]),
                         "enable": .object([
                             "type": .string("boolean"),
@@ -6368,7 +6368,7 @@ actor WordMCPServer {
                         ]),
                         "paragraph_index": .object([
                             "type": .string("integer"),
-                            "description": .string("段落索引（從 0 開始）")
+                            "description": .string("get_paragraphs readback index（從 0 開始；top-level paragraphs + block-level SDT 內段落，不含 table-cell paragraphs）")
                         ]),
                         "level": .object([
                             "type": .string("integer"),
