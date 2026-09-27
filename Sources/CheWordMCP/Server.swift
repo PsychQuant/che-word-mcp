@@ -5571,7 +5571,7 @@ actor WordMCPServer {
             // 11.1 insert_watermark - 文字浮水印
             Tool(
                 name: "insert_watermark",
-                description: "插入文字浮水印（斜向置中於頁面背景）。目前未實作，呼叫會回 isError 並具名缺少的 OOXML（#201）",
+                description: "插入文字浮水印（斜向置中於頁面背景）。#208：把 VML <v:shape id=\"PowerPlusWaterMarkObject…\"> 寫進每個 header part（default/first/even，文件目前沒有 header 時自動建一個 default header）。同一 header 再呼叫一次會取代舊浮水印，不會疊加。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -5611,7 +5611,7 @@ actor WordMCPServer {
             // 11.2 insert_image_watermark - 圖片浮水印
             Tool(
                 name: "insert_image_watermark",
-                description: "插入圖片浮水印（置中於頁面背景）。目前未實作，呼叫會回 isError 並具名缺少的 OOXML（#201）",
+                description: "插入圖片浮水印（置中於頁面背景）。#208：把圖片寫進 word/media/、把 relationship 寫進每個 header 自己的 _rels、把 VML <v:shape id=\"WordPictureWatermark…\"> 寫進每個 header part。image_path 僅接受 png/jpg/jpeg/gif/bmp/tif/tiff（副檔名＋魔數雙重檢查）、上限 10MB。需要文件已存過（有來源 archive）；create_document 建立後從未存檔的文件沒有可寫入的 package archive，會回 refusal——請改用 insert_watermark（文字浮水印無此限制）或先存檔再 open_document。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -5639,7 +5639,7 @@ actor WordMCPServer {
             // 11.3 remove_watermark - 移除浮水印
             Tool(
                 name: "remove_watermark",
-                description: "移除文件的浮水印。目前未實作，呼叫會回 isError 並具名缺少的 OOXML（#201）",
+                description: "移除文件的浮水印。#208：從每個 header part 移除 PowerPlusWaterMarkObject（文字）與 WordPictureWatermark（圖片）shape，圖片浮水印會一併移除其 header-local image relationship。文件本來就沒有浮水印時回成功（無事可做），不報錯。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -16108,68 +16108,390 @@ actor WordMCPServer {
         return "Keep with next \(enable ? "enabled" : "disabled") for paragraph \(paragraphIndex)"
     }
 
-    // MARK: - Phase 2: 浮水印與文件保護
+    // MARK: - Phase 2: 浮水印與文件保護 (#208 — real implementation, replacing the #201 honest stubs)
 
-    /// 插入文字浮水印
+    /// #208 shared XML-attribute-value escape for the VML fragments this
+    /// section builds by hand (no ooxml-swift public escaper exists for this —
+    /// see `Header.escapeXML`/`escapeXMLAttribute`, both private to that
+    /// module).
+    private static func vmlAttributeEscape(_ s: String) -> String {
+        s.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&apos;")
+    }
+
+    /// A paragraph this section itself inserted, and only such a paragraph:
+    /// every run carries nothing but a watermark `<w:pict>` rawElement. Used
+    /// both to make insert idempotent (replace, not accumulate) and to find
+    /// what `remove_watermark` must remove.
+    private static func paragraphIsWatermarkOnly(_ paragraph: Paragraph) -> Bool {
+        !paragraph.runs.isEmpty && paragraph.runs.allSatisfy { run in
+            guard let elements = run.rawElements, !elements.isEmpty else { return false }
+            return elements.allSatisfy { el in
+                el.name == "pict" && (el.xml.contains("PowerPlusWaterMarkObject") || el.xml.contains("WordPictureWatermark"))
+            }
+        }
+    }
+
+    private static func firstRegexCapture(_ pattern: String, in text: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let ns = text as NSString
+        guard let m = regex.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)), m.numberOfRanges >= 2 else { return nil }
+        return ns.substring(with: m.range(at: 1))
+    }
+
+    /// Removes any existing watermark paragraph(s) from `header` (see
+    /// `paragraphIsWatermarkOnly`) and, for an image watermark, the
+    /// header-local image relationship its `<v:imagedata r:id="…">`
+    /// referenced — leaving that relationship behind would be exactly the
+    /// #175/#199 orphan signature (declared, no longer referenced) on the
+    /// very next save. Does not delete the now possibly-unused media file
+    /// from the archive: another relationship (a second header type sharing
+    /// the same image) may still point at it, and this function sees one
+    /// header at a time.
+    private static func stripWatermark(from header: inout Header) -> Bool {
+        var staleRelationshipIds: Set<String> = []
+        let before = header.bodyChildren.count
+        header.bodyChildren.removeAll { child in
+            guard case .paragraph(let para) = child, paragraphIsWatermarkOnly(para) else { return false }
+            for run in para.runs {
+                for el in run.rawElements ?? [] where el.name == "pict" {
+                    if let rid = firstRegexCapture(#"<v:imagedata[^>]*\br:id="([^"]+)""#, in: el.xml) {
+                        staleRelationshipIds.insert(rid)
+                    }
+                }
+            }
+            return true
+        }
+        if !staleRelationshipIds.isEmpty {
+            header.relationships.relationships.removeAll { staleRelationshipIds.contains($0.id) }
+        }
+        return header.bodyChildren.count != before || !staleRelationshipIds.isEmpty
+    }
+
+    /// A header's `rootAttributes` captured from a real source document (a
+    /// non-empty map) carries only the `xmlns:*` the ORIGINAL header actually
+    /// used — `ContainerRootTag.render` then emits exactly that set, not the
+    /// API-built 5-namespace default (which only applies when
+    /// `rootAttributes` is empty). A plain header with no prior VML content
+    /// therefore has no `xmlns:v`/`xmlns:o`/`xmlns:w10` declared; writing a
+    /// `<v:shape>` into it without adding them first would leave `v:`/`o:`
+    /// prefixes undeclared — invalid XML libxml2 refuses to parse back. Only
+    /// touches a non-empty map (an empty one already gets the full template).
+    private static func ensureVMLNamespaces(in header: inout Header) {
+        guard !header.rootAttributes.isEmpty else { return }
+        for (key, value) in [
+            ("xmlns:v", "urn:schemas-microsoft-com:vml"),
+            ("xmlns:o", "urn:schemas-microsoft-com:office:office"),
+            ("xmlns:w10", "urn:schemas-microsoft-com:office:word"),
+        ] where header.rootAttributes[key] == nil {
+            header.rootAttributes[key] = value
+        }
+    }
+
+    /// Real Word VML boilerplate for the `_x0000_t136` "text plaque" preset
+    /// shape a text watermark uses (`type="#_x0000_t136"` below references
+    /// it). Declared once per header that carries the watermark — the small
+    /// duplication cost if a document has 2-3 header types is preferable to
+    /// tracking cross-header shapetype state for a fixed, content-free block.
+    private static let watermarkShapetypeXML = """
+    <v:shapetype id="_x0000_t136" coordsize="1600,21600" o:spt="136" adj="10800" \
+    path="m@7,0l@8,5400,@7,21600@9,5400xe"><v:formulas><v:f eqn="sum #0 0 10800"/>\
+    <v:f eqn="prod #0 2 1"/><v:f eqn="sum 21600 0 @1"/><v:f eqn="sum 0 0 @2"/>\
+    <v:f eqn="sum 21600 0 @3"/><v:f eqn="if @0 @3 0"/><v:f eqn="if @0 21600 @1"/>\
+    <v:f eqn="if @0 0 @2"/><v:f eqn="if @0 @4 21600"/><v:f eqn="mid @5 @6"/>\
+    <v:f eqn="mid @8 @5"/><v:f eqn="mid @7 @8"/><v:f eqn="mid @6 @7"/>\
+    <v:f eqn="sum @6 0 @5"/></v:formulas><v:path o:connecttype="custom" \
+    o:connectlocs="@9,0;0,@5;@9,21600;21600,@5" o:connectangles="270,180,90,0" \
+    textpathok="t"/><v:textpath on="t" fitshape="t"/></v:shapetype>
+    """
+
+    /// The `<w:pict>` fragment for a text watermark — see #208's target shape.
+    private static func textWatermarkPictXML(font: String, color: String, size: Int, semitransparent: Bool, rotation: Int, text: String) -> String {
+        let opacity = semitransparent ? "0.5" : "1"
+        return "<w:pict>" + watermarkShapetypeXML
+            + "<v:shape id=\"PowerPlusWaterMarkObject1\" o:spid=\"_x0000_s2051\" type=\"#_x0000_t136\" "
+            + "style=\"position:absolute;margin-left:0;margin-top:0;width:415pt;height:207.5pt;"
+            + "rotation:\(rotation);z-index:-251654144;mso-position-horizontal:center;"
+            + "mso-position-horizontal-relative:margin;mso-position-vertical:center;"
+            + "mso-position-vertical-relative:margin\" o:allowincell=\"f\" "
+            + "fillcolor=\"#\(vmlAttributeEscape(color))\" stroked=\"f\">"
+            + "<v:fill opacity=\"\(opacity)\"/>"
+            + "<v:textpath style=\"font-family:&quot;\(vmlAttributeEscape(font))&quot;;font-size:\(size)pt\" "
+            + "string=\"\(vmlAttributeEscape(text))\"/></v:shape></w:pict>"
+    }
+
+    /// The `<w:pict>` fragment for an image watermark — see #208's target
+    /// shape. `gain`/`blacklevel` are the washout (faded) effect; omitted
+    /// when the caller asked for a full-strength image.
+    private static func imageWatermarkPictXML(relationshipId: String, washout: Bool, widthPt: Double, heightPt: Double) -> String {
+        let washoutAttrs = washout ? " gain=\"19661f\" blacklevel=\"22938f\"" : ""
+        return "<w:pict><v:shape id=\"WordPictureWatermark1\" o:spid=\"_x0000_s2052\" type=\"#_x0000_t75\" "
+            + "style=\"position:absolute;left:0;top:0;width:\(String(format: "%.1f", widthPt))pt;"
+            + "height:\(String(format: "%.1f", heightPt))pt;z-index:-251657216;mso-position-horizontal:center;"
+            + "mso-position-horizontal-relative:margin;mso-position-vertical:center;"
+            + "mso-position-vertical-relative:margin\" o:allowincell=\"f\">"
+            + "<v:imagedata r:id=\"\(vmlAttributeEscape(relationshipId))\" o:title=\"\"\(washoutAttrs)/></v:shape></w:pict>"
+    }
+
+    private static func freshRelationshipId(existing: [String]) -> String {
+        let used = Set(existing.compactMap { id -> Int? in
+            guard id.hasPrefix("rId") else { return nil }
+            return Int(id.dropFirst(3))
+        })
+        var n = 1
+        while used.contains(n) { n += 1 }
+        return "rId\(n)"
+    }
+
+    private static func freshWatermarkMediaFileName(ext: String, in archiveTempDir: URL) -> String {
+        let mediaDir = archiveTempDir.appendingPathComponent("word/media", isDirectory: true)
+        let fm = FileManager.default
+        var n = 1
+        while fm.fileExists(atPath: mediaDir.appendingPathComponent("watermark\(n).\(ext)").path) { n += 1 }
+        return "watermark\(n).\(ext)"
+    }
+
+    private static let watermarkImageAllowedExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff"]
+
+    /// #208 security guard (issue body: "image_path 一旦真的被讀進 media part，
+    /// 就是任意絕對路徑 → 內容嵌進 .docx → 隨文件外流的原語"): extension
+    /// whitelist + magic-byte sniff + size cap. Deliberately does NOT also
+    /// restrict `image_path` to the open document's own directory (no
+    /// existing tool in this server does — `insert_image_from_path` accepts
+    /// any absolute path — and Session state does not currently expose a
+    /// "this doc_id's directory" allowlist to check against); that narrower
+    /// restriction is a documented residual, not silently dropped.
+    private static func watermarkImageMagicBytesMatch(_ data: Data, ext: String) -> Bool {
+        // `Data.starts(with:)` only ever inspects as many leading bytes as
+        // the pattern needs — no separate truncation step, so this stays
+        // outside TruncationPolicySweepTests' "hardcoded text truncation"
+        // sweep (this is a binary magic-number check, not text elision).
+        switch ext {
+        case "png": return data.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        case "jpg", "jpeg": return data.count >= 2 && data[data.startIndex] == 0xFF && data[data.startIndex + 1] == 0xD8
+        case "gif": return data.starts(with: Array("GIF87a".utf8)) || data.starts(with: Array("GIF89a".utf8))
+        case "bmp": return data.count >= 2 && data[data.startIndex] == 0x42 && data[data.startIndex + 1] == 0x4D
+        case "tif", "tiff":
+            return data.starts(with: [0x49, 0x49, 0x2A, 0x00]) || data.starts(with: [0x4D, 0x4D, 0x00, 0x2A])
+        default: return false
+        }
+    }
+
+    private static let watermarkImageMaxBytes = 10 * 1024 * 1024
+
+    /// 插入文字浮水印 (#208)
     private func insertWatermark(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard args["text"]?.stringValue != nil else {
+        guard let text = args["text"]?.stringValue, !text.isEmpty else {
             throw WordError.missingParameter("text")
         }
-        guard openDocuments[docId] != nil else {
+        guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
 
-        // #201: this used to echo the requested font / colour / size back as if
-        // applied. A text watermark is a VML shape inside every header part, and
-        // nothing here writes one. Fail and say so (same treatment as #172).
-        throw ToolNotImplemented(
-            tool: "insert_watermark", issue: "#201",
-            missing: "a <w:pict><v:shape id=\"PowerPlusWaterMarkObject…\" o:spt=\"136\" …>"
-                + "<v:textpath string=\"…\"/></v:shape></w:pict> run into every header part (word/header*.xml)")
+        let font = args["font"]?.stringValue ?? "Calibri Light"
+        let color = args["color"]?.stringValue ?? "C0C0C0"
+        let size = try optionalInt(args, "size") ?? 72
+        guard size > 0 else {
+            throw WordError.invalidParameter("size", "必須是正整數（字型點數），不接受 \(size)")
+        }
+        let semitransparent = try optionalBool(args, "semitransparent") ?? true
+        let rotation = try optionalInt(args, "rotation") ?? -45
+
+        // #208 residual note: a document with zero headers gets one
+        // auto-created default header (mirrors Word's own "Insert Watermark"
+        // behavior on a document with none) so the watermark has somewhere
+        // to live.
+        if doc.headers.isEmpty {
+            _ = doc.addHeader(text: "", type: .default)
+        }
+
+        var touchedHeaderIds: [String] = []
+        for i in doc.headers.indices {
+            var header = doc.headers[i]
+            _ = Self.stripWatermark(from: &header)
+            Self.ensureVMLNamespaces(in: &header)
+            var run = Run(text: "")
+            run.rawElements = [RawElement(name: "pict", xml: Self.textWatermarkPictXML(
+                font: font, color: color, size: size, semitransparent: semitransparent, rotation: rotation, text: text))]
+            header.bodyChildren.insert(.paragraph(Paragraph(runs: [run])), at: 0)
+            doc.headers[i] = header
+            doc.markPartDirty("word/\(header.fileName)")
+            touchedHeaderIds.append(header.id)
+        }
+
+        try await storeDocument(doc, for: docId)
+        return "Inserted text watermark '\(text)' into \(touchedHeaderIds.count) header part(s): \(touchedHeaderIds.joined(separator: ", "))"
     }
 
-    /// 插入圖片浮水印
+    /// 插入圖片浮水印 (#208)
     private func insertImageWatermark(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard args["image_path"]?.stringValue != nil else {
+        guard let imagePath = args["image_path"]?.stringValue else {
             throw WordError.missingParameter("image_path")
         }
-        guard openDocuments[docId] != nil else {
+        guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
 
-        // #201: this used to report the image as inserted without touching any
-        // header part. The file-existence check that sat here is gone as well:
-        // it never read a byte, and answering "not found" with a plain string
-        // (isError unset) while answering "found" with a thrown error turned the
-        // tool into an existence oracle with reversed polarity. Every input now
-        // fails the same way, naming what a real implementation must write.
-        throw ToolNotImplemented(
-            tool: "insert_image_watermark", issue: "#201",
-            missing: "a <w:pict><v:shape id=\"WordPictureWatermark…\" type=\"#_x0000_t75\" …>"
-                + "<v:imagedata r:id=\"rIdN\"/></v:shape></w:pict> run into every header part (word/header*.xml), "
-                + "plus the image relationship in each header's rels and the media part it points at")
+        let scale = try optionalInt(args, "scale") ?? 100
+        guard scale > 0, scale <= 1000 else {
+            throw WordError.invalidParameter("scale", "必須介於 1 到 1000 之間（百分比），不接受 \(scale)")
+        }
+        let washout = try optionalBool(args, "washout") ?? true
+
+        guard FileManager.default.fileExists(atPath: imagePath) else {
+            throw WordError.fileNotFound(imagePath)
+        }
+        let ext = (imagePath as NSString).pathExtension.lowercased()
+        guard Self.watermarkImageAllowedExtensions.contains(ext) else {
+            throw WordError.invalidParameter("image_path", "副檔名 '\(ext)' 不在允許清單內（\(Self.watermarkImageAllowedExtensions.sorted().joined(separator: "/"))）")
+        }
+        guard let imageData = FileManager.default.contents(atPath: imagePath) else {
+            throw WordError.fileNotFound(imagePath)
+        }
+        guard imageData.count <= Self.watermarkImageMaxBytes else {
+            throw WordError.invalidParameter("image_path", "檔案大小 \(imageData.count) bytes 超過上限 \(Self.watermarkImageMaxBytes) bytes（10MB）")
+        }
+        guard Self.watermarkImageMagicBytesMatch(imageData, ext: ext) else {
+            throw WordError.invalidParameter("image_path", "檔案內容的魔數（magic bytes）與副檔名 '\(ext)' 不符，拒絕當成圖片嵌入")
+        }
+
+        // #208 residual: header-scoped media needs a package archive to
+        // write into directly (`markPartDirty`'s documented external-writer
+        // path — see its doc comment in ooxml-swift). `document.images` is
+        // NOT an option here: every entry there gets an unconditional
+        // relationship in word/document.xml.rels (DocxWriter.
+        // buildTypedRelationships), which for a header-only image is
+        // exactly the #175/#199 orphan signature in the WRONG part's rels —
+        // not a save-gate false positive but an actually-broken package (a
+        // header's r:id resolves against its OWN part's rels, never
+        // document.xml.rels). A document created via create_document and
+        // never saved+reopened has no archive to write into; text watermarks
+        // (pure typed-model, no media) have no such requirement.
+        guard let archiveTempDir = doc.archiveTempDir else {
+            throw ToolRefusal("""
+            insert_image_watermark: this document has no package archive to host a header-scoped media file \
+            (it was created with create_document and has not been saved+reopened). Save the document, reopen \
+            it with open_document, then retry — or use insert_watermark for a text watermark, which has no \
+            such requirement.
+            """)
+        }
+
+        if doc.headers.isEmpty {
+            _ = doc.addHeader(text: "", type: .default)
+        }
+
+        let mediaFileName = Self.freshWatermarkMediaFileName(ext: ext, in: archiveTempDir)
+        let mediaDir = archiveTempDir.appendingPathComponent("word/media", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: mediaDir, withIntermediateDirectories: true)
+            try imageData.write(to: mediaDir.appendingPathComponent(mediaFileName))
+        } catch {
+            throw WordError.writeError("could not write watermark media into the package archive: \(error.localizedDescription)")
+        }
+        // Content_Types needs a Default entry for this extension whether or
+        // not the package already had any image of this type — written the
+        // same way (direct archive edit) since this media file bypasses
+        // document.images, so the typed writer's `hasNewTypedParts` scan
+        // never sees it.
+        Self.ensureWatermarkContentTypeDefault(ext: ext, in: archiveTempDir)
+
+        let nativeSize = try? ImageDimensions.detect(path: imagePath)
+        let scaleFactor = Double(scale) / 100
+        let widthPt: Double
+        let heightPt: Double
+        if let nativeSize, nativeSize.widthPx > 0, nativeSize.heightPx > 0 {
+            widthPt = Double(nativeSize.widthPx) * 0.75 * scaleFactor
+            heightPt = Double(nativeSize.heightPx) * 0.75 * scaleFactor
+        } else {
+            // ImageDimensions.detect only parses PNG/JPEG headers; gif/bmp/tiff
+            // fall back to a fixed placeholder box rather than failing the
+            // whole insert over a size estimate.
+            widthPt = 300 * scaleFactor
+            heightPt = 300 * scaleFactor
+        }
+
+        var touchedHeaderIds: [String] = []
+        for i in doc.headers.indices {
+            var header = doc.headers[i]
+            _ = Self.stripWatermark(from: &header)
+            Self.ensureVMLNamespaces(in: &header)
+
+            let headerRId = Self.freshRelationshipId(existing: header.relationships.relationships.map(\.id))
+            header.relationships.relationships.append(Relationship(id: headerRId, type: .image, target: "media/\(mediaFileName)"))
+
+            var run = Run(text: "")
+            run.rawElements = [RawElement(name: "pict", xml: Self.imageWatermarkPictXML(
+                relationshipId: headerRId, washout: washout, widthPt: widthPt, heightPt: heightPt))]
+            header.bodyChildren.insert(.paragraph(Paragraph(runs: [run])), at: 0)
+
+            doc.headers[i] = header
+            doc.markPartDirty("word/\(header.fileName)")
+            touchedHeaderIds.append(header.id)
+        }
+
+        try await storeDocument(doc, for: docId)
+        return "Inserted image watermark from '\((imagePath as NSString).lastPathComponent)' into \(touchedHeaderIds.count) header part(s): \(touchedHeaderIds.joined(separator: ", "))"
     }
 
-    /// 移除浮水印
+    /// Direct-archive edit — see `insertImageWatermark`'s doc comment for why
+    /// this bypasses the typed `document.images`-driven Content_Types path.
+    /// Best-effort: a missing or unreadable `[Content_Types].xml` leaves the
+    /// package as-is rather than failing the whole insert (the media bytes
+    /// and header relationship are still written; a package this malformed
+    /// already has bigger problems than one Default entry).
+    private static func ensureWatermarkContentTypeDefault(ext: String, in archiveTempDir: URL) {
+        let url = archiveTempDir.appendingPathComponent("[Content_Types].xml")
+        guard var xml = try? String(contentsOf: url, encoding: .utf8) else { return }
+        guard !xml.contains("Extension=\"\(ext)\"") else { return }
+        guard let insertRange = xml.range(of: "</Types>") else { return }
+        let mime: String
+        switch ext {
+        case "png": mime = "image/png"
+        case "jpg", "jpeg": mime = "image/jpeg"
+        case "gif": mime = "image/gif"
+        case "bmp": mime = "image/bmp"
+        case "tif", "tiff": mime = "image/tiff"
+        default: mime = "image/\(ext)"
+        }
+        xml.insert(contentsOf: "<Default Extension=\"\(ext)\" ContentType=\"\(mime)\"/>", at: insertRange.lowerBound)
+        try? xml.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// 移除浮水印 (#208). A document with no watermark returns success
+    /// (nothing to do) rather than failing — see issue body.
     private func removeWatermark(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard openDocuments[docId] != nil else {
+        guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
 
-        // #201: this used to claim removal without reading a single header part.
-        throw ToolNotImplemented(
-            tool: "remove_watermark", issue: "#201",
-            missing: "the removal of every PowerPlusWaterMarkObject <v:shape> (and its enclosing <w:pict> run) "
-                + "from the header parts (word/header*.xml)")
+        var touchedHeaderIds: [String] = []
+        for i in doc.headers.indices {
+            var header = doc.headers[i]
+            if Self.stripWatermark(from: &header) {
+                doc.headers[i] = header
+                doc.markPartDirty("word/\(header.fileName)")
+                touchedHeaderIds.append(header.id)
+            }
+        }
+
+        guard !touchedHeaderIds.isEmpty else {
+            return "No watermark found; nothing removed"
+        }
+
+        try await storeDocument(doc, for: docId)
+        return "Removed watermark from \(touchedHeaderIds.count) header part(s): \(touchedHeaderIds.joined(separator: ", "))"
     }
 
     /// 設定文件保護
