@@ -646,6 +646,29 @@ actor WordMCPServer {
     /// `right` use this unsigned range instead.
     static let pageMarginTwipsRangeUnsigned: ClosedRange<Int> = 0...31680
 
+    /// #237: `estimateCharsPerPage` (used by `estimate_paragraph_for_page`)
+    /// reads `pageSize.width`/`height` straight off the OPENED document's
+    /// `sectionProperties` and subtracts/multiplies them with no range
+    /// check — a DIFFERENT entry point than `set_page_margins`/
+    /// `set_page_size` (neither of which even accepts an arbitrary custom
+    /// width/height; `set_page_size` only picks from `PageSize.from(name:)`'s
+    /// fixed list), so #234's tool-input validation cannot reach it. A
+    /// `.docx` whose `<w:pgSz w:w="...">`/`w:h` was written by hand (or by
+    /// any tool other than this server) can carry any `Int`; ooxml-swift's
+    /// `PageSize` struct is a plain `Int` pair with no bound of its own.
+    ///
+    /// Like `pageMarginTwipsRangeUnsigned`, `w:pgSz`'s `w:w`/`w:h` are
+    /// `DocumentFormat.OpenXml.UInt32Value` (unsigned) in the .NET Open XML
+    /// SDK's typed model — but the raw SDK range (0…4294967295) is still far
+    /// too large to keep `estimateCharsPerPage`'s arithmetic safe, so this
+    /// follows the same policy #234 already established for margins: Word's
+    /// own documented Page Setup UI ceiling for custom paper size (22 inches
+    /// / 31680 twips per axis). Every predefined `PageSize` constant in this
+    /// file (`.letter`, `.a4`, `.legal`, `.a3`, `.a5`, `.b5`, `.executive`)
+    /// fits comfortably inside this range. Floor of 1 (not 0): a zero-area
+    /// page is not a legitimate page to estimate anything about.
+    static let pageSizeTwipsRange: ClosedRange<Int> = 1...31680
+
     private static func jsonTypeName(_ value: Value) -> String {
         switch value {
         case .null: return "null"
@@ -13589,7 +13612,7 @@ actor WordMCPServer {
             charsPerPage = override
             layoutBasis = "caller_chars_per_page"
         } else {
-            charsPerPage = Self.estimateCharsPerPage(from: doc.sectionProperties)
+            charsPerPage = try Self.estimateCharsPerPage(from: doc.sectionProperties)
             layoutBasis = "section_properties"
         }
 
@@ -13739,15 +13762,45 @@ actor WordMCPServer {
         return max(text.count, 1) + 1
     }
 
-    private static func estimateCharsPerPage(from props: SectionProperties) -> Int {
-        let usableWidthTwips = max(
-            1440,
-            props.pageSize.width - props.pageMargins.left - props.pageMargins.right - props.pageMargins.gutter
-        )
-        let usableHeightTwips = max(
-            1440,
-            props.pageSize.height - props.pageMargins.top - props.pageMargins.bottom
-        )
+    /// #237: `pageSize`/`pageMargins` here come from the OPENED document's
+    /// `sectionProperties`, not from a tool argument — #234's input-side
+    /// validation (`set_page_margins`/`set_page_size`) never runs on this
+    /// path. Validate every operand THIS function actually consumes right
+    /// before the arithmetic, so a hand-edited (or otherwise out-of-range)
+    /// `.docx` is refused with a structured error instead of trapping the
+    /// whole process on overflow/underflow. Once every operand is bounded
+    /// to a range this small, no combination of a handful of them can
+    /// possibly approach `Int` overflow — the guarantee does not depend on
+    /// which specific value happens to be "the large one".
+    private static func estimateCharsPerPage(from props: SectionProperties) throws -> Int {
+        func validated(_ value: Int, _ field: String, _ range: ClosedRange<Int>) throws -> Int {
+            guard range.contains(value) else {
+                throw WordError.invalidParameter(
+                    field,
+                    "文件目前的頁面設定超出可估算範圍（\(range.lowerBound)–\(range.upperBound) twips），可能是損毀或手動編輯過的 .docx：\(value)"
+                )
+            }
+            return value
+        }
+
+        let width = try validated(props.pageSize.width, "pageSize.width", pageSizeTwipsRange)
+        let height = try validated(props.pageSize.height, "pageSize.height", pageSizeTwipsRange)
+        // top/bottom are signed (Int32Value, negative allowed for
+        // header/footer overlap); left/right/gutter are unsigned
+        // (UInt32Value) — same split #234 established for set_page_margins,
+        // see `pageMarginTwipsRange`/`pageMarginTwipsRangeUnsigned`'s doc
+        // comments. `gutter` has no dedicated tool-input range because no
+        // tool exposes it as a parameter, but it is the same OOXML type
+        // family (`ST_TwipsMeasure`, unsigned) as left/right, so it shares
+        // their range here.
+        let left = try validated(props.pageMargins.left, "pageMargins.left", pageMarginTwipsRangeUnsigned)
+        let right = try validated(props.pageMargins.right, "pageMargins.right", pageMarginTwipsRangeUnsigned)
+        let gutter = try validated(props.pageMargins.gutter, "pageMargins.gutter", pageMarginTwipsRangeUnsigned)
+        let top = try validated(props.pageMargins.top, "pageMargins.top", pageMarginTwipsRange)
+        let bottom = try validated(props.pageMargins.bottom, "pageMargins.bottom", pageMarginTwipsRange)
+
+        let usableWidthTwips = max(1440, width - left - right - gutter)
+        let usableHeightTwips = max(1440, height - top - bottom)
 
         // Conservative 12pt thesis/review calibration: average character width
         // ~11pt, line height ~24pt. This intentionally favors a candidate range
