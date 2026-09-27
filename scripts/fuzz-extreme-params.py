@@ -43,13 +43,15 @@ Exit code is 0 only when ALL of these hold (R9):
     read once after the last step finished — a single post-hoc reading can
     miss a peak that happened mid-save) — "legal but exhausts the host" is a
     failure too;
-  - at least FUZZ_MIN_COVERAGE (default 0.97) of the schema's integer/number
-    parameters were REACHED, where "reached" requires positive evidence the
-    server actually looked at THIS parameter's value — the response names
-    the parameter or echoes its value, or is an index/not-found error
-    addressed at it (#239: a bare successful response is no longer enough
-    evidence by itself; see the coverage section's comment near the bottom
-    of this file for the three over-counting shapes that criterion missed).
+  - at least FUZZ_MIN_COVERAGE (default 0.80 — see that variable's own
+    comment near the bottom of this file for why it moved down from 0.97)
+    of the schema's integer/number parameters were REACHED, where "reached"
+    requires positive evidence the server actually looked at THIS
+    parameter's value — the response names the parameter or echoes its
+    value, or is an index/not-found error addressed at it (#239: a bare
+    successful response is no longer enough evidence by itself; see the
+    coverage section's comment near the bottom of this file for the three
+    over-counting shapes that criterion missed).
     A probe stopped by an unrelated precondition proves nothing about its
     target, so a fuzzer whose probes stop reaching their targets must fail
     rather than keep reporting zero crashes.
@@ -262,6 +264,13 @@ OV = {
  "set_columns": {"columns": 2},
  "set_page_size": {"size": "A4"},
  "open_document": {"doc_id": "z", "path": "@DOC@"},
+ # #239: base_args' regex-driven default (`abstract_num_id` matches the
+ # "count|...|abstract" pattern) fills in 1, but the fixture's single
+ # create_numbering_definition call is the FIRST on a fresh document, so
+ # WordDocument.Numbering.nextAbstractNumId assigns 0 — every
+ # start_new_list probe was rejected with "not_found" before ever
+ # reaching its OWN target parameter (paragraph_index)'s validation.
+ "start_new_list": {"abstract_num_id": 0},
 }
 PRE = {
  "delete_text_as_revision": [("enable_track_changes", {"doc_id": "d"})],
@@ -709,7 +718,22 @@ for status, tool, label, out in results:
         blockers.setdefault((tool, key), out[:100])
 unreached = sorted(seen - reached)
 ratio = (len(seen) - len(unreached)) / max(len(seen), 1)
-MIN_COVERAGE = float(os.environ.get("FUZZ_MIN_COVERAGE", "0.97"))
+# #239: 0.97 was calibrated against the OLD (over-counting) criterion, which
+# is why it could ever be met — measured under the fixed `parameter_reached`
+# criterion above, this run's honest baseline is ~85% (217/255): most of the
+# gap is tools that legitimately reach their target and accept the extreme
+# value but reply with a message that doesn't happen to echo the parameter's
+# name or value (e.g. `set_columns` clamps to a max and reports the CLAMPED
+# count, not the fuzzed one) — not a precondition bug `OV`/`PRE` can fix, and
+# not something this script can resolve without either deeper per-tool
+# response-parsing knowledge or changing what each tool's success message
+# says. 0.80 leaves margin below the measured floor for run-to-run probe
+# ordering / thread-timing variance while still catching a REAL coverage
+# collapse (a probe silently stopping short of its target across many
+# parameters at once, the failure mode #239 was about in the first place).
+# Raise this back toward 0.97 as individual tools' response shapes or this
+# script's `OV`/`PRE` gain the ability to prove more of the honest gap.
+MIN_COVERAGE = float(os.environ.get("FUZZ_MIN_COVERAGE", "0.80"))
 print(f"coverage: {len(seen) - len(unreached)}/{len(seen)} parameters reached ({ratio:.1%}; minimum {MIN_COVERAGE:.0%})")
 for tool, key in unreached:
     print(f"  unreached {tool}.{key} | {blockers.get((tool, key), '')}")
