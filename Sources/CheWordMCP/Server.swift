@@ -8895,11 +8895,19 @@ actor WordMCPServer {
             results.append("Set cell shading at [\(cellRow)][\(cellCol)]: \(shadingColor)")
         }
 
-        try await storeDocument(doc, for: docId)
-
-        if results.isEmpty {
-            return "No style changes applied"
+        // #215: this used to storeDocument() unconditionally and only THEN
+        // check whether anything had actually changed — a call with no
+        // recognized style arguments (or a `cell_row`/`cell_col`/
+        // `shading_color` combination that never became active) marked the
+        // session dirty and reported "No style changes applied" as if that
+        // were a normal, non-error outcome. No `isError`, no `Error:`
+        // prefix — invisible to the #202 sweep. Refuse before persisting,
+        // same convention as the rest of #202's ToolRefusal family.
+        guard !results.isEmpty else {
+            throw ToolRefusal("set_table_style: no style properties given (need border_style, or cell_row+cell_col+shading_color)")
         }
+
+        try await storeDocument(doc, for: docId)
         return results.joined(separator: "\n")
     }
 
@@ -10963,6 +10971,24 @@ actor WordMCPServer {
             throw WordError.missingParameter("target_paragraph_index")
         }
 
+        // #215 (comment): `WordDocument.spliceParagraphOMath` returns `0`
+        // (a graceful no-op, by design, for batch driver loops — see
+        // ooxml-swift's WordDocument+SpliceOMath.swift) when the source
+        // paragraph has no OMath at all, WITHOUT ever validating
+        // `target_paragraph_index` — that bound is only checked inside the
+        // per-OMath `spliceOMath` call, which the 0-OMath path never
+        // reaches. So an out-of-range index used to sail through silently
+        // as long as the source also happened to have no OMath. Validate
+        // the same bound here ourselves (top-level `.paragraph` body
+        // children only, matching `bodyParagraphIndices` exactly) so it is
+        // always enforced, not just on the path that reaches the library.
+        let targetParagraphCount = target.body.children.reduce(into: 0) { count, child in
+            if case .paragraph = child { count += 1 }
+        }
+        guard targetParaIdx >= 0 && targetParaIdx < targetParagraphCount else {
+            throw ToolRefusal("splice_paragraph_omath_from_source: target_paragraph_index \(targetParaIdx) out of range (document has \(targetParagraphCount) body paragraph(s))")
+        }
+
         let sourcePara = try await resolveSourceParagraph(args: args)
         let rPrMode = parseRpRMode(args["rpr_mode"]?.stringValue)
         let nsPolicy = parseNamespacePolicy(args["namespace_policy"]?.stringValue)
@@ -10974,6 +11000,13 @@ actor WordMCPServer {
                 rPrMode: rPrMode,
                 namespacePolicy: nsPolicy
             )
+            // #215: `n == 0` means the source paragraph had no OMath to
+            // splice — the document was not touched. Refuse instead of
+            // storeDocument()-ing an unchanged document and reporting
+            // "Spliced 0 OMath block(s)" as if that were success.
+            guard n > 0 else {
+                throw ToolRefusal("splice_paragraph_omath_from_source: source paragraph has no OMath block to splice")
+            }
             try await storeDocument(target, for: docId)
             return "Spliced \(n) OMath block(s) into target_paragraph_index=\(targetParaIdx) (rpr_mode=\(args["rpr_mode"]?.stringValue ?? "full"), namespace_policy=\(args["namespace_policy"]?.stringValue ?? "lenient"))"
         } catch let err as OMathSpliceError {
