@@ -17833,14 +17833,39 @@ actor WordMCPServer {
         "everyone", "administrators", "contributors", "editors", "owners", "current",
     ]
 
-    /// True when a `.table` body child falls strictly between the top-level
-    /// paragraph at flattened index `startParagraph` and the one at
-    /// `endParagraph` (both inclusive, same counting `WordDocument.getParagraphs()`
-    /// uses — descends into content controls transparently, does not descend
-    /// into tables). che-word-mcp#184 Acceptance: "A range spanning a table…
-    /// is rejected rather than silently clamped" — `getParagraphs()` skips
-    /// tables entirely, so two paragraphs that look adjacent in its flattened
-    /// index space can have a whole table between them in real document flow.
+    /// True when a `.table` body child falls inside the region
+    /// `restrictEditingRegion` would actually mark editable for
+    /// `[startParagraph, endParagraph]` (both inclusive, same counting
+    /// `WordDocument.getParagraphs()` uses — descends into content controls
+    /// transparently, does not descend into tables). che-word-mcp#184
+    /// Acceptance: "A range spanning a table… is rejected rather than
+    /// silently clamped" — `getParagraphs()` skips tables entirely, so two
+    /// paragraphs that look adjacent in its flattened index space can have a
+    /// whole table between them in real document flow.
+    ///
+    /// **This is NOT simply "a table between the two REQUESTED paragraphs"**
+    /// — it must match where `<w:permStart>` / `<w:permEnd>` actually land.
+    /// `restrictEditingRegion` anchors `<w:permStart>` to the END of the
+    /// PRECEDING paragraph (`startParagraph - 1`), because ooxml-swift can
+    /// only place an API-appended marker after a paragraph's own content —
+    /// so the true editable span begins at the body-order GAP between
+    /// paragraph `startParagraph - 1` and paragraph `startParagraph`, not at
+    /// paragraph `startParagraph` itself. A table sitting in exactly that
+    /// gap (immediately after the anchor, immediately before the requested
+    /// start) is document-flow-INSIDE the marked range even though it is
+    /// outside the caller's requested `[startParagraph, endParagraph]`
+    /// window — a real bug an independent review caught (R2): the original
+    /// condition (`count >= startParagraph + 1`) started counting one
+    /// paragraph too late and missed exactly this gap.
+    ///
+    /// The END side has NO symmetric borrowed-anchor gap to worry about:
+    /// `<w:permEnd>` is appended to paragraph `endParagraph` ITSELF (not to
+    /// `endParagraph + 1`), so the range closes at that paragraph's own
+    /// `</w:p>` — anything from the NEXT body-order gap onward (including a
+    /// table right after `endParagraph`) is genuinely outside the marked
+    /// range, confirmed by `testAdjacentRangeNotCrossingTheTableStillSucceeds`.
+    /// Re-derived and confirmed independently during R2, not merely copied
+    /// from the review's suggested one-line patch.
     static func restrictedRangeSpansTable(_ children: [BodyChild], startParagraph: Int, endParagraph: Int) -> Bool {
         var count = 0
         return spansTable(children, startParagraph: startParagraph, endParagraph: endParagraph, count: &count)
@@ -17853,10 +17878,15 @@ actor WordMCPServer {
                 count += 1
             case .table:
                 // The table sits in the gap between paragraph (count-1) and
-                // paragraph count. That gap is inside [start, end] exactly
-                // when a paragraph at-or-after start precedes it AND a
-                // paragraph at-or-before end follows it.
-                if count >= startParagraph + 1 && count <= endParagraph { return true }
+                // paragraph count. That gap is inside the MARKED range
+                // exactly when its right-hand paragraph (count) is at-or-
+                // after the anchor gap's own right edge (startParagraph —
+                // NOT startParagraph + 1: the gap immediately after the
+                // permStart anchor, i.e. between startParagraph - 1 and
+                // startParagraph, is itself inside the range) AND its
+                // left-hand paragraph (count - 1) is at-or-before endParagraph
+                // (equivalently: count <= endParagraph).
+                if count >= startParagraph && count <= endParagraph { return true }
             case .contentControl(_, let kids):
                 if spansTable(kids, startParagraph: startParagraph, endParagraph: endParagraph, count: &count) { return true }
             case .bookmarkMarker, .rawBlockElement:
