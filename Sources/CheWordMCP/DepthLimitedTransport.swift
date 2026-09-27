@@ -119,6 +119,73 @@ actor DepthLimitedTransport: Transport {
                 for try await message in inboundStream {
                     let scan = DepthLimitedTransport.scanJSONRPCEnvelope(message)
                     if scan.maxDepth > cap {
+                        // #242: `scan.maxDepth` is the WHOLE message's max
+                        // bracket depth, envelope included. For a JSON-RPC
+                        // batch (top-level `[...]`), that is always at least
+                        // 1 deeper than any individual item's own depth
+                        // (the wrapping array itself), so a batch whose
+                        // items are all individually fine can still land
+                        // here. Try to salvage per-item before falling back
+                        // to rejecting the whole message: split the batch's
+                        // top-level elements and re-scan each on its own —
+                        // an element's own depth (and its own "id", now
+                        // correctly read at THAT element's depth 1, not the
+                        // whole message's depth 2) is what actually matters
+                        // per JSON-RPC batch semantics.
+                        if let elements = DepthLimitedTransport.splitTopLevelBatchElements(message),
+                            !elements.isEmpty
+                        {
+                            var legalElements: [Data] = []
+                            var illegalResponses: [String] = []
+                            for element in elements {
+                                let elementScan = DepthLimitedTransport.scanJSONRPCEnvelope(element)
+                                if elementScan.maxDepth > cap {
+                                    logger.warning(
+                                        "Rejected over-depth JSON-RPC batch item before decode",
+                                        metadata: [
+                                            "observed_depth": "\(elementScan.maxDepth)",
+                                            "max_depth": "\(cap)",
+                                            "byte_count": "\(element.count)",
+                                        ]
+                                    )
+                                    illegalResponses.append(
+                                        DepthLimitedTransport.depthLimitErrorResponse(
+                                            idToken: elementScan.topLevelIDToken,
+                                            observedDepth: elementScan.maxDepth, maxDepth: cap
+                                        )
+                                    )
+                                } else {
+                                    legalElements.append(element)
+                                }
+                            }
+                            // Illegal items: answered directly, right here,
+                            // same as the single-message path below — named
+                            // by their own id, never forwarded to decode.
+                            // Sent as a JSON array (even a lone item) to
+                            // match the array shape a JSON-RPC batch
+                            // response takes.
+                            if !illegalResponses.isEmpty {
+                                let combined = "[" + illegalResponses.joined(separator: ",") + "]"
+                                try? await wrapped.send(Data(combined.utf8))
+                            }
+                            // Legal items: reassembled into a smaller batch
+                            // and forwarded on to swift-sdk's own decode +
+                            // `handleBatch`, which already produces a
+                            // correct response array for a batch whose
+                            // items are all within its own depth limits —
+                            // this is not reimplementing batch dispatch,
+                            // only removing the over-depth items before
+                            // swift-sdk ever sees them.
+                            if !legalElements.isEmpty {
+                                let joined =
+                                    "["
+                                    + legalElements.map { String(decoding: $0, as: UTF8.self) }
+                                        .joined(separator: ",") + "]"
+                                continuation.yield(Data(joined.utf8))
+                            }
+                            continue
+                        }
+
                         logger.warning(
                             "Rejected over-depth JSON-RPC message before decode",
                             metadata: [
@@ -270,6 +337,108 @@ actor DepthLimitedTransport: Transport {
             i += 1
         }
         return EnvelopeScan(maxDepth: maxDepth, topLevelIDToken: idToken)
+    }
+
+    /// #242: splits a JSON-RPC batch message's top-level array into its
+    /// immediate elements' raw byte ranges, copied verbatim from `data` —
+    /// same non-recursive, single-pass, string-aware style as
+    /// `scanJSONRPCEnvelope` (reuses its exact `skipString` logic so a `]`
+    /// or `,` inside a string literal is never mistaken for a top-level
+    /// array boundary). Each returned slice, scanned again on its own via
+    /// `scanJSONRPCEnvelope`, yields that element's OWN depth (not
+    /// inflated by the wrapping `[` the whole-message scan counts) and its
+    /// OWN `"id"` (read at the element's depth 1, matching what a
+    /// standalone non-batch message with the same content would report) —
+    /// exactly the two things `handleOverDepthMessage` needs to decide,
+    /// per batch item, whether to salvage it or reject it by name.
+    ///
+    /// Returns `nil` when the outermost non-whitespace byte is not `[`
+    /// (not a batch at all — the single-message path handles that), or
+    /// when the array never closes (malformed input — same fallback).
+    /// Returns `[]` for an empty array (`[]`); callers get no elements to
+    /// salvage and fall through to the single-message path, which lets
+    /// swift-sdk's own "batch array must not be empty" error apply as
+    /// before (this function's job is splitting, not validating batch
+    /// semantics).
+    static func splitTopLevelBatchElements(_ data: Data) -> [Data]? {
+        let bytes = [UInt8](data)
+        let count = bytes.count
+
+        func isJSONWhitespace(_ byte: UInt8) -> Bool {
+            byte == UInt8(ascii: " ") || byte == UInt8(ascii: "\t") || byte == UInt8(ascii: "\n")
+                || byte == UInt8(ascii: "\r")
+        }
+
+        var i = 0
+        while i < count, isJSONWhitespace(bytes[i]) { i += 1 }
+        guard i < count, bytes[i] == UInt8(ascii: "[") else { return nil }
+        i += 1
+
+        func skipString(from start: Int) -> Int {
+            var k = start + 1
+            while k < count {
+                if bytes[k] == UInt8(ascii: "\\") {
+                    k += 2
+                    continue
+                }
+                if bytes[k] == UInt8(ascii: "\"") {
+                    return k + 1
+                }
+                k += 1
+            }
+            return count
+        }
+
+        var elements: [Data] = []
+        // Nesting depth WITHIN the element currently being scanned; 0 means
+        // "sitting directly inside the array, between elements" — that is
+        // the only level at which `,`/`]`/whitespace are treated as
+        // structure rather than opaque element content.
+        var depth = 0
+        var elementStart: Int? = nil
+        var sawClose = false
+
+        while i < count {
+            let byte = bytes[i]
+            if byte == UInt8(ascii: "\"") {
+                if depth == 0, elementStart == nil { elementStart = i }
+                i = skipString(from: i)
+                continue
+            }
+            if depth == 0, isJSONWhitespace(byte) {
+                i += 1
+                continue
+            }
+            if depth == 0, byte == UInt8(ascii: "]") {
+                if let start = elementStart {
+                    elements.append(data.subdata(in: start..<i))
+                    elementStart = nil
+                }
+                sawClose = true
+                i += 1
+                break
+            }
+            if depth == 0, byte == UInt8(ascii: ",") {
+                if let start = elementStart {
+                    elements.append(data.subdata(in: start..<i))
+                    elementStart = nil
+                }
+                i += 1
+                continue
+            }
+            if elementStart == nil { elementStart = i }
+            switch byte {
+            case UInt8(ascii: "{"), UInt8(ascii: "["):
+                depth += 1
+            case UInt8(ascii: "}"), UInt8(ascii: "]"):
+                depth -= 1
+            default:
+                break
+            }
+            i += 1
+        }
+        guard sawClose else { return nil }
+        return elements
     }
 
     /// Builds a JSON-RPC 2.0 error response for a rejected over-depth
