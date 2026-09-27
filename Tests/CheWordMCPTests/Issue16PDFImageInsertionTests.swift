@@ -69,6 +69,33 @@ final class Issue16PDFImageInsertionTests: XCTestCase {
         return url
     }
 
+    /// #16 R2 F3: a password-protected PDF, built natively via
+    /// `CGContext`'s own encryption auxiliary keys (no external tool, no
+    /// third-party crypto library — `kCGPDFContextUserPassword` is
+    /// CoreGraphics' own PDF-context option). `PDFDocument(url:)` does NOT
+    /// return nil for this; it returns a locked, non-nil document whose
+    /// `bounds(for: .mediaBox)` reports a fixed US Letter box (612x792pt)
+    /// unrelated to the real 200x100pt page, and whose `draw(with:to:)`
+    /// draws nothing — see `PDFImageRasterizer`'s guard this fixture pins.
+    private func makeEncryptedPDF() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("i16-encrypted-\(UUID().uuidString).pdf")
+        var mediaBox = CGRect(x: 0, y: 0, width: 200, height: 100)
+        let auxInfo: [CFString: Any] = [
+            kCGPDFContextUserPassword: "secret",
+            kCGPDFContextOwnerPassword: "secret-owner",
+        ]
+        guard let consumer = CGDataConsumer(url: url as CFURL),
+              let context = CGContext(consumer: consumer, mediaBox: &mediaBox, auxInfo as CFDictionary) else {
+            throw XCTSkip("CGContext(consumer:mediaBox:auxiliaryInfo:) unavailable in this environment")
+        }
+        context.beginPage(mediaBox: &mediaBox)
+        context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        context.fill(mediaBox)
+        context.endPage()
+        context.closePDF()
+        return url
+    }
+
     // MARK: - PDFImageRasterizer (pure, no server)
 
     func testRasterizeDefaultsToPageOne() throws {
@@ -174,5 +201,39 @@ final class Issue16PDFImageInsertionTests: XCTestCase {
         XCTAssertTrue(textOf(result).contains("page"), "Got: \(textOf(result))")
 
         _ = await server.invokeToolForTesting(name: "close_document", arguments: ["doc_id": .string("p16d"), "discard_changes": .bool(true)])
+    }
+
+    // MARK: - #16 R2 F3: encrypted PDFs are refused, not silently blanked
+
+    /// `PDFImageRasterizer.rasterize` directly (pure, no server) — the
+    /// exact bug: pre-R2 this returned a "successful" 612x792px all-white
+    /// PNG (the fixed US Letter fallback size `PDFPage.bounds(for:)` reports
+    /// while locked, not the real 200x100pt page) instead of refusing.
+    func testRasterizeRefusesAnEncryptedPDF() throws {
+        let pdf = try makeEncryptedPDF()
+        defer { try? FileManager.default.removeItem(at: pdf) }
+        XCTAssertThrowsError(try PDFImageRasterizer.rasterize(pdfPath: pdf.path, page: 1)) { error in
+            guard case WordError.invalidFormat(let reason) = error else {
+                return XCTFail("expected invalidFormat, got \(error)")
+            }
+            XCTAssertTrue(reason.lowercased().contains("password") || reason.contains("密碼"), "must name why: \(reason)")
+        }
+    }
+
+    /// End to end: `insert_image_from_path` on an encrypted PDF must fail
+    /// loudly — never a "success" message with a plausible-looking pixel
+    /// size that is actually a blank page at the wrong dimensions.
+    func testInsertImageFromPathRejectsAnEncryptedPDF() async throws {
+        let docURL = try docxWithText("seed"); defer { try? FileManager.default.removeItem(at: docURL) }
+        let pdf = try makeEncryptedPDF(); defer { try? FileManager.default.removeItem(at: pdf) }
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(name: "open_document", arguments: ["path": .string(docURL.path), "doc_id": .string("p16e")])
+
+        let result = await server.invokeToolForTesting(
+            name: "insert_image_from_path", arguments: ["doc_id": .string("p16e"), "path": .string(pdf.path)])
+        XCTAssertEqual(result.isError, true, "an encrypted PDF must never report success. Got: \(textOf(result))")
+        XCTAssertTrue(textOf(result).lowercased().contains("password") || textOf(result).contains("密碼"), "Got: \(textOf(result))")
+
+        _ = await server.invokeToolForTesting(name: "close_document", arguments: ["doc_id": .string("p16e"), "discard_changes": .bool(true)])
     }
 }
