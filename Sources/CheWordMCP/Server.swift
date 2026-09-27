@@ -8228,8 +8228,8 @@ actor WordMCPServer {
         let info = doc.getInfo()
         let label = args["doc_id"]?.stringValue ?? args["source_path"]?.stringValue ?? "unknown"
         let rows = Self.collectImageRows(doc)
-        let (report, failureReason) = imageConsistencyInspection(forDoc: doc, args: args)
-        let imagesLine = Self.documentInfoImagesLine(rows: rows, report: report, inspectionFailureReason: failureReason)
+        let (report, failureReason, unreferencedMedia) = imageConsistencyInspection(forDoc: doc, args: args)
+        let imagesLine = Self.documentInfoImagesLine(rows: rows, report: report, inspectionFailureReason: failureReason, unreferencedMediaFiles: unreferencedMedia)
         return """
         Document Info (\(label)):
         - Paragraphs: \(info.paragraphCount)
@@ -8272,19 +8272,66 @@ actor WordMCPServer {
     /// Mode: `DocxWriter.writeData(doc)`, a pure call that does not dirty the
     /// session). `report == nil` means the check itself could not run — the
     /// caller gets `failureReason`, never a silent "assume consistent".
-    private func imageConsistencyInspection(forDoc doc: WordDocument, args: [String: Value]) -> (report: ImageConsistencyReport?, failureReason: String?) {
+    ///
+    /// #208 R2 F2: also returns `unreferencedMediaFiles` — the "reverse
+    /// orphan" `PackageInspector` does not cover (a media file with ZERO
+    /// relationships pointing at it, not a relationship with none — see
+    /// `stripWatermark`'s doc comment for how a pre-R2 watermark
+    /// insert/remove cycle produced exactly this). Computed independently of
+    /// `PackageInspector`: this reader already has, from the typed model, the
+    /// complete set of media filenames any relationship it knows about
+    /// (`document.images`, every header's and footer's
+    /// `relationships.imageRelationships`) — cross-referencing that against
+    /// the package's actual `word/media/` directory listing needs no rels
+    /// re-parsing (the #137/#138 rabbit hole `PackageInspector` itself exists
+    /// to avoid re-treading).
+    private func imageConsistencyInspection(forDoc doc: WordDocument, args: [String: Value]) -> (report: ImageConsistencyReport?, failureReason: String?, unreferencedMediaFiles: [String]) {
         let packageData: Data?
         if let sourcePath = args["source_path"]?.stringValue {
             packageData = FileManager.default.contents(atPath: sourcePath)
         } else {
             packageData = try? DocxWriter.writeData(doc)
         }
-        guard let packageData else { return (nil, "package bytes unavailable") }
+        guard let packageData else { return (nil, "package bytes unavailable", []) }
+
+        let report: ImageConsistencyReport?
+        let failureReason: String?
         do {
-            return (try PackageInspector.imageConsistencyReport(of: packageData), nil)
+            report = try PackageInspector.imageConsistencyReport(of: packageData)
+            failureReason = nil
         } catch {
-            return (nil, error.localizedDescription)
+            report = nil
+            failureReason = error.localizedDescription
         }
+
+        var unreferenced: [String] = []
+        if let tempDir = try? ZipHelper.unzip(data: packageData) {
+            defer { ZipHelper.cleanup(tempDir) }
+            let mediaDir = tempDir.appendingPathComponent("word/media")
+            if let files = try? FileManager.default.contentsOfDirectory(atPath: mediaDir.path) {
+                unreferenced = Self.unreferencedMediaFiles(mediaDirFiles: files, doc: doc)
+            }
+        }
+        return (report, failureReason, unreferenced)
+    }
+
+    /// #208 R2 F2: media file names present in `word/media/` that no
+    /// relationship this reader can enumerate (document body, any header,
+    /// any footer) declares as its `target`. Pure and independent of
+    /// `PackageInspector` — see `imageConsistencyInspection`'s doc comment.
+    static func unreferencedMediaFiles(mediaDirFiles: [String], doc: WordDocument) -> [String] {
+        var referenced = Set(doc.images.map(\.fileName))
+        for header in doc.headers {
+            for rel in header.relationships.imageRelationships {
+                referenced.insert((rel.target as NSString).lastPathComponent)
+            }
+        }
+        for footer in doc.footers {
+            for rel in footer.relationships.imageRelationships {
+                referenced.insert((rel.target as NSString).lastPathComponent)
+            }
+        }
+        return mediaDirFiles.filter { !referenced.contains($0) }.sorted()
     }
 
     /// #217 — one-line image summary for `get_document_info`. Never reports a
@@ -8293,25 +8340,27 @@ actor WordMCPServer {
     static func documentInfoImagesLine(
         rows: [(part: String, id: String, fileName: String, widthPx: Int?, heightPx: Int?)],
         report: ImageConsistencyReport?,
-        inspectionFailureReason: String?
+        inspectionFailureReason: String?,
+        unreferencedMediaFiles: [String] = []
     ) -> String {
+        let mediaSuffix = unreferencedMediaFiles.isEmpty ? "" : "; \(unreferencedMediaFiles.count) unreferenced media file(s) in word/media/ — see list_images"
         guard !rows.isEmpty else {
             if let report, report.imageRelationshipCount > 0 {
-                return "0 referenced here, but the package declares \(report.imageRelationshipCount) image relationship(s) elsewhere (see list_images)"
+                return "0 referenced here, but the package declares \(report.imageRelationshipCount) image relationship(s) elsewhere (see list_images)" + mediaSuffix
             }
-            return "0"
+            return "0" + mediaSuffix
         }
         guard let report else {
-            return "\(rows.count) declared (referenced/orphan status unknown: \(inspectionFailureReason ?? "check unavailable"); see list_images)"
+            return "\(rows.count) declared (referenced/orphan status unknown: \(inspectionFailureReason ?? "check unavailable"); see list_images)" + mediaSuffix
         }
         let orphanSet = Set(report.orphanImageRelationshipRefs)
         let knownRefs = rows.map { ImageRelationshipRef(part: $0.part, id: $0.id) }
         let orphanCount = knownRefs.filter { orphanSet.contains($0) }.count
         let referencedCount = rows.count - orphanCount
         if orphanCount > 0 {
-            return "\(referencedCount) referenced, \(orphanCount) orphan (declared but not referenced in their own part — see list_images; save_document refuses to write NEW orphans unless allow_orphan_images: true)"
+            return "\(referencedCount) referenced, \(orphanCount) orphan (declared but not referenced in their own part — see list_images; save_document refuses to write NEW orphans unless allow_orphan_images: true)" + mediaSuffix
         }
-        return "\(referencedCount) referenced"
+        return "\(referencedCount) referenced" + mediaSuffix
     }
 
     /// #199/#219 — package-authoritative image listing text. `report` is the
@@ -8321,12 +8370,22 @@ actor WordMCPServer {
     static func imageListing(
         rows: [(part: String, id: String, fileName: String, widthPx: Int?, heightPx: Int?)],
         report: ImageConsistencyReport?,
-        inspectionFailureReason: String?
+        inspectionFailureReason: String?,
+        unreferencedMediaFiles: [String] = []
     ) -> String {
         if rows.isEmpty {
             if let report, report.imageRelationshipCount > 0 {
-                return "Document part and known header/footer parts have no images; the package declares \(report.imageRelationshipCount) image relationship(s) elsewhere (not listed here).\n"
+                var text = "Document part and known header/footer parts have no images; the package declares \(report.imageRelationshipCount) image relationship(s) elsewhere (not listed here).\n"
                     + "Package: bodyDrawings=\(report.bodyDrawingCount), imageRelationships=\(report.imageRelationshipCount), mediaEntries=\(report.mediaEntryCount)"
+                if !unreferencedMediaFiles.isEmpty {
+                    text += "\n\n⚠ Unreferenced media file(s) in word/media/ — no relationship (document, header, or footer) points at them (#208 R2 F2 — e.g. left behind by a watermark insert/remove cycle before this check existed): "
+                        + unreferencedMediaFiles.joined(separator: ", ")
+                }
+                return text
+            }
+            if !unreferencedMediaFiles.isEmpty {
+                return "No images in document, but word/media/ has \(unreferencedMediaFiles.count) unreferenced file(s): "
+                    + unreferencedMediaFiles.joined(separator: ", ")
             }
             return "No images in document"
         }
@@ -8380,6 +8439,11 @@ actor WordMCPServer {
                 blocks.append("⚠ package parts that could not be inspected (image references there are unknown): " + report.unparsableParts.joined(separator: ", "))
             }
             blocks.append("Package: bodyDrawings=\(report.bodyDrawingCount), imageRelationships=\(report.imageRelationshipCount), mediaEntries=\(report.mediaEntryCount)")
+        }
+
+        if !unreferencedMediaFiles.isEmpty {
+            blocks.append("⚠ Unreferenced media file(s) in word/media/ — no relationship (document, header, or footer) points at them (#208 R2 F2 — e.g. left behind by a watermark insert/remove cycle before this check existed): "
+                + unreferencedMediaFiles.joined(separator: ", "))
         }
 
         return blocks.joined(separator: "\n\n") + "\n"
@@ -10330,8 +10394,8 @@ actor WordMCPServer {
     private func listImages(args: [String: Value]) async throws -> String {
         let (doc, _) = try await resolveDocument(args: args)
         let rows = Self.collectImageRows(doc)
-        let (report, failureReason) = imageConsistencyInspection(forDoc: doc, args: args)
-        return Self.imageListing(rows: rows, report: report, inspectionFailureReason: failureReason)
+        let (report, failureReason, unreferencedMedia) = imageConsistencyInspection(forDoc: doc, args: args)
+        return Self.imageListing(rows: rows, report: report, inspectionFailureReason: failureReason, unreferencedMediaFiles: unreferencedMedia)
     }
 
     // MARK: - 9.17 export_image - 匯出單一圖片
@@ -16147,11 +16211,22 @@ actor WordMCPServer {
     /// header-local image relationship its `<v:imagedata r:id="…">`
     /// referenced — leaving that relationship behind would be exactly the
     /// #175/#199 orphan signature (declared, no longer referenced) on the
-    /// very next save. Does not delete the now possibly-unused media file
-    /// from the archive: another relationship (a second header type sharing
-    /// the same image) may still point at it, and this function sees one
-    /// header at a time.
-    private static func stripWatermark(from header: inout Header) -> Bool {
+    /// very next save.
+    ///
+    /// #208 R2 F2: this function sees one header at a time and cannot by
+    /// itself decide whether the underlying media FILE is now unreferenced
+    /// (another header, or a second relationship, may still point at it) —
+    /// so it reports every removed relationship's `target` back to the
+    /// caller, which has the whole `WordDocument` and can check. Pre-R2 this
+    /// only removed the relationship and left the media file behind
+    /// unconditionally: every `insert_image_watermark` → `remove_watermark`
+    /// cycle grew `word/media/` by one PNG the package never referenced
+    /// again — not caught by `PackageInspector`'s orphan detection (that
+    /// finds a relationship with no reference, not a media file with no
+    /// relationship at all) or by any tool's `list_images`/`save_document`
+    /// check.
+    @discardableResult
+    private static func stripWatermark(from header: inout Header) -> (changed: Bool, removedMediaTargets: [String]) {
         var staleRelationshipIds: Set<String> = []
         let before = header.bodyChildren.count
         header.bodyChildren.removeAll { child in
@@ -16165,10 +16240,43 @@ actor WordMCPServer {
             }
             return true
         }
+        var removedTargets: [String] = []
         if !staleRelationshipIds.isEmpty {
+            removedTargets = header.relationships.relationships
+                .filter { staleRelationshipIds.contains($0.id) }
+                .map(\.target)
             header.relationships.relationships.removeAll { staleRelationshipIds.contains($0.id) }
         }
-        return header.bodyChildren.count != before || !staleRelationshipIds.isEmpty
+        return (header.bodyChildren.count != before || !staleRelationshipIds.isEmpty, removedTargets)
+    }
+
+    /// True when `target` (a relationship `Target` string, e.g.
+    /// `"media/watermark1.png"`) is still declared by ANY relationship
+    /// anywhere this reader knows about — another header, a footer, or the
+    /// document body's own `document.images`. Callers check this AFTER
+    /// applying their own `stripWatermark` removals to `doc`, so a target
+    /// two headers happen to share is not deleted out from under the
+    /// surviving one.
+    private static func mediaTargetStillReferenced(_ target: String, in doc: WordDocument) -> Bool {
+        if doc.headers.contains(where: { header in header.relationships.relationships.contains { $0.target == target } }) { return true }
+        if doc.footers.contains(where: { footer in footer.relationships.relationships.contains { $0.target == target } }) { return true }
+        if doc.images.contains(where: { "media/\($0.fileName)" == target }) { return true }
+        return false
+    }
+
+    /// #208 R2 F2: deletes each media file in `removedTargets` from the
+    /// package archive, but only the ones nothing in `doc` still points at
+    /// (see `mediaTargetStillReferenced`). Best-effort — a file that is
+    /// already gone, or a document with no archive to delete from (a
+    /// `create_document` session; image watermarks require one already, per
+    /// `insertImageWatermark`'s own guard, so this is reached with a
+    /// non-empty `removedTargets` only when an archive exists), is silently
+    /// skipped rather than failing the whole remove/replace.
+    private func cleanupOrphanedWatermarkMedia(_ removedTargets: [String], in doc: WordDocument) {
+        guard let archiveTempDir = doc.archiveTempDir, !removedTargets.isEmpty else { return }
+        for target in Set(removedTargets) where !Self.mediaTargetStillReferenced(target, in: doc) {
+            try? FileManager.default.removeItem(at: archiveTempDir.appendingPathComponent("word/\(target)"))
+        }
     }
 
     /// A header's `rootAttributes` captured from a real source document (a
@@ -16312,9 +16420,11 @@ actor WordMCPServer {
         }
 
         var touchedHeaderIds: [String] = []
+        var removedMediaTargets: [String] = []
         for i in doc.headers.indices {
             var header = doc.headers[i]
-            _ = Self.stripWatermark(from: &header)
+            let (_, targets) = Self.stripWatermark(from: &header)
+            removedMediaTargets.append(contentsOf: targets)
             Self.ensureVMLNamespaces(in: &header)
             var run = Run(text: "")
             run.rawElements = [RawElement(name: "pict", xml: Self.textWatermarkPictXML(
@@ -16324,6 +16434,10 @@ actor WordMCPServer {
             doc.markPartDirty("word/\(header.fileName)")
             touchedHeaderIds.append(header.id)
         }
+        // A header that previously carried an IMAGE watermark and now gets a
+        // text one: stripWatermark above already removed that relationship;
+        // clean up its now-orphaned media file too (#208 R2 F2).
+        cleanupOrphanedWatermarkMedia(removedMediaTargets, in: doc)
 
         try await storeDocument(doc, for: docId)
         return "Inserted text watermark '\(text)' into \(touchedHeaderIds.count) header part(s): \(touchedHeaderIds.joined(separator: ", "))"
@@ -16420,9 +16534,11 @@ actor WordMCPServer {
         }
 
         var touchedHeaderIds: [String] = []
+        var removedMediaTargets: [String] = []
         for i in doc.headers.indices {
             var header = doc.headers[i]
-            _ = Self.stripWatermark(from: &header)
+            let (_, targets) = Self.stripWatermark(from: &header)
+            removedMediaTargets.append(contentsOf: targets)
             Self.ensureVMLNamespaces(in: &header)
 
             let headerRId = Self.freshRelationshipId(existing: header.relationships.relationships.map(\.id))
@@ -16437,6 +16553,13 @@ actor WordMCPServer {
             doc.markPartDirty("word/\(header.fileName)")
             touchedHeaderIds.append(header.id)
         }
+        // Replacing a prior watermark (text or image) on any of these headers
+        // just orphaned its media file(s), if any — delete what's now
+        // unreferenced (#208 R2 F2). The just-written `mediaFileName`
+        // itself is always still referenced (every touched header's new
+        // relationship points at it), so this can never delete what was just
+        // written.
+        cleanupOrphanedWatermarkMedia(removedMediaTargets, in: doc)
 
         try await storeDocument(doc, for: docId)
         return "Inserted image watermark from '\((imagePath as NSString).lastPathComponent)' into \(touchedHeaderIds.count) header part(s): \(touchedHeaderIds.joined(separator: ", "))"
@@ -16477,18 +16600,27 @@ actor WordMCPServer {
         }
 
         var touchedHeaderIds: [String] = []
+        var removedMediaTargets: [String] = []
         for i in doc.headers.indices {
             var header = doc.headers[i]
-            if Self.stripWatermark(from: &header) {
+            let (changed, targets) = Self.stripWatermark(from: &header)
+            if changed {
                 doc.headers[i] = header
                 doc.markPartDirty("word/\(header.fileName)")
                 touchedHeaderIds.append(header.id)
+                removedMediaTargets.append(contentsOf: targets)
             }
         }
 
         guard !touchedHeaderIds.isEmpty else {
             return "No watermark found; nothing removed"
         }
+        // #208 R2 F2: delete the media file(s) an image watermark's
+        // relationship pointed at, once nothing else in the document still
+        // references them — otherwise every insert→remove cycle leaves one
+        // more unreferenced PNG behind permanently (see stripWatermark's doc
+        // comment).
+        cleanupOrphanedWatermarkMedia(removedMediaTargets, in: doc)
 
         try await storeDocument(doc, for: docId)
         return "Removed watermark from \(touchedHeaderIds.count) header part(s): \(touchedHeaderIds.joined(separator: ", "))"
@@ -18110,7 +18242,7 @@ actor WordMCPServer {
     /// Read original XML for a header/footer file from the preserved
     /// archive on disk. `fileName`: e.g. "header1.xml".
     ///
-    /// #470-img R2 F1: this is stale by construction — `archiveTempDir` is
+    /// #208 R2 F1: this is stale by construction — `archiveTempDir` is
     /// only re-synced to the typed model by an actual save
     /// (`save_document`/`finalize_document`/autosave), never by
     /// `storeDocument` alone (what every mutating tool call goes through).
@@ -18129,7 +18261,7 @@ actor WordMCPServer {
         return try? String(contentsOf: url, encoding: .utf8)
     }
 
-    /// #470-img R2 F1: serializes the CURRENT typed model once (not once per
+    /// #208 R2 F1: serializes the CURRENT typed model once (not once per
     /// header — `DocxWriter.writeData` is a full-document call) via the same
     /// public entry point `list_images`/`get_document_info` already use for
     /// the identical staleness problem (`imageConsistencyInspection`), then
@@ -18280,7 +18412,7 @@ actor WordMCPServer {
         guard let doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
-        // #470-img R2 F1: one snapshot for every header in this call, not
+        // #208 R2 F1: one snapshot for every header in this call, not
         // one per header — `DocxWriter.writeData` is a full-document
         // serialization. `nil` (no snapshot needed) for a headerless
         // document; `headerFooterXML` falls back to disk if the snapshot
