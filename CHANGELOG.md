@@ -12,6 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`insert_equation` 的 `components` JSON tree 加上遞迴深度上限，擋掉會讓 server 當掉的極深巢狀輸入**（#116）。`components` 是呼叫端傳的 JSON,不是手打 LaTeX——用程式產生一個幾百層深的巢狀 tree(fraction 裝 fraction 裝 fraction...)很容易,而解析它的遞迴函式過去沒有深度上限,巢狀夠深會撐爆 Swift 的呼叫堆疊,直接讓整個 server 行程當掉,連帶其他所有已開啟文件的 session 一起死掉。現在超過 64 層巢狀就回報 `Error: insert_equation: invalid components structure: components tree exceeds max nesting depth 64`,不再當掉;64 層遠超過任何真人會手動巢狀的公式深度。
 - **`estimate_paragraph_for_page` 對讀進來的頁面尺寸／邊界做範圍檢查，不再因為文件本身帶著超界值而當掉**（#237）。這個工具是唯讀的,但它讀的頁面尺寸與邊界是文件本身帶的欄位,不是這次呼叫的參數——`set_page_margins`／`set_page_size` 在輸入端做的範圍驗證(見 4.4.0 的 #234)擋不到這條路徑。一份手動編輯過(或損毀)的 .docx 若帶著超出範圍的頁面尺寸或邊界,呼叫這個工具就會讓 server 當掉,即使呼叫本身只是要讀資訊。現在會先驗證這些欄位,超出範圍就回報 `Error: Invalid parameter 'pageSize.width': ...` 之類的錯誤,不再當掉;一般文件(含各種內建紙張大小)的估算結果不受影響。
 - **Direct Mode（`source_path`）唯讀工具呼叫完畢後不再洩漏一個解壓暫存目錄**（#221）。用 `source_path` 而不開 session 呼叫任何唯讀工具(如 `list_images`、`get_document_info`)時,過去每次呼叫都會在系統暫存目錄留下一份完整解壓的文件內容,直到 server 行程結束才釋放;對同一份大檔重複呼叫會持續佔用磁碟。現在每次呼叫結束就釋放,不再累積。
+- **`set_table_style` 沒有任何樣式參數命中時改為明確拒絕，不再先存檔再回「No style changes applied」**（#215，同 #201／#202 stub 家族處置）。過去這種呼叫會先 `storeDocument`（把 session 標成 dirty）再回一個 `isError` 未設的成功字串；現在在 `storeDocument` 之前 `throw ToolRefusal`。真正命中至少一項樣式（`border_style`，或 `cell_row`＋`cell_col`＋`shading_color`）的呼叫行為不變。
+- **`splice_paragraph_omath_from_source`（批次 OMath splice）來源段落沒有 OMath 時改為明確拒絕**（#215）。ooxml-swift 的批次 splice 對「來源沒有 OMath」回傳 `0`（設計上給 driver loop 用的優雅 no-op），過去 wrapper 沒檢查就存檔、回「Spliced 0 OMath block(s)」當作成功；現在 `n == 0` 時拒絕，不存檔。**同時補上一個驗證缺口**：函式庫只在逐個 OMath 的內部呼叫裡驗證 `target_paragraph_index`，0-OMath 的路徑完全不會走到那段驗證——只要來源沒有 OMath，`target_paragraph_index` 越界（如文件只有 2 段卻傳 99）過去也會被當成功放過；現在無論來源有無 OMath 都會驗證。
+- **`delete_text_as_revision` 的錯誤訊息不再永遠指向 `end`**（#238）。ooxml-swift 把 `start >= 0, end >= start, end <= totalLength` 寫成一個複合條件，任何一項不成立都一律回報 `end` 的值——`start: -1, end: 3` 與 `start: 1000, end: 3` 都回「Invalid index: 3」，指的是 `end`，但錯的是 `start`。現在錯誤訊息指名真正超出範圍的參數與其值；`end` 本身超出段落長度時仍正確指名 `end`。
+- **`create_numbering_definition` 的 `levels` 全部無效時改為 `isError: true`**（#238）。過去每個 level 都缺 `ilvl`／`num_format`／`lvl_text`（或 level 數超過 9）時，會 `return` 一個含 `"error"` 欄位的字串，`isError` 未設——只看 `isError` 判斷成敗的 client 會以為建立成功。現在 `throw ToolRefusal`，具名 `levels` 參數與失敗原因。
+
+### Documentation
+
+- **`tools/list` 與 README 的「未實作」揭露補齊**（#210）。#201 立的慣例是「未實作的工具在 description 就講明」，但 `protect_document`／`unprotect_document`／`set_document_password`／`remove_document_password`／`restrict_editing_region`（#172）五個保護工具的 description 一直沒跟上，仍是無保留的可用敘述——runtime 早已誠實（throw `ToolNotImplemented`），缺口只在呼叫前的廣告。五個 description 補上「目前未實作，呼叫會回 isError…」註記；`README.md`／`README_zh-TW.md` 把「Watermark CRUD」改為「Watermark read（寫側未實作，見 #201／#208）」。
+- **v3.18.0 的 `insert_equation` 輸入驗證收緊補標 BREAKING**（#118）。PR #111 的兩個行為改變（`components`＋`latex` 同時給改為報錯、字串 `display_mode` 改為報錯）原本放在 `### Added` 下沒標 BREAKING；現補上明確的 BREAKING 段落。
+
+### 升級注意
+
+- 依 `isError` 分流的 client：`create_numbering_definition` 的 `levels` 全部無效時，4.4.0 及以前回 `isError` 未設的成功字串（body 是 `{ "error": "invalid_levels", ... }`），本版起回 `isError: true`。若你的呼叫端曾經檢查 body 裡的 `"error"` 欄位而不是 `isError`，行為不變；只依賴 `isError` 的呼叫端會在這個情境從「以為成功」變成「正確看到失敗」。
+- `set_table_style` 傳入完全沒被辨識的參數組合（例如只給 `shading_color` 卻沒給 `cell_row`／`cell_col`）過去回成功字串「No style changes applied」，本版起回 `isError: true`。真正命中至少一項樣式的呼叫不受影響。
+- `splice_paragraph_omath_from_source` 對「來源段落沒有 OMath」的呼叫過去回成功字串「Spliced 0 OMath block(s)…」，本版起回 `isError: true`。同時，若你曾經在來源沒有 OMath 時傳入越界的 `target_paragraph_index`（過去不會被抓到），本版起一律會被拒絕。
 
 ## [4.4.0] - 2026-09-25
 
