@@ -216,6 +216,44 @@ final class Issue184RestrictEditingRegionTests: XCTestCase {
         XCTAssertEqual(result.isError, true, "a range spanning a table must be refused: \(textOf(result))")
     }
 
+    /// R2 (independent review, HIGH finding): `<w:permStart>` is anchored to
+    /// the END of the PRECEDING paragraph (`start_paragraph - 1`), so the
+    /// actual marked-editable span begins at the body-order GAP between
+    /// that anchor and `start_paragraph` — not at `start_paragraph` itself.
+    /// A table sitting in exactly that gap is document-flow-INSIDE the
+    /// range even though it is outside the caller's requested window.
+    /// Structure: `[p0, TABLE, p1, p2, p3]` → `getParagraphs()` flattens to
+    /// `[p0, p1, p2, p3]` (indices 0..3); requesting `[1, 2]` anchors
+    /// `<w:permStart>` to p0 (index 0), and the table sits exactly between
+    /// p0 and p1 — inside the anchor-to-end span, must be refused.
+    func testRejectsRangeWhereTableSitsBetweenTheAnchorAndTheStartParagraph() async throws {
+        let dir = try makeScratch()
+        var doc = WordDocument()
+        doc.body.children.append(.paragraph(Paragraph(runs: [Run(text: "p0")])))
+        doc.body.children.append(.table(Table(rows: [
+            TableRow(cells: [TableCell(paragraphs: [Paragraph(runs: [Run(text: "cell")])])])
+        ])))
+        doc.body.children.append(.paragraph(Paragraph(runs: [Run(text: "p1")])))
+        doc.body.children.append(.paragraph(Paragraph(runs: [Run(text: "p2")])))
+        doc.body.children.append(.paragraph(Paragraph(runs: [Run(text: "p3")])))
+        let url = dir.appendingPathComponent("d-anchor-gap.docx")
+        try DocxWriter.write(doc, to: url)
+
+        let server = await WordMCPServer()
+        let open = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("d-anchor-gap")])
+        XCTAssertFalse(textOf(open).hasPrefix("Error"), textOf(open))
+
+        let result = await server.invokeToolForTesting(
+            name: "restrict_editing_region",
+            arguments: ["doc_id": .string("d-anchor-gap"),
+                        "start_paragraph": .int(1), "end_paragraph": .int(2)])
+        XCTAssertEqual(result.isError, true,
+                       "a table between the permStart anchor (start_paragraph - 1) and start_paragraph "
+                       + "must be refused — it is inside the actual marked range: \(textOf(result))")
+    }
+
     func testAdjacentRangeNotCrossingTheTableStillSucceeds() async throws {
         let dir = try makeScratch()
         var doc = WordDocument()
