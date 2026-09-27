@@ -1648,7 +1648,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "replace_text",
-                description: "搜尋並取代文字。v2.1+ cross-run 匹配自動生效；新增 scope / regex / match_case。BREAKING: all 參數已移除（現在恆為 replace-all）。（需先 open_document）\n\n【字元選擇】表單勾選請用 ■(U+25A0) 取代 □(U+25A1)，不要用 ☑(U+2611) 或 ☒(U+2612)。實測（本機當前版本）後兩者在 Times New Roman、Arial 與常見 CJK 字型中都沒有字形；缺字形時渲染器會改用別的字型——macOS 上通常是彩色 emoji 字型，其他平台可能是符號字型或 .notdef 方框——勾選框於是與表單其餘部分不一致。本工具不會改動 run 的字型宣告，但實際繪製的字型會變——所以逐格文字比對會全對、外觀卻是錯的。\n\n【跨 run 格式】match 到的文字若橫跨多個格式不同的 run（例如「符號 run＋標籤 run」的勾選列），find／replace 等長時會自動保留各段原本的格式；不等長、regex、或同一段落內有一個以上這種跨 run match 時無法安全拆分，回傳訊息會附上 WARNING 說明格式被合併，請自行檢查該處外觀（#190）。",
+                description: "搜尋並取代文字。v2.1+ cross-run 匹配自動生效；新增 scope / regex / match_case。BREAKING: all 參數已移除（現在恆為 replace-all）。（需先 open_document）\n\n【字元選擇】表單勾選請用 ■(U+25A0) 取代 □(U+25A1)，不要用 ☑(U+2611) 或 ☒(U+2612)。實測（本機當前版本）後兩者在 Times New Roman、Arial 與常見 CJK 字型中都沒有字形；缺字形時渲染器會改用別的字型——macOS 上通常是彩色 emoji 字型，其他平台可能是符號字型或 .notdef 方框——勾選框於是與表單其餘部分不一致。本工具不會改動 run 的字型宣告，但實際繪製的字型會變——所以逐格文字比對會全對、外觀卻是錯的。\n\n【跨 run 格式】match 到的文字若橫跨多個格式不同的 run（例如「符號 run＋標籤 run」的勾選列），find／replace 等長時會自動保留各段原本的格式；不等長、regex、或同一段落內有一個以上這種跨 run match 時無法安全拆分，回傳訊息會附上 WARNING 說明格式被合併，請自行檢查該處外觀（#190）。\n\n【空白字元】find 逐字比對找不到、且含空白字元時，會自動改用去除空白後的比對再試一次（解析後的文字模型偶爾會遺失純空白 run 的內容，見 #187）；命中時回傳訊息會附上 NOTE。replace 的內容一律照字面寫入，不受這個正規化影響——即使原文那段空白已經在解析時遺失，取代後新寫入的文字仍保留您在 replace 裡給的空白。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1682,7 +1682,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "replace_text_batch",
-                description: "批次文字取代（減少 per-call round-trip，單次 save）。Replacements 依陣列順序套用（sequential），後者看到前者結果。per-item scope / regex / match_case 設定。dry_run 略過 disk save（但 in-memory doc 仍被 mutate；需 open_document 還原）。（需先 open_document）\n\n【字元選擇】同 replace_text：表單勾選用 ■(U+25A0)，勿用 ☑(U+2611) 或 ☒(U+2612)——實測（本機當前版本）在 Times New Roman、Arial 及常見 CJK 字型皆無字形，缺字形時會改用別的字型而與表單不一致。\n\n【跨 run 格式】同 replace_text：每個 item 各自判斷是否能安全保留跨 run 格式，無法保留時該行結果會附上 WARNING（#190）。",
+                description: "批次文字取代（減少 per-call round-trip，單次 save）。Replacements 依陣列順序套用（sequential），後者看到前者結果。per-item scope / regex / match_case 設定。dry_run 略過 disk save（但 in-memory doc 仍被 mutate；需 open_document 還原）。（需先 open_document）\n\n【字元選擇】同 replace_text：表單勾選用 ■(U+25A0)，勿用 ☑(U+2611) 或 ☒(U+2612)——實測（本機當前版本）在 Times New Roman、Arial 及常見 CJK 字型皆無字形，缺字形時會改用別的字型而與表單不一致。\n\n【跨 run 格式】同 replace_text：每個 item 各自判斷是否能安全保留跨 run 格式，無法保留時該行結果會附上 WARNING（#190）。\n\n【空白字元】同 replace_text：每個 item 的 find 逐字找不到、含空白時會各自嘗試去除空白後比對，命中時該行附 NOTE；replace 一律照字面寫入（#187）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1883,7 +1883,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "get_tables",
-                description: "取得文件中所有表格的完整內容（支援 Direct Mode）。預設回傳每個表格的所有列、所有欄、每格完整文字；傳 summarize: true 才做省略（列／欄／長文字三種省略都會標示）",
+                description: "取得文件中所有表格的完整內容（支援 Direct Mode）。預設回傳每個表格的所有列、所有欄、每格完整文字；傳 summarize: true 才做省略（列／欄／長文字三種省略都會標示）。儲存格內嵌有巢狀表格時，會在該列下方以「Nested table at Table N, row R, col C > nested table K: ...」列出其內容（#188）；K 即 update_cell 的 nested_table_index。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1901,7 +1901,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "update_cell",
-                description: "更新表格儲存格內容：把儲存格第一段的文字換成 text，保留該段的段落格式。儲存格有多個段落時，只改第一段，其餘段落原樣保留（不會被刪除）；要改其他段落請用 update_cell_paragraph。目標段落已有 run 時沿用該 run 的格式（字型／粗體等）；完全沒有 run 時（常見於表單待填欄位），改採同列其他儲存格的字型，同列也沒有時改採文件內最常見的宣告字型（#191），仍找不到才維持無格式（落到 docDefaults）。",
+                description: "更新表格儲存格內容：把儲存格第一段的文字換成 text，保留該段的段落格式。儲存格有多個段落時，只改第一段，其餘段落原樣保留（不會被刪除）；要改其他段落請用 update_cell_paragraph。目標段落已有 run 時沿用該 run 的格式（字型／粗體等）；完全沒有 run 時（常見於表單待填欄位），改採同列其他儲存格的字型，同列也沒有時改採文件內最常見的宣告字型（#191），仍找不到才維持無格式（落到 docDefaults）。\n\n【巢狀表格】table_index/row/col 定址的儲存格內若還嵌了一層表格（常見於官方表單的子檢核清單），額外傳 nested_table_index（該儲存格內第幾個巢狀表格，從 0 開始；用 get_tables 的輸出確認）＋nested_row／nested_col（巢狀表格內的列／欄），即可寫入巢狀表格的儲存格；三者需一併提供。只支援一層巢狀（#188）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1915,15 +1915,27 @@ actor WordMCPServer {
                         ]),
                         "row": .object([
                             "type": .string("integer"),
-                            "description": .string("列索引（從 0 開始）")
+                            "description": .string("列索引（從 0 開始）；nested_table_index 有給時，這是巢狀表格所在的宿主儲存格列索引")
                         ]),
                         "col": .object([
                             "type": .string("integer"),
-                            "description": .string("欄索引（從 0 開始）")
+                            "description": .string("欄索引（從 0 開始）；nested_table_index 有給時，這是巢狀表格所在的宿主儲存格欄索引")
                         ]),
                         "text": .object([
                             "type": .string("string"),
                             "description": .string("新的儲存格內容")
+                        ]),
+                        "nested_table_index": .object([
+                            "type": .string("integer"),
+                            "description": .string("（選填，#188）table_index/row/col 定址的儲存格內第幾個巢狀表格（從 0 開始）。有給時 nested_row／nested_col 為必填，寫入目標改為巢狀表格內的儲存格。")
+                        ]),
+                        "nested_row": .object([
+                            "type": .string("integer"),
+                            "description": .string("（nested_table_index 有給時必填）巢狀表格內的列索引（從 0 開始）")
+                        ]),
+                        "nested_col": .object([
+                            "type": .string("integer"),
+                            "description": .string("（nested_table_index 有給時必填）巢狀表格內的欄索引（從 0 開始）")
                         ])
                     ]),
                     "required": .array([.string("doc_id"), .string("table_index"), .string("row"), .string("col"), .string("text")])
@@ -4653,7 +4665,7 @@ actor WordMCPServer {
             // 9.3 search_text - 搜尋文字並返回位置
             Tool(
                 name: "search_text",
-                description: "在文件中搜尋指定文字，返回所有符合的位置（支援 Direct Mode）",
+                description: "在文件中搜尋指定文字，返回所有符合的位置（支援 Direct Mode）。巢狀表格內容也會被搜尋，座標會標成「Table N, row R, col C > nested table K, row r, col c」（#188）。逐字比對找不到、且 query 含空白時，會自動改用去除空白後的比對再試一次；命中時結果會標註「(normalized match ...)」——解析後的文字模型偶爾會遺失純空白 run 的內容（已知的上游解析限制，見 #187），這個備援讓從原始 XML／pandoc／python-docx 擷取出來、含空白的查詢字串仍能命中，但回報的座標／文字仍以（可能已遺失空白的）解析後文字為準。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -8966,6 +8978,48 @@ actor WordMCPServer {
         return suffix
     }
 
+    /// #187: `replaceTextPreservingCrossRunFormat` (the #190 layer) with a
+    /// whitespace-normalized retry on top, for the same reason `search_text`
+    /// has one (see that tool's doc comment for the confirmed root cause).
+    ///
+    /// Only attempted when the literal call replaces zero occurrences AND
+    /// `find` contains whitespace — an already-working replace (the common
+    /// case) takes the exact same code path as before #187, unconditionally.
+    ///
+    /// `find` is normalized for the retry (stripped of whitespace, to match
+    /// what the lossy parsed model actually contains) but `replacement` is
+    /// passed through **unstripped** — deliberately. The replacement text is
+    /// written fresh into the typed model, not re-parsed through the same
+    /// Foundation `XMLDocument` code path that lost the original whitespace,
+    /// so a caller's intended spacing in `replacement` survives correctly
+    /// into the saved file even though the *matched* text's original spacing
+    /// could not be recovered. Regex retries aren't attempted — a stripped
+    /// pattern doesn't have a well-defined relationship to the original
+    /// pattern's semantics.
+    private func replaceTextWithWhitespaceFallback(
+        doc: inout WordDocument, find: String, replacement: String, options: ReplaceOptions
+    ) throws -> (count: Int, repaired: Int, collapsedUnrepaired: Int, usedNormalizedFallback: Bool) {
+        let (count, repaired, collapsedUnrepaired) = try replaceTextPreservingCrossRunFormat(
+            doc: &doc, find: find, replacement: replacement, options: options
+        )
+        guard count == 0, !options.regex, find.contains(where: isWhitespaceCharacter) else {
+            return (count, repaired, collapsedUnrepaired, false)
+        }
+        let strippedFind = stripWhitespaceWithMap(find).stripped
+        guard !strippedFind.isEmpty, strippedFind != find else {
+            return (count, repaired, collapsedUnrepaired, false)
+        }
+        let (retryCount, retryRepaired, retryCollapsed) = try replaceTextPreservingCrossRunFormat(
+            doc: &doc, find: strippedFind, replacement: replacement, options: options
+        )
+        guard retryCount > 0 else {
+            // Normalizing didn't help either — report the original (zero)
+            // outcome rather than a confusing "replaced 0 via fallback".
+            return (count, repaired, collapsedUnrepaired, false)
+        }
+        return (retryCount, retryRepaired, retryCollapsed, true)
+    }
+
     /// replace_text MCP tool — now flatten-then-map + scope + regex.
     ///
     /// Args:
@@ -9015,13 +9069,16 @@ actor WordMCPServer {
 
         let options = ReplaceOptions(scope: scope, regex: regex, matchCase: matchCase)
         do {
-            let (count, repaired, collapsedUnrepaired) = try replaceTextPreservingCrossRunFormat(
+            let (count, repaired, collapsedUnrepaired, usedNormalizedFallback) = try replaceTextWithWhitespaceFallback(
                 doc: &doc, find: find, replacement: replace, options: options
             )
             try await storeDocument(doc, for: docId)
             let scopeLabel = scope == .all ? " (scope: all)" : ""
             let repairSummary = crossRunRepairSummary(repaired: repaired, collapsedUnrepaired: collapsedUnrepaired)
-            return "Replaced \(count) occurrence(s) of '\(find)' with '\(replace)'\(scopeLabel)\(repairSummary)"
+            let normalizedNote = usedNormalizedFallback
+                ? "; NOTE: literal text had no match, used whitespace-normalized matching instead (#187) — a whitespace-only run may be missing from the parsed document; please verify the surrounding layout"
+                : ""
+            return "Replaced \(count) occurrence(s) of '\(find)' with '\(replace)'\(scopeLabel)\(repairSummary)\(normalizedNote)"
         } catch ReplaceError.invalidRegex(let pattern) {
             throw ToolRefusal("invalid regex pattern '\(pattern)'")
         }
@@ -9167,12 +9224,13 @@ actor WordMCPServer {
             let options = ReplaceOptions(scope: scope, regex: regex, matchCase: matchCase)
 
             do {
-                let (count, repaired, collapsedUnrepaired) = try replaceTextPreservingCrossRunFormat(
+                let (count, repaired, collapsedUnrepaired, usedNormalizedFallback) = try replaceTextWithWhitespaceFallback(
                     doc: &doc, find: find, replacement: replace, options: options
                 )
                 results.append([
                     "index": idx, "find": find, "replaced_count": count,
                     "cross_run_repaired": repaired, "cross_run_collapsed_unrepaired": collapsedUnrepaired,
+                    "used_normalized_fallback": usedNormalizedFallback,
                 ])
                 succeeded += 1
             } catch ReplaceError.invalidRegex(let pattern) {
@@ -9207,7 +9265,11 @@ actor WordMCPServer {
                 let count = r["replaced_count"] as? Int ?? 0
                 let repaired = r["cross_run_repaired"] as? Int ?? 0
                 let collapsedUnrepaired = r["cross_run_collapsed_unrepaired"] as? Int ?? 0
-                summary += "  [\(idx)] '\(find)' → \(count) replaced\(crossRunRepairSummary(repaired: repaired, collapsedUnrepaired: collapsedUnrepaired))\n"
+                let usedNormalizedFallback = r["used_normalized_fallback"] as? Bool ?? false
+                let normalizedNote = usedNormalizedFallback
+                    ? "; NOTE: used whitespace-normalized matching (#187)"
+                    : ""
+                summary += "  [\(idx)] '\(find)' → \(count) replaced\(crossRunRepairSummary(repaired: repaired, collapsedUnrepaired: collapsedUnrepaired))\(normalizedNote)\n"
             }
         }
         return summary
@@ -9562,6 +9624,59 @@ actor WordMCPServer {
         return "Inserted \(rows)x\(cols) table"
     }
 
+    /// #188: renders one nested table (and, recursively, any tables nested
+    /// inside *its* cells) as an indented block appended under the host row
+    /// that contains it. `pathPrefix` names the hosting cell so the printed
+    /// path matches what `update_cell`'s `nested_table_index` /
+    /// `nested_row` / `nested_col` (one level) or a human reader (any level)
+    /// needs. Pre-#188, nested tables were entirely absent from this tool's
+    /// output — `get_tables` only ever enumerated `body.children`'s
+    /// top-level `.table` cases (see `WordDocument.getTables()`,
+    /// ooxml-swift, unchanged), so a cell's `nestedTables` were invisible.
+    private func nestedTableBlock(
+        cell: TableCell, pathPrefix: String, indent: String, summarize: Bool,
+        summarizedRowCap: Int, summarizedColCap: Int
+    ) -> String {
+        var block = ""
+        for (nestedIdx, nested) in cell.nestedTables.enumerated() {
+            let path = "\(pathPrefix) > nested table \(nestedIdx)"
+            let rows = nested.rows.count
+            let widths = nested.rows.map { $0.cells.count }
+            let maxCols = widths.max() ?? 0
+            let minCols = widths.min() ?? 0
+            let sizeLabel = minCols == maxCols
+                ? "\(rows)x\(maxCols) table"
+                : "\(rows)x\(maxCols) table (ragged: \(minCols)..\(maxCols) columns per row)"
+            block += "\(indent)Nested table at \(path): \(sizeLabel)\n"
+
+            let shownRows = summarize ? Array(nested.rows.prefix(summarizedRowCap)) : nested.rows
+            for (rowIdx, row) in shownRows.enumerated() {
+                let shownCells = summarize ? Array(row.cells.prefix(summarizedColCap)) : row.cells
+                var cellTexts = shownCells.map { c -> String in
+                    let text = truncateText(c.getText(), summarize: summarize)
+                    return text.isEmpty ? "(empty)" : text
+                }
+                let hiddenCols = row.cells.count - shownCells.count
+                if hiddenCols > 0 {
+                    cellTexts.append("... (\(hiddenCols) more column\(hiddenCols == 1 ? "" : "s"))")
+                }
+                block += "\(indent)  Row \(rowIdx): \(cellTexts.joined(separator: " | "))\n"
+                for (cellIdx, deeperCell) in shownCells.enumerated() {
+                    let cellPath = "\(path), row \(rowIdx), col \(cellIdx)"
+                    block += nestedTableBlock(
+                        cell: deeperCell, pathPrefix: cellPath, indent: indent + "  ", summarize: summarize,
+                        summarizedRowCap: summarizedRowCap, summarizedColCap: summarizedColCap
+                    )
+                }
+            }
+            let hiddenRows = nested.rows.count - shownRows.count
+            if hiddenRows > 0 {
+                block += "\(indent)  ... (\(hiddenRows) more row\(hiddenRows == 1 ? "" : "s"))\n"
+            }
+        }
+        return block
+    }
+
     private func getTables(args: [String: Value]) async throws -> String {
         let (doc, _) = try await resolveDocument(args: args)
 
@@ -9610,6 +9725,15 @@ actor WordMCPServer {
                     cellTexts.append("... (\(hiddenCols) more column\(hiddenCols == 1 ? "" : "s"))")
                 }
                 result += "  Row \(rowIdx): \(cellTexts.joined(separator: " | "))\n"
+                // #188: cells can carry their own nested `<w:tbl>`, invisible
+                // above because `cell.getText()` never includes them.
+                for (cellIdx, cell) in shownCells.enumerated() where !cell.nestedTables.isEmpty {
+                    let cellPath = "Table \(index), row \(rowIdx), col \(cellIdx)"
+                    result += nestedTableBlock(
+                        cell: cell, pathPrefix: cellPath, indent: "    ", summarize: summarize,
+                        summarizedRowCap: summarizedRowCap, summarizedColCap: summarizedColCap
+                    )
+                }
             }
             let hiddenRows = table.rows.count - shownRows.count
             if hiddenRows > 0 {
@@ -9736,6 +9860,39 @@ actor WordMCPServer {
         return nil
     }
 
+    /// #188: writes `text` into `cell`'s first paragraph exactly like
+    /// ooxml-swift's `updateCell` does for a top-level cell (preserve the
+    /// first run's own `rPr` when one already exists; otherwise apply
+    /// `fallbackProperties` per #191, or leave the new run unformatted when
+    /// `fallbackProperties` is nil). Used for the `nested_table_index` write
+    /// path below, since `doc.updateCell` itself has no nested-table
+    /// addressing — che-word-mcp reimplements just this one cell-mutation
+    /// step rather than modifying ooxml-swift.
+    private func applyCellTextWrite(cell: inout TableCell, text: String, fallbackProperties: RunProperties?) {
+        if var updatedPara = cell.paragraphs.first, let firstRun = updatedPara.runs.first {
+            var updatedRun = firstRun
+            updatedRun.text = text
+            updatedPara.runs = [updatedRun]
+            if cell.paragraphs.isEmpty {
+                cell.paragraphs = [updatedPara]
+            } else {
+                cell.paragraphs[0] = updatedPara
+            }
+        } else {
+            var updatedPara = cell.paragraphs.first ?? Paragraph()
+            var newRun = Run(text: text)
+            if let fallbackProperties {
+                newRun.properties = fallbackProperties
+            }
+            updatedPara.runs = [newRun]
+            if cell.paragraphs.isEmpty {
+                cell.paragraphs = [updatedPara]
+            } else {
+                cell.paragraphs[0] = updatedPara
+            }
+        }
+    }
+
     private func updateCell(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -9754,6 +9911,71 @@ actor WordMCPServer {
         }
         guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
+        }
+
+        // #188: `table_index`/`row`/`col` address the HOST cell; this
+        // addresses a table nested *inside* that cell (`TableCell.
+        // nestedTables[nested_table_index]`), at (`nested_row`,
+        // `nested_col`) within the nested table. One level of nesting only
+        // (matches every real-world reproducer seen so far and ooxml-swift's
+        // own parser scope — deeper nesting can chain `nested_table_index`
+        // additions later if a real case ever needs it). `doc.updateCell`
+        // has no nested addressing at all, so this path writes the whole
+        // way through `doc.body.children` itself rather than delegating.
+        if let nestedTableIndex = try optionalInt(args, "nested_table_index") {
+            guard let nestedRow = try optionalInt(args, "nested_row") else {
+                throw WordError.missingParameter("nested_row")
+            }
+            guard let nestedCol = try optionalInt(args, "nested_col") else {
+                throw WordError.missingParameter("nested_col")
+            }
+            guard let bodyIndex = topLevelTableBodyIndex(doc, tableIndex: tableIndex),
+                  case .table(var table) = doc.body.children[bodyIndex] else {
+                throw WordError.invalidIndex(tableIndex)
+            }
+            guard row >= 0, row < table.rows.count else {
+                throw WordError.invalidIndex(row)
+            }
+            guard col >= 0, col < table.rows[row].cells.count else {
+                throw WordError.invalidFormat("Invalid col index \(col) for row \(row): row has \(table.rows[row].cells.count) cell(s)")
+            }
+            let hostCell = table.rows[row].cells[col]
+            guard nestedTableIndex >= 0, nestedTableIndex < hostCell.nestedTables.count else {
+                throw WordError.invalidParameter(
+                    "nested_table_index",
+                    "cell table[\(tableIndex)][\(row)][\(col)] has \(hostCell.nestedTables.count) nested table(s)"
+                )
+            }
+            var nested = hostCell.nestedTables[nestedTableIndex]
+            guard nestedRow >= 0, nestedRow < nested.rows.count else {
+                throw WordError.invalidParameter("nested_row", "nested table has \(nested.rows.count) row(s)")
+            }
+            guard nestedCol >= 0, nestedCol < nested.rows[nestedRow].cells.count else {
+                throw WordError.invalidParameter(
+                    "nested_col", "nested table row \(nestedRow) has \(nested.rows[nestedRow].cells.count) cell(s)"
+                )
+            }
+
+            var targetCell = nested.rows[nestedRow].cells[nestedCol]
+            let cellHasNoRuns = targetCell.paragraphs.first?.runs.first == nil
+            let fallbackProperties = cellHasNoRuns
+                ? fallbackCellRunProperties(doc: doc, table: nested, row: nestedRow, excludingCol: nestedCol)
+                : nil
+            applyCellTextWrite(cell: &targetCell, text: text, fallbackProperties: fallbackProperties)
+            nested.rows[nestedRow].cells[nestedCol] = targetCell
+            table.rows[row].cells[col].nestedTables[nestedTableIndex] = nested
+            doc.body.children[bodyIndex] = .table(table)
+            if tableIndex < doc.body.tables.count {
+                doc.body.tables[tableIndex] = table
+            }
+            // This path never calls `doc.updateCell` (which self-marks dirty
+            // internally) — it writes through `doc.body.children` directly,
+            // so it must mark the part dirty itself or `DocxWriter`'s overlay
+            // mode has no signal to re-emit `word/document.xml` on save.
+            doc.markPartDirty("word/document.xml")
+
+            try await storeDocument(doc, for: docId)
+            return "Updated cell at table[\(tableIndex)][\(row)][\(col)] > nested table \(nestedTableIndex)[\(nestedRow)][\(nestedCol)]"
         }
 
         // che-word-mcp#191: determine BEFORE the write whether the target
@@ -14135,6 +14357,74 @@ actor WordMCPServer {
     }
 
     // 9.3 search_text - 搜尋文字
+    /// #187: does `char` consist entirely of whitespace scalars? Mirrors the
+    /// predicate `findInlineMathGaps` already uses for the same question.
+    private func isWhitespaceCharacter(_ char: Character) -> Bool {
+        char.unicodeScalars.allSatisfy { CharacterSet.whitespacesAndNewlines.contains($0) }
+    }
+
+    /// #187: `s` with every whitespace character removed, plus a map from
+    /// each surviving character's index in the stripped string back to its
+    /// index in `s`. Used only as a *fallback* when a literal search finds
+    /// nothing — see `searchText`'s doc comment for why the fallback exists
+    /// and what it does and doesn't fix.
+    private func stripWhitespaceWithMap(_ s: String) -> (stripped: String, map: [Int]) {
+        var stripped = ""
+        var map: [Int] = []
+        for (idx, ch) in s.enumerated() where !isWhitespaceCharacter(ch) {
+            map.append(idx)
+            stripped.append(ch)
+        }
+        return (stripped, map)
+    }
+
+    /// #188: recursively walks a table's nested tables (`TableCell.
+    /// nestedTables`), calling `visit` for every paragraph found — in the
+    /// cell's own paragraphs AND at every nesting depth — with a `location`
+    /// string that names the full path. `pathPrefix` already names the
+    /// hosting cell (e.g. `"Table 1, row 26, col 0"`); this function appends
+    /// `" > nested table N, row R, col C"` for each level of nesting so a
+    /// caller can reconstruct the address `update_cell` accepts via
+    /// `nested_table_index` / `nested_row` / `nested_col` (one level) or
+    /// tell a human where to look (any level).
+    private func walkNestedTables(
+        in cell: TableCell, pathPrefix: String, visit: (Paragraph, String) -> Void
+    ) {
+        for (nestedIdx, nested) in cell.nestedTables.enumerated() {
+            let tablePath = "\(pathPrefix) > nested table \(nestedIdx)"
+            for (rowIdx, row) in nested.rows.enumerated() {
+                for (cellIdx, nestedCell) in row.cells.enumerated() {
+                    let cellPath = "\(tablePath), row \(rowIdx), col \(cellIdx)"
+                    for para in nestedCell.paragraphs {
+                        visit(para, cellPath)
+                    }
+                    // Recurse for depth > 1 (rare; ooxml-swift caps parsing
+                    // depth at 5). `cellPath` becomes the next level's prefix.
+                    walkNestedTables(in: nestedCell, pathPrefix: cellPath, visit: visit)
+                }
+            }
+        }
+    }
+
+    /// search_text MCP tool.
+    ///
+    /// #187: `Paragraph.getText()` can return text with a whitespace-only
+    /// run silently missing — a Foundation `XMLDocument` parsing limitation
+    /// in the ooxml-swift dependency (not modified here; see #187 for the
+    /// empirically-confirmed root cause). A literal search for text copied
+    /// verbatim out of the source XML can then find nothing even though the
+    /// text is right there in the file. When that happens AND `query`
+    /// contains whitespace, this tool retries with whitespace stripped from
+    /// both the query and each paragraph's text, and reports any hits with
+    /// `(normalized match — literal text may differ by whitespace; see tool
+    /// description)`. The literal pass is completely unchanged (same code,
+    /// same output) whenever it finds at least one match — the fallback only
+    /// ever adds results it would otherwise have silently omitted, never
+    /// replaces or reorders existing ones.
+    ///
+    /// #188: recurses into nested tables (`TableCell.nestedTables`) that a
+    /// pre-#188 version of this tool never visited — those cells were
+    /// invisible to search, not merely mis-numbered.
     private func searchText(args: [String: Value]) async throws -> String {
         guard let query = args["query"]?.stringValue else {
             throw WordError.missingParameter("query")
@@ -14147,6 +14437,7 @@ actor WordMCPServer {
             let location: String
             let startPosition: Int
             let text: String
+            let normalized: Bool
         }
 
         var results: [SearchResult] = []
@@ -14160,7 +14451,37 @@ actor WordMCPServer {
             while let range = haystack.range(of: needle, range: searchStart..<haystack.endIndex) {
                 let position = haystack.distance(from: haystack.startIndex, to: range.lowerBound)
                 let matchedText = String(paraText[range])
-                results.append(SearchResult(location: location, startPosition: position, text: matchedText))
+                results.append(SearchResult(location: location, startPosition: position, text: matchedText, normalized: false))
+                searchStart = range.upperBound
+            }
+        }
+
+        // #187 fallback pass: same paragraph text, whitespace stripped from
+        // both sides, with a map back to original-text character offsets so
+        // the reported position still anchors into the real file.
+        func searchInParagraphNormalized(_ para: Paragraph, location: String, strippedQuery: String) {
+            let paraText = para.getText()
+            let (strippedText, map) = stripWhitespaceWithMap(paraText)
+            guard !strippedText.isEmpty else { return }
+            let haystack = caseSensitive ? strippedText : strippedText.lowercased()
+            let needle = caseSensitive ? strippedQuery : strippedQuery.lowercased()
+            guard !needle.isEmpty else { return }
+
+            var searchStart = haystack.startIndex
+            while let range = haystack.range(of: needle, range: searchStart..<haystack.endIndex) {
+                let strippedStart = haystack.distance(from: haystack.startIndex, to: range.lowerBound)
+                let strippedEnd = haystack.distance(from: haystack.startIndex, to: range.upperBound)
+                guard strippedStart < map.count else { break }
+                let originalStart = map[strippedStart]
+                // Exclusive end: one past the original index of the last
+                // matched (non-whitespace) character, or the paragraph's
+                // full length if the match runs to the end of the text.
+                let originalEndExclusive = (strippedEnd - 1 < map.count) ? map[strippedEnd - 1] + 1 : paraText.count
+                let lo = paraText.index(paraText.startIndex, offsetBy: originalStart)
+                let hi = paraText.index(paraText.startIndex, offsetBy: originalEndExclusive)
+                results.append(SearchResult(
+                    location: location, startPosition: originalStart, text: String(paraText[lo..<hi]), normalized: true
+                ))
                 searchStart = range.upperBound
             }
         }
@@ -14171,23 +14492,41 @@ actor WordMCPServer {
         // Recursive walker so block-level SDT wrappers (#44) are transparent
         // for search purposes — matches inside SDT children appear with the
         // same paragraph/table index numbering as plain body siblings.
-        func walk(_ children: [BodyChild]) {
+        func walk(_ children: [BodyChild], normalizedQuery: String?) {
             for child in children {
                 switch child {
                 case .paragraph(let para):
-                    searchInParagraph(para, location: "Paragraph \(paraIndex)")
+                    if let normalizedQuery {
+                        searchInParagraphNormalized(para, location: "Paragraph \(paraIndex)", strippedQuery: normalizedQuery)
+                    } else {
+                        searchInParagraph(para, location: "Paragraph \(paraIndex)")
+                    }
                     paraIndex += 1
                 case .table(let table):
                     for (rowIdx, row) in table.rows.enumerated() {
                         for (cellIdx, cell) in row.cells.enumerated() {
+                            let cellLocation = "Table \(tableIndex), row \(rowIdx), col \(cellIdx)"
                             for para in cell.paragraphs {
-                                searchInParagraph(para, location: "Table \(tableIndex), row \(rowIdx), col \(cellIdx)")
+                                if let normalizedQuery {
+                                    searchInParagraphNormalized(para, location: cellLocation, strippedQuery: normalizedQuery)
+                                } else {
+                                    searchInParagraph(para, location: cellLocation)
+                                }
+                            }
+                            // #188: nested tables were previously invisible
+                            // to search_text — not just mis-numbered.
+                            walkNestedTables(in: cell, pathPrefix: cellLocation) { nestedPara, nestedLocation in
+                                if let normalizedQuery {
+                                    searchInParagraphNormalized(nestedPara, location: nestedLocation, strippedQuery: normalizedQuery)
+                                } else {
+                                    searchInParagraph(nestedPara, location: nestedLocation)
+                                }
                             }
                         }
                     }
                     tableIndex += 1
                 case .contentControl(_, children: let inner):
-                    walk(inner)
+                    walk(inner, normalizedQuery: normalizedQuery)
                 case .bookmarkMarker, .rawBlockElement:
                     // ooxml-swift v0.19.6+ (#58): body-level markers carry no
                     // searchable text — skip.
@@ -14195,7 +14534,19 @@ actor WordMCPServer {
                 }
             }
         }
-        walk(doc.body.children)
+        walk(doc.body.children, normalizedQuery: nil)
+
+        // #187: only attempted when the literal pass found nothing AND the
+        // query actually contains whitespace (otherwise stripping changes
+        // nothing and re-running would just waste a full document walk).
+        if results.isEmpty, query.contains(where: isWhitespaceCharacter) {
+            let strippedQuery = stripWhitespaceWithMap(query).stripped
+            if !strippedQuery.isEmpty {
+                paraIndex = 0
+                tableIndex = 0
+                walk(doc.body.children, normalizedQuery: strippedQuery)
+            }
+        }
 
         if results.isEmpty {
             return "No matches found for '\(query)'"
@@ -14203,7 +14554,10 @@ actor WordMCPServer {
 
         var output = "Found \(results.count) match(es) for '\(query)':\n"
         for result in results {
-            output += "- \(result.location), position \(result.startPosition): \"\(result.text)\"\n"
+            let suffix = result.normalized
+                ? " (normalized match — literal text differs by whitespace; a whitespace-only run may be missing from the parsed text, see search_text's tool description)"
+                : ""
+            output += "- \(result.location), position \(result.startPosition): \"\(result.text)\"\(suffix)\n"
         }
         return output
     }
