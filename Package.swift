@@ -39,6 +39,13 @@ let package = Package(
                 .product(name: "MarkdownSwift", package: "markdown-swift"),
                 .product(name: "LaTeXMathSwift", package: "latex-math-swift"),
                 .product(name: "Logging", package: "swift-log"),
+            ],
+            resources: [
+                // che-word-mcp#168: committed boilerplate XML injected into
+                // Issue168WordStyleFixture's docx at test time (read by
+                // #filePath-relative path, not Bundle.module — declared here
+                // only so SwiftPM stops flagging them as "unhandled" files).
+                .copy("Fixtures/Issue168WordStyleFixture"),
             ]
         )
     ]
