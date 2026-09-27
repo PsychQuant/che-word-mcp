@@ -76,51 +76,6 @@ actor DepthLimitedTransport: Transport {
     private let messageContinuation: AsyncThrowingStream<Data, Swift.Error>.Continuation
     private var pumpTask: Task<Void, Never>?
 
-    /// #242 R2 (independent review, `review-cwm-misc.md` finding #242-1,
-    /// HIGH) — a batch containing both over-depth/invalid-shape items and
-    /// legal items used to produce TWO independent wire messages: the
-    /// illegal items' error array, sent immediately by this wrapper, and
-    /// the legal sub-batch's response array, sent later by swift-sdk's own
-    /// `handleBatch` via `send(_:)` — violating JSON-RPC 2.0's "respond
-    /// with an Array" (singular) contract for one batch request.
-    ///
-    /// Fix: don't send the illegal items' responses immediately when a
-    /// legal sub-batch is ALSO being forwarded (and is expected to
-    /// eventually produce a response). Stage them here, keyed by the set
-    /// of ids that forwarded sub-batch's own request items (not
-    /// notifications) are expected to answer. `send(_:)` checks this
-    /// dictionary on every outgoing message; when an outgoing array's own
-    /// id set exactly matches a staged entry, the staged responses are
-    /// merged into that SAME array before it goes out — one message,
-    /// covering every id from the original batch.
-    ///
-    /// **Correctness precondition (documented, not new)**: this only
-    /// works if the caller does not reuse an id across batches
-    /// concurrently in flight — exactly the id-uniqueness JSON-RPC 2.0
-    /// itself already requires of in-flight requests. Two batches whose
-    /// legal sub-batches happen to share the exact same id set (only
-    /// possible if the caller violates that requirement) could have their
-    /// staged entries cross-matched. Not enforced defensively here because
-    /// enforcing it would mean tracking every id ever seen for the life of
-    /// the connection — out of scope for a depth-limit guard.
-    ///
-    /// **Technical-debt note**: this mechanism's correctness depends on an
-    /// implementation detail of the `swift-sdk` dependency that is not
-    /// part of its own documented API contract — that `Server.handleBatch`
-    /// calls `Transport.send(_:)` (this actor) exactly once, with exactly
-    /// one JSON array containing one `Response` per request item (no
-    /// partial/streamed sends). If a future `swift-sdk` version changes
-    /// `handleBatch` to send per-item or to skip `send(_:)` for some other
-    /// reason, staged entries could go unmatched — see `send(_:)`'s own
-    /// safety net (the "no legal request items" / "all elements
-    /// non-object-or-over-depth" cases send immediately rather than
-    /// deferring) for the one mitigation already in place; there is no
-    /// general timeout-based flush (a short one would risk misfiring
-    /// during a legitimately slow tool call inside a batch, degrading the
-    /// COMMON case from one message to two just to protect an already-rare
-    /// edge case — worse trade than leaving the documented dependency).
-    private var pendingIllegalByIDSet: [Set<String>: [String]] = [:]
-
     /// - Parameters:
     ///   - wrapped: The underlying transport to guard. Production callers
     ///     pass `StdioTransport()`; tests pass a mock conforming to
@@ -159,139 +114,136 @@ actor DepthLimitedTransport: Transport {
         let logger = self.logger
         let continuation = self.messageContinuation
 
-        pumpTask = Task { [weak self] in
+        pumpTask = Task {
             do {
                 for try await message in inboundStream {
                     let scan = DepthLimitedTransport.scanJSONRPCEnvelope(message)
                     if scan.maxDepth > cap {
-                        // #242: `scan.maxDepth` is the WHOLE message's max
-                        // bracket depth, envelope included. For a JSON-RPC
-                        // batch (top-level `[...]`), that is always at least
-                        // 1 deeper than any individual item's own depth
-                        // (the wrapping array itself), so a batch whose
-                        // items are all individually fine can still land
-                        // here. Try to salvage per-item before falling back
-                        // to rejecting the whole message: split the batch's
-                        // top-level elements and re-scan each on its own —
-                        // an element's own depth (and its own "id", now
-                        // correctly read at THAT element's depth 1, not the
-                        // whole message's depth 2) is what actually matters
-                        // per JSON-RPC batch semantics.
+                        // #242 R3 (independent review, `review-cwm-misc.md`
+                        // "R2 複審" findings #242-R2-1 CRITICAL and
+                        // #242-R2-2 HIGH) — R2's stateful merge mechanism
+                        // (staging an over-depth batch item's error,
+                        // matching it later against swift-sdk's own
+                        // response by id set) is GONE. Two real, binary-
+                        // confirmed failure modes: (1) a batch element that
+                        // is object-shaped but schema-invalid (e.g. missing
+                        // `method`) poisoned the WHOLE reconstructed legal
+                        // sub-batch's decode inside swift-sdk
+                        // (`Server.Batch.init(from:)` fails atomically, not
+                        // per-item), so swift-sdk fell through to its own
+                        // generic fallback (a bare object, non-array,
+                        // random-UUID id) instead of ever calling
+                        // `send(_:)` with the array shape this transport
+                        // was watching for — every id in that batch got NO
+                        // response at all, and the staged entry leaked
+                        // forever, later corrupting a completely unrelated
+                        // future response that happened to reuse the same
+                        // id; (2) two concurrent batches whose forwarded
+                        // legal sub-batches shared the same id set
+                        // overwrote each other's staged entry outright
+                        // (`pendingIllegalByIDSet[ids] = responses`, not an
+                        // append), silently losing one batch's error
+                        // forever. Two review rounds in a row found a new
+                        // way for that dictionary to go stale or collide.
+                        // The lesson: no amount of narrower validation
+                        // closes every way `Server.Batch.init(from:)` can
+                        // atomically fail without reimplementing swift-sdk's
+                        // own decode — see `review-cwm-misc.md`'s R2
+                        // section for the two concrete reproductions.
+                        //
+                        // R3 replaces the whole mechanism with a STATELESS
+                        // design: this actor keeps NO information about any
+                        // message once it has been forwarded or answered,
+                        // so there is nothing to leak, go stale, or collide
+                        // across messages. Per-element depth scanning is
+                        // kept (still needed to avoid the "+1 purely from
+                        // the wrapping array" false positive a batch whose
+                        // items are all individually fine would otherwise
+                        // trigger), but the OUTCOME is now binary, decided
+                        // in one pass with no forwarding of a partial
+                        // sub-batch:
+                        //
+                        // - NO element is individually over depth → the
+                        //   inflated whole-message depth was caused only by
+                        //   the wrapping `[`; this batch is actually fine.
+                        //   Forward the ORIGINAL, UNMODIFIED message
+                        //   byte-for-byte — swift-sdk decodes and dispatches
+                        //   it exactly as if this transport did not exist,
+                        //   including its own (pre-existing, out of scope
+                        //   here) handling of malformed/non-object items.
+                        // - AT LEAST ONE element IS over depth → the whole
+                        //   batch is refused, right here, without ever
+                        //   forwarding anything: one JSON array, built from
+                        //   the ORIGINAL elements' own scans, sent directly.
+                        //   No partial forwarding, so nothing downstream
+                        //   could ever need to be matched up with anything
+                        //   staged — there is no "later" for this batch.
                         if let elements = DepthLimitedTransport.splitTopLevelBatchElements(message),
                             !elements.isEmpty
                         {
-                            var legalElements: [Data] = []
-                            var directResponses: [String] = []
-                            for element in elements {
-                                // #242 R2: a non-object item (bare number,
-                                // string, array, true/false/null) can never
-                                // decode as a `Server.Batch.Item`, and per
-                                // swift-sdk's `Server.Batch.init(from:)`
-                                // any ONE item's decode failure fails the
-                                // WHOLE reconstructed batch's decode — so a
-                                // stray non-object item left in
-                                // `legalElements` would poison every
-                                // genuinely legal sibling forwarded
-                                // alongside it (and permanently strand any
-                                // deferred entry staged against that
-                                // sub-batch's expected ids, since swift-sdk
-                                // would never call `send(_:)` with the
-                                // expected array shape for it). Route it
-                                // into the same directly-answered bucket as
-                                // an over-depth item instead — see
-                                // `isJSONObjectShaped`'s own doc comment.
-                                guard DepthLimitedTransport.isJSONObjectShaped(element) else {
-                                    logger.warning(
-                                        "Rejected non-object JSON-RPC batch item before decode",
-                                        metadata: ["byte_count": "\(element.count)"]
-                                    )
-                                    directResponses.append(DepthLimitedTransport.invalidBatchItemErrorResponse())
-                                    continue
-                                }
-                                let elementScan = DepthLimitedTransport.scanJSONRPCEnvelope(element)
+                            let elementScans = elements.map { DepthLimitedTransport.scanJSONRPCEnvelope($0) }
+                            let overDepthIndices = elementScans.indices.filter { elementScans[$0].maxDepth > cap }
+
+                            if overDepthIndices.isEmpty {
+                                // Every element is individually within cap
+                                // — forward the batch AS RECEIVED, no
+                                // reconstruction, no per-item judgment.
+                                continuation.yield(message)
+                                continue
+                            }
+
+                            let overDepthIndicesText: String = overDepthIndices.map(String.init).joined(separator: ",")
+                            logger.warning(
+                                "Rejected batch with over-depth item(s) before decode; whole batch answered directly, nothing forwarded",
+                                metadata: [
+                                    "over_depth_indices": "\(overDepthIndicesText)",
+                                    "max_depth": "\(cap)",
+                                    "item_count": "\(elements.count)",
+                                    "byte_count": "\(message.count)",
+                                ]
+                            )
+                            var responses: [String] = []
+                            for index in elements.indices {
+                                let element = elements[index]
+                                let elementScan = elementScans[index]
                                 if elementScan.maxDepth > cap {
-                                    logger.warning(
-                                        "Rejected over-depth JSON-RPC batch item before decode",
-                                        metadata: [
-                                            "observed_depth": "\(elementScan.maxDepth)",
-                                            "max_depth": "\(cap)",
-                                            "byte_count": "\(element.count)",
-                                        ]
-                                    )
-                                    directResponses.append(
+                                    responses.append(
                                         DepthLimitedTransport.depthLimitErrorResponse(
                                             idToken: elementScan.topLevelIDToken,
                                             observedDepth: elementScan.maxDepth, maxDepth: cap
                                         )
                                     )
-                                } else {
-                                    legalElements.append(element)
+                                    continue
                                 }
-                            }
-                            // Illegal/invalid items: named by their own id
-                            // (never forwarded to decode), packaged as one
-                            // JSON array. #242 R2: WHETHER that array is
-                            // sent right now, or merged into the legal
-                            // sub-batch's own later response, depends on
-                            // whether anything will actually call
-                            // `send(_:)` on this batch's behalf — see each
-                            // branch below.
-                            if !directResponses.isEmpty {
-                                if legalElements.isEmpty {
-                                    // No sub-batch is being forwarded at
-                                    // all — nothing will ever call
-                                    // `send(_:)` for this batch. This
-                                    // direct array IS the batch's whole
-                                    // (single) response.
-                                    let combined = "[" + directResponses.joined(separator: ",") + "]"
-                                    try? await wrapped.send(Data(combined.utf8))
-                                } else {
-                                    let expectedIDs = Set(
-                                        legalElements.compactMap {
-                                            DepthLimitedTransport.scanJSONRPCEnvelope($0).topLevelIDToken
-                                        })
-                                    if expectedIDs.isEmpty {
-                                        // Every legal element is a
-                                        // notification (no "id" at all) —
-                                        // swift-sdk's `handleBatch` calls
-                                        // `handleMessage` for each and its
-                                        // own `responses` array stays
-                                        // empty, so it never calls
-                                        // `connection.send(...)` for this
-                                        // sub-batch. Deferring would wait
-                                        // for a `send(_:)` that will never
-                                        // come — send now instead.
-                                        let combined = "[" + directResponses.joined(separator: ",") + "]"
-                                        try? await wrapped.send(Data(combined.utf8))
-                                    } else if let self {
-                                        // Defer — see `pendingIllegalByIDSet`'s
-                                        // own doc comment and `send(_:)`'s
-                                        // merge logic.
-                                        await self.stagePendingIllegal(ids: expectedIDs, responses: directResponses)
-                                    } else {
-                                        // Transport already torn down —
-                                        // best effort, matches this file's
-                                        // existing `try?`-everywhere
-                                        // philosophy for a gone transport.
-                                        let combined = "[" + directResponses.joined(separator: ",") + "]"
-                                        try? await wrapped.send(Data(combined.utf8))
-                                    }
+                                let isObject = DepthLimitedTransport.isJSONObjectShaped(element)
+                                if isObject, elementScan.topLevelIDToken == nil {
+                                    // A genuine notification (object-shaped,
+                                    // no "id" key at all) never gets a
+                                    // response, batch-refused or not.
+                                    continue
                                 }
+                                if !isObject {
+                                    // Non-object element — cannot carry an
+                                    // "id"; JSON-RPC 2.0's own answer for
+                                    // an unidentifiable malformed item.
+                                    responses.append(DepthLimitedTransport.invalidBatchItemErrorResponse())
+                                    continue
+                                }
+                                responses.append(
+                                    DepthLimitedTransport.batchNotExecutedErrorResponse(
+                                        idToken: elementScan.topLevelIDToken!,
+                                        overDepthIndices: overDepthIndices, maxDepth: cap
+                                    )
+                                )
                             }
-                            // Legal items: reassembled into a smaller batch
-                            // and forwarded on to swift-sdk's own decode +
-                            // `handleBatch`, which already produces a
-                            // correct response array for a batch whose
-                            // items are all within its own depth limits —
-                            // this is not reimplementing batch dispatch,
-                            // only removing the over-depth items before
-                            // swift-sdk ever sees them.
-                            if !legalElements.isEmpty {
-                                let joined =
-                                    "["
-                                    + legalElements.map { String(decoding: $0, as: UTF8.self) }
-                                        .joined(separator: ",") + "]"
-                                continuation.yield(Data(joined.utf8))
+                            // If every element that could carry an id
+                            // turned out to be a clean notification, there
+                            // is nothing to answer at all — matches
+                            // JSON-RPC 2.0 semantics for notifications
+                            // regardless of why the batch was refused.
+                            if !responses.isEmpty {
+                                let combined = "[" + responses.joined(separator: ",") + "]"
+                                try? await wrapped.send(Data(combined.utf8))
                             }
                             continue
                         }
@@ -329,55 +281,12 @@ actor DepthLimitedTransport: Transport {
         messageContinuation.finish()
     }
 
-    /// #242 R2: before forwarding, check whether `data` is the (array-
-    /// shaped) response swift-sdk owes some deferred `pendingIllegalByIDSet`
-    /// entry — if so, merge that entry's responses in so the caller
-    /// (swift-sdk, on behalf of the ORIGINAL batch) still ends up sending
-    /// exactly one message covering every id, instead of the deferred
-    /// entry going out as its own second message later (or never).
+    /// #242 R3: stateless — just forwards. R2's version intercepted every
+    /// outgoing message here to look for a staged entry to merge; that
+    /// whole mechanism (and the dictionary it depended on) is gone. See
+    /// `connect()`'s doc comment on the batch-handling branch for why.
     func send(_ data: Data) async throws {
-        if !pendingIllegalByIDSet.isEmpty, let merged = mergeMatchingPendingIllegal(into: data) {
-            try await wrapped.send(merged)
-            return
-        }
         try await wrapped.send(data)
-    }
-
-    /// Called by the pump loop (`connect()`'s Task) to stage a batch's
-    /// over-depth/invalid-shape items' pre-built error responses, keyed by
-    /// the id set the legal sub-batch forwarded alongside them is expected
-    /// to answer. Actor-isolated so this dictionary write is naturally
-    /// synchronized against concurrent `send(_:)` calls (swift-sdk may be
-    /// dispatching several in-flight non-batch requests on their own
-    /// `Task`s at the same time) — see the property's own doc comment for
-    /// why the pump loop needs to hop into actor isolation for this one
-    /// call rather than touching the dictionary directly.
-    private func stagePendingIllegal(ids: Set<String>, responses: [String]) {
-        pendingIllegalByIDSet[ids] = responses
-    }
-
-    /// If `data` is a JSON-RPC batch response array whose own id set
-    /// EXACTLY matches a staged `pendingIllegalByIDSet` entry, returns the
-    /// combined array (that entry's responses appended) and removes the
-    /// entry so it is consumed at most once. Returns `nil` for anything
-    /// else — not an array, or an array whose id set doesn't match any
-    /// staged entry — and the caller sends `data` unchanged in that case.
-    ///
-    /// Reuses `splitTopLevelBatchElements`/`scanJSONRPCEnvelope` — the same
-    /// non-recursive byte-scanning machinery used on the REQUEST side — to
-    /// read each response element's own id, so request-side and
-    /// response-side id extraction stay textually consistent (both are the
-    /// verbatim raw JSON token for that id, never re-parsed/re-encoded).
-    private func mergeMatchingPendingIllegal(into data: Data) -> Data? {
-        guard let elements = DepthLimitedTransport.splitTopLevelBatchElements(data), !elements.isEmpty else {
-            return nil
-        }
-        let ids = Set(elements.compactMap { DepthLimitedTransport.scanJSONRPCEnvelope($0).topLevelIDToken })
-        guard !ids.isEmpty, let pendingResponses = pendingIllegalByIDSet[ids] else { return nil }
-        pendingIllegalByIDSet.removeValue(forKey: ids)
-        let combinedInner =
-            (elements.map { String(decoding: $0, as: UTF8.self) } + pendingResponses).joined(separator: ",")
-        return Data("[\(combinedInner)]".utf8)
     }
 
     /// Returns the SAME stream on every call, matching `StdioTransport`'s
@@ -506,8 +415,10 @@ actor DepthLimitedTransport: Transport {
     /// inflated by the wrapping `[` the whole-message scan counts) and its
     /// OWN `"id"` (read at the element's depth 1, matching what a
     /// standalone non-batch message with the same content would report) —
-    /// exactly the two things `handleOverDepthMessage` needs to decide,
-    /// per batch item, whether to salvage it or reject it by name.
+    /// exactly what `connect()`'s pump loop needs to decide whether ANY
+    /// element in the batch is over the depth cap (forward the whole
+    /// message unchanged if none are) and, if the batch is refused, to
+    /// name every element's own id in the direct answer.
     ///
     /// Returns `nil` when the outermost non-whitespace byte is not `[`
     /// (not a batch at all — the single-message path handles that), or
@@ -598,32 +509,27 @@ actor DepthLimitedTransport: Transport {
         return elements
     }
 
-    /// #242 R2: true when, after skipping leading JSON whitespace, `data`'s
+    /// #242 R3: true when, after skipping leading JSON whitespace, `data`'s
     /// first byte is `{` — i.e. this batch element at least LOOKS like a
-    /// JSON-RPC request/notification object. A non-object top-level batch
-    /// item (a bare number, string, array, `true`/`false`/`null`) can
-    /// never decode into `Server.Batch.Item`
-    /// (`.build/checkouts/swift-sdk/Sources/MCP/Server/Server.swift`'s
-    /// `container(keyedBy:)` throws on a non-keyed value) — and per
-    /// `Server.Batch.init(from:)`, ANY single item's decode failure fails
-    /// the WHOLE reconstructed batch's decode, not just that one item.
-    /// Left in the "legal, forward it" bucket, a stray non-object item
-    /// would poison decode for every genuinely legal sibling in the same
-    /// reconstructed sub-batch AND — worse — leave any
-    /// `pendingIllegalByIDSet` entry staged against that sub-batch's ids
-    /// permanently unmatched, since swift-sdk falls through to its own
-    /// generic parse-error fallback (a bare object, not an array, with a
-    /// null/random id — see `Server.swift`'s final `else` branch in its
-    /// message loop) instead of ever calling `send(_:)` with the array
-    /// shape `mergeMatchingPendingIllegal` looks for. Routing non-object
-    /// items into the SAME directly-answered bucket as over-depth items
-    /// (never forwarded at all) avoids that failure mode entirely — at the
-    /// cost of not fully replicating swift-sdk's own `Request<AnyMethod>`
-    /// schema validation (an object-shaped-but-otherwise-malformed item,
-    /// e.g. missing `method`, can still poison a reconstructed sub-batch;
-    /// re-implementing that whole validation here was rejected as scope
-    /// creep — see this file's `connect()` doc comment on the "next
-    /// simplest" alternative design considered and not taken).
+    /// JSON-RPC request/notification object. Used only inside the "batch
+    /// refused, answer every element directly" branch (see `connect()`'s
+    /// doc comment) to decide HOW to answer an element that is itself
+    /// within the depth cap: object-shaped with no `"id"` key is a genuine
+    /// notification (no response, per JSON-RPC 2.0, regardless of why the
+    /// batch was refused); anything else that isn't object-shaped at all
+    /// (a bare number, string, array, `true`/`false`/`null`) cannot carry
+    /// an id and gets `invalidBatchItemErrorResponse()`'s `id: null`
+    /// answer. R3 never forwards a reconstructed sub-batch containing such
+    /// an element to swift-sdk — the R2 mechanism that had to worry about
+    /// a non-object item poisoning a forwarded sub-batch's decode is gone
+    /// entirely (see `connect()`'s doc comment for why). This function
+    /// still does not replicate swift-sdk's full `Request<AnyMethod>`
+    /// schema validation (an object-shaped-but-otherwise-malformed
+    /// element, e.g. missing `method`, is answered with
+    /// `batchNotExecutedErrorResponse`/`depthLimitErrorResponse` as if it
+    /// were a normal element — reasonable, since R3 never forwards
+    /// anything from a refused batch for swift-sdk to choke on in the
+    /// first place, unlike R2).
     static func isJSONObjectShaped(_ data: Data) -> Bool {
         let bytes = [UInt8](data)
         var i = 0
@@ -640,7 +546,7 @@ actor DepthLimitedTransport: Transport {
         return false
     }
 
-    /// #242 R2: error for a batch element that isn't even a JSON object —
+    /// #242 R3: error for a batch element that isn't even a JSON object —
     /// it cannot carry an `"id"` (JSON scalars/arrays have no keys), so
     /// `null` is the only honest id, same fallback `depthLimitErrorResponse`
     /// uses for an unidentifiable message.
@@ -662,6 +568,23 @@ actor DepthLimitedTransport: Transport {
     static func depthLimitErrorResponse(idToken: String?, observedDepth: Int, maxDepth: Int) -> String {
         let safeID = validatedIDToken(idToken) ?? "null"
         let message = "Invalid Request: JSON nesting depth \(observedDepth) exceeds server limit \(maxDepth)"
+        return "{\"jsonrpc\":\"2.0\",\"id\":\(safeID),\"error\":{\"code\":-32600,\"message\":\"\(message)\"}}"
+    }
+
+    /// #242 R3: the error given to a batch item that was itself within the
+    /// depth cap, but whose SIBLING(s) were not — the whole batch was
+    /// refused before any of it was decoded (R3's stateless design never
+    /// partially executes a batch: either every element is within cap and
+    /// the whole message is forwarded unchanged, or at least one is over
+    /// cap and the whole batch is answered directly, right here, with
+    /// nothing forwarded — see `connect()`'s own doc comment). `idToken`
+    /// must be non-nil (a real id the caller is owed an answer for); use
+    /// `invalidBatchItemErrorResponse()` for elements with no id to name.
+    static func batchNotExecutedErrorResponse(idToken: String, overDepthIndices: [Int], maxDepth: Int) -> String {
+        let safeID = validatedIDToken(idToken) ?? "null"
+        let indices = overDepthIndices.map(String.init).joined(separator: ", ")
+        let message =
+            "Invalid Request: batch not executed — item(s) at index \(indices) exceeded server nesting depth limit \(maxDepth); remove them and resend the batch"
         return "{\"jsonrpc\":\"2.0\",\"id\":\(safeID),\"error\":{\"code\":-32600,\"message\":\"\(message)\"}}"
     }
 
