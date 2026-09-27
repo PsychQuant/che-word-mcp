@@ -59,6 +59,22 @@ final class FuzzExtremeParamsGateTests: XCTestCase {
             XCTFail("RUN_FUZZ=1 but .build/debug/CheWordMCP is older than Sources/ — run `swift build` so the fuzzer tests the current code.")
             return
         }
+        // #239: the pre-fix version only compared against Sources/, so a
+        // dependency bump (e.g. ooxml-swift) that changed behavior without
+        // touching a single file under Sources/ left a stale binary passing
+        // this gate silently — the fuzzer would then probe old dependency
+        // code while reporting "zero crashes" against what looks like the
+        // current tree. `Package.resolved` changes on every `swift package
+        // update` / dependency version bump, `Package.swift` on every
+        // dependency declaration change; both are cheap to stat and belong
+        // in the same freshness check as Sources/.
+        for manifest in ["Package.resolved", "Package.swift"] {
+            let manifestURL = repoRoot.appendingPathComponent(manifest)
+            if let manifestDate = modificationDate(manifestURL), manifestDate > binaryDate {
+                XCTFail("RUN_FUZZ=1 but .build/debug/CheWordMCP is older than \(manifest) — run `swift build` so the fuzzer tests the current dependency graph, not a stale one.")
+                return
+            }
+        }
 
         let workDir = FileManager.default.temporaryDirectory.appendingPathComponent("fuzz-gate-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: workDir) }
