@@ -277,6 +277,49 @@ final class Issue188NestedTableTests: XCTestCase {
                      "the error should explain the depth limitation: \(text(of: updated))")
     }
 
+    /// Editing the outermost cell of a doubly nested table forces the whole
+    /// table through typed re-serialization on save. Before ooxml-swift 3.16.2
+    /// that path used oversized stack frames, and a save running on a
+    /// concurrency worker thread (~512 KB of stack) overflowed at this depth:
+    /// the process died with SIGBUS and every other open document's unsaved
+    /// edits went with it (PsychQuant/ooxml-swift#195). An async test runs on
+    /// the same kind of thread, so this reproduces the real condition.
+    func testSavingDoublyNestedTableAfterEditingOutermostCellKeepsEveryLevel() async throws {
+        let source = scratch.appendingPathComponent("source.docx")
+        let output = scratch.appendingPathComponent("saved.docx")
+        try Self.writePackage(documentXML: doublyNestedTableDocumentXML, to: source)
+
+        let server = await WordMCPServer()
+        let docId = "t188-save-depth2-\(UUID().uuidString)"
+        let opened = await server.invokeToolForTesting(name: "open_document", arguments: [
+            "doc_id": .string(docId), "path": .string(source.path),
+        ])
+        XCTAssertNotEqual(opened.isError, true, text(of: opened))
+
+        let updated = await server.invokeToolForTesting(name: "update_cell", arguments: [
+            "doc_id": .string(docId),
+            "table_index": .int(0), "row": .int(0), "col": .int(0),
+            "text": .string("edited host"),
+        ])
+        XCTAssertNotEqual(updated.isError, true, text(of: updated))
+
+        let saved = await server.invokeToolForTesting(name: "save_document", arguments: [
+            "doc_id": .string(docId), "path": .string(output.path),
+        ])
+        XCTAssertNotEqual(saved.isError, true, text(of: saved))
+
+        let archive = try Archive(url: output, accessMode: .read)
+        let entry = try XCTUnwrap(archive["word/document.xml"])
+        var data = Data()
+        _ = try archive.extract(entry) { data.append($0) }
+        let xml = String(decoding: data, as: UTF8.self)
+        XCTAssertEqual(xml.components(separatedBy: "<w:tbl>").count - 1, 3,
+                       "all three tables must survive the save:\n\(xml)")
+        for needle in ["edited host", "level1 cell", "level2 cell"] {
+            XCTAssertTrue(xml.contains(needle), "'\(needle)' is missing after save:\n\(xml)")
+        }
+    }
+
     // MARK: - Helpers
 
     private func text(of result: CallTool.Result) -> String {
