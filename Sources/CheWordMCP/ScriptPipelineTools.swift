@@ -340,16 +340,12 @@ extension WordMCPServer {
             }
             paragraphsOnly = flag
         }
-        // #169: same strict typing — present-but-mistyped errors, explicit
-        // null counts as absent.
-        var fromOplog = false
-        if let rawFlag = args["from_oplog"], rawFlag != .null {
-            guard let flag = rawFlag.boolValue else {
-                throw WordError.invalidParameter(
-                    "from_oplog", "必須是布林值（收到非布林型別）")
-            }
-            fromOplog = flag
-        }
+        // #169: same strict typing as the other optional parameters —
+        // present-but-mistyped errors, explicit null counts as absent.
+        // Unlike `paragraphs_only` above (a pre-#232 hand-rolled reader kept
+        // as-is per that issue's documented exception list), `from_oplog`
+        // is new code with no reason not to use the shared #232 helper.
+        let fromOplog = try optionalBool(args, "from_oplog") ?? false
         guard !(fromOplog && paragraphsOnly) else {
             throw FromOplogParagraphsOnlyConflict()
         }
