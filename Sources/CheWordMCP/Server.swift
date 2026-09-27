@@ -7039,7 +7039,7 @@ actor WordMCPServer {
             // (handlers in ScriptPipelineTools.swift, design Decision 1/5).
             Tool(
                 name: "export_script",
-                description: "docx → full-fidelity .mdocx.swift 重建腳本（與 macdoc word reverse 同一條 transcoder code path：raw byte-equal floor + typed DSL 升級）。可選 slots 指定具名內容槽（strict mode：指定失敗即錯誤、不寫檔）。回傳 JSON summary（dsl_parts / form_gaps_empty / slot_count / output_path）。DSL 升級邊界：只有 word/document.xml 嘗試 DSL 升級（sibling parts 一律 raw by design），且為 part-level 全有全無——本 MCP 自產（ooxml-swift 1.5.0+）與真實 Word 的純段落文件可升級；文件內含 rich table 或 legacy 無 w14:paraId 段落時整個 part 停留 raw channel（byte-equal 可重播、不可讀編輯）。paragraphs_only=true 是另一條路徑，對應 macdoc word reverse --paragraphs-only：只匯出段落文字與 styleId，缺 w14:paraId 的段落依序合成 id（p1、p2…，N 計入所有 body 頂層段落，slots 可指定這些 id）；表格、content control 等非段落 body 內容，以及 run／段落格式、節設定、頁首頁尾、樣式定義與其他 parts 一律省略。這條路徑不保證 byte-equal：重播只還原段落文字與 styleId；來源只要含被省略或改寫的內容，execute_script 的 verify_byte_equal_against 就會回報不符。回傳 JSON 改為（paragraphs_only / byte_equal:false / omitted_body_blocks / slot_count / output_path），不含 dsl_parts 與 form_gaps_empty。來源檔旁有 oplog sidecar 時拒絕執行：CLI 此時會改匯出 sidecar，export_script 不讀 sidecar，產不出同一份腳本。適用時機：get_script_coverage 顯示 word/document.xml 的 raw_reason 為 paragraph-no-paraId，且需要可讀腳本或 slot；其他 raw_reason 沒有這條替代路徑。",
+                description: "docx → full-fidelity .mdocx.swift 重建腳本（與 macdoc word reverse 同一條 transcoder code path：raw byte-equal floor + typed DSL 升級）。可選 slots 指定具名內容槽（strict mode：指定失敗即錯誤、不寫檔）。回傳 JSON summary（dsl_parts / form_gaps_empty / slot_count / output_path）。DSL 升級邊界：只有 word/document.xml 嘗試 DSL 升級（sibling parts 一律 raw by design），且為 part-level 全有全無——本 MCP 自產（ooxml-swift 1.5.0+）與真實 Word 的純段落文件可升級；文件內含 rich table 或 legacy 無 w14:paraId 段落時整個 part 停留 raw channel（byte-equal 可重播、不可讀編輯）。paragraphs_only=true 是另一條路徑，對應 macdoc word reverse --paragraphs-only：只匯出段落文字與 styleId，缺 w14:paraId 的段落依序合成 id（p1、p2…，N 計入所有 body 頂層段落，slots 可指定這些 id）；表格、content control 等非段落 body 內容，以及 run／段落格式、節設定、頁首頁尾、樣式定義與其他 parts 一律省略。這條路徑不保證 byte-equal：重播只還原段落文字與 styleId；來源只要含被省略或改寫的內容，execute_script 的 verify_byte_equal_against 就會回報不符。來源檔旁有 oplog sidecar 時 paragraphs_only 拒絕執行：CLI 此時會改匯出 sidecar，export_script 不讀 sidecar，產不出同一份腳本；要匯出 sidecar 的腳本改用 from_oplog。適用時機：get_script_coverage 顯示 word/document.xml 的 raw_reason 為 paragraph-no-paraId，且需要可讀腳本或 slot；其他 raw_reason 沒有這條替代路徑。from_oplog=true 是第三條路徑，對應 macdoc word reverse --from-oplog：不跑 ReverseExtractor 分析目前 docx 位元組，改直接把來源檔旁 oplog sidecar（<docx>.oplog.jsonl）記錄的實際編輯歷史匯出成腳本，反映的是「怎麼一步步編輯出這份文件」而非「怎麼從零重建出目前的位元組」。strict：沒有 sidecar 就明確報錯，不會悄悄退回一般的反向擷取（這點與 macdoc CLI 不帶旗標時的預設行為不同——CLI 預設在有 sidecar 時就優先用它，export_script 只在明確要求 from_oplog 時才用）。與 paragraphs_only 互斥（同時給兩者會報錯）。回傳 JSON 改為（from_oplog / op_count / slot_count / output_path），不含 dsl_parts 與 form_gaps_empty。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -7065,7 +7065,11 @@ actor WordMCPServer {
                         ]),
                         "paragraphs_only": .object([
                             "type": .string("boolean"),
-                            "description": .string("true 時只匯出段落文字與 styleId（同 macdoc word reverse --paragraphs-only），省略表格等非段落內容、格式與其他 parts，不保證 byte-equal。預設 false（full-fidelity，輸出與不帶此參數時相同）")
+                            "description": .string("true 時只匯出段落文字與 styleId（同 macdoc word reverse --paragraphs-only），省略表格等非段落內容、格式與其他 parts，不保證 byte-equal。預設 false（full-fidelity，輸出與不帶此參數時相同）。與 from_oplog 互斥。")
+                        ]),
+                        "from_oplog": .object([
+                            "type": .string("boolean"),
+                            "description": .string("true 時改從來源檔旁的 oplog sidecar（<docx>.oplog.jsonl）匯出實際編輯歷史，不跑一般的反向擷取（同 macdoc word reverse --from-oplog）。沒有 sidecar 時明確報錯，不會退回一般匯出。預設 false。與 paragraphs_only 互斥。")
                         ])
                     ]),
                     "required": .array([.string("source_path"), .string("output_path")])
