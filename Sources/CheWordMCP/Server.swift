@@ -59,6 +59,25 @@ struct ToolRefusal: LocalizedError {
     var errorDescription: String? { message }
 }
 
+/// #182 — a handler that wants to fail AND carry a structured payload, at the
+/// same time. Before this, `handleToolCall` offered exactly two shapes: throw
+/// (isError: true, but the body is whatever prose `error.localizedDescription`
+/// produces) or return (a JSON body, but `isError` is never set — a success on
+/// the wire no matter what the JSON says). Neither shape lets a failing call
+/// carry the same structured schema a passing call would have used.
+///
+/// A type conforming to this protocol gets both: `handleToolCall` renders
+/// `jsonPayload` verbatim as the result text — no `Error: ` prefix injected,
+/// because the payload already IS the body, not a message to be wrapped —
+/// with `isError: true` alongside it. The success-path schema convention
+/// (e.g. `execute_script`'s `verified` / `broken_parts` fields) is preserved;
+/// only the protocol-level success/failure flag flips.
+protocol StructuredToolFailure: Error {
+    /// Valid JSON text, already encoded. `handleToolCall` does not re-encode
+    /// or wrap it — this is the entire result body the client sees.
+    var jsonPayload: String { get }
+}
+
 actor WordMCPServer {
     private let server: Server
     /// R2 (#116 follow-up): wraps `StdioTransport` with a depth check on
@@ -6990,7 +7009,7 @@ actor WordMCPServer {
 
             Tool(
                 name: "execute_script",
-                description: ".mdocx.swift 重建腳本 → docx（ScriptImporter 同一條 code path）。可選 verify_byte_equal_against 對照參考檔做 Stage-B byte-equal 驗證。驗證失敗會以 tool error 回報並列出不符的 part，且不寫出任何檔案——輸出路徑維持原狀。成功時回傳 JSON（written / verified? / broken_parts）；沒給參考檔就沒有 verified 與 broken_parts 欄位，缺席不等於通過。",
+                description: ".mdocx.swift 重建腳本 → docx（ScriptImporter 同一條 code path）。可選 verify_byte_equal_against 對照參考檔做 Stage-B byte-equal 驗證。驗證失敗會以 tool error（isError: true）回報，且不寫出任何檔案——輸出路徑維持原狀；body 仍是結構化 JSON（verified: false / broken_parts，列出不符的 part），與成功時同一 schema（#182），不是純文字訊息。成功時回傳 JSON（written / verified? / broken_parts）；沒給參考檔就沒有 verified 與 broken_parts 欄位，缺席不等於通過。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -7030,6 +7049,11 @@ actor WordMCPServer {
         do {
             let result = try await executeToolTask(name: name, args: args)
             return CallTool.Result(content: [.text(result)])
+        } catch let structured as StructuredToolFailure {
+            // #182: the payload IS the body — no "Error: " prose wrapper,
+            // so a caller can parse it with the same schema a success would
+            // have used.
+            return CallTool.Result(content: [.text(structured.jsonPayload)], isError: true)
         } catch {
             return CallTool.Result(
                 content: [.text("Error: \(error.localizedDescription)")],
