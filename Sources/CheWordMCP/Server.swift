@@ -2540,7 +2540,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "insert_image_from_path",
-                description: "從檔案路徑插入圖片。v2.1+ width/height 為可選（auto-aspect：擇一 → 另一邊按原圖比例算；全省略 → 用原始像素）。v3.15.1+ 新增 after_image_id anchor。anchor priority: into_table_cell > after_image_id > after_text > before_text > index > append。v3.16.0+ 同時傳多個 anchor 會 return 「Error: insert_image_from_path: received conflicting anchors: ...」（先前版本是 silent priority winner）。支援 PNG / JPEG。（需先 open_document）",
+                description: "從檔案路徑插入圖片。v2.1+ width/height 為可選（auto-aspect：擇一 → 另一邊按原圖比例算；全省略 → 用原始像素）。v3.15.1+ 新增 after_image_id anchor。anchor priority: into_table_cell > after_image_id > after_text > before_text > index > append。v3.16.0+ 同時傳多個 anchor 會 return 「Error: insert_image_from_path: received conflicting anchors: ...」（先前版本是 silent priority winner）。支援 PNG / JPEG，以及 PDF（#16：用原生 PDFKit／CoreGraphics 把 `page` 指定的那一頁點陣化成 150dpi PNG 再嵌入——不呼叫外部 CLI，但仍是點陣化，向量品質與可縮放性會遺失；需要保留向量可先用 pdftocairo -emf 轉 EMF 再插入）。（需先 open_document）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -2550,7 +2550,11 @@ actor WordMCPServer {
                         ]),
                         "path": .object([
                             "type": .string("string"),
-                            "description": .string("圖片檔案的完整路徑（PNG / JPEG）")
+                            "description": .string("圖片檔案的完整路徑（PNG / JPEG / PDF）")
+                        ]),
+                        "page": .object([
+                            "type": .string("integer"),
+                            "description": .string("#16：path 是 .pdf 時，指定要嵌入的頁碼（1-based，預設 1）；超出頁數範圍回 invalidParameter。path 不是 PDF 時提供此參數會回 invalidParameter")
                         ]),
                         "width": .object([
                             "type": .string("integer"),
@@ -10059,6 +10063,33 @@ actor WordMCPServer {
             throw WordError.fileNotFound(path)
         }
 
+        // #16: PDF input is rasterized (native PDFKit/CoreGraphics — no
+        // external CLI) to a temporary PNG before reaching the exact same
+        // `doc.insertImage(path:)` call every other format uses below;
+        // downstream code never needs to know the source was a PDF.
+        // `page` only makes sense for a PDF source — providing it for a
+        // PNG/JPEG path is a caller mistake worth naming rather than
+        // silently ignoring.
+        let isPDFSource = (path as NSString).pathExtension.lowercased() == "pdf"
+        let pageArg = try optionalInt(args, "page")
+        if let pageArg, !isPDFSource {
+            throw WordError.invalidParameter("page", "只適用於 .pdf 來源；'\(path)' 不是 PDF")
+        }
+        var effectivePath = path
+        var pdfRasterizeTempDir: URL?
+        defer { if let pdfRasterizeTempDir { try? FileManager.default.removeItem(at: pdfRasterizeTempDir) } }
+        var pdfSourceDescription: String?
+        if isPDFSource {
+            let page = pageArg ?? 1
+            guard page >= 1 else {
+                throw WordError.invalidParameter("page", "必須是 1 以上的整數，不接受 \(page)")
+            }
+            let rasterized = try PDFImageRasterizer.rasterize(pdfPath: path, page: page)
+            effectivePath = rasterized.url.path
+            pdfRasterizeTempDir = rasterized.url.deletingLastPathComponent()
+            pdfSourceDescription = "'\((path as NSString).lastPathComponent)' page \(page) (rasterized to PNG @ \(Int(PDFImageRasterizer.defaultDPI))dpi)"
+        }
+
         // Phase A (#41 investigation): structured entry log.
         // #74: detection priority must mirror dispatch priority below
         // (into_table_cell > after_image_id > after_text > before_text > index).
@@ -10080,7 +10111,7 @@ actor WordMCPServer {
         // Resolve width/height (auto-aspect)
         let widthArg = try optionalInt(args, "width")
         let heightArg = try optionalInt(args, "height")
-        let (width, height) = try resolveImageDimensions(path: path, width: widthArg, height: heightArg)
+        let (width, height) = try resolveImageDimensions(path: effectivePath, width: widthArg, height: heightArg)
         // #234: `resolveImageDimensions`'s `safeInt` guard only protects the
         // AUTO-COMPUTED dimension (when only one of width/height was given)
         // from the aspect-ratio math itself trapping — it does NOT protect
@@ -10132,7 +10163,7 @@ actor WordMCPServer {
             }
             do {
                 imageId = try doc.insertImage(
-                    path: path,
+                    path: effectivePath,
                     widthPx: width,
                     heightPx: height,
                     at: .intoTableCell(tableIndex: tableIdx, row: row, col: col),
@@ -10148,7 +10179,7 @@ actor WordMCPServer {
             // F1 (v3.15.1): after_image_id anchor.
             do {
                 imageId = try doc.insertImage(
-                    path: path,
+                    path: effectivePath,
                     widthPx: width,
                     heightPx: height,
                     at: .afterImageId(afterImageId),
@@ -10161,7 +10192,7 @@ actor WordMCPServer {
         } else if let afterText = args["after_text"]?.stringValue {
             do {
                 imageId = try doc.insertImage(
-                    path: path,
+                    path: effectivePath,
                     widthPx: width,
                     heightPx: height,
                     at: .afterText(afterText, instance: textInstance),
@@ -10174,7 +10205,7 @@ actor WordMCPServer {
         } else if let beforeText = args["before_text"]?.stringValue {
             do {
                 imageId = try doc.insertImage(
-                    path: path,
+                    path: effectivePath,
                     widthPx: width,
                     heightPx: height,
                     at: .beforeText(beforeText, instance: textInstance),
@@ -10188,7 +10219,7 @@ actor WordMCPServer {
             // body-level: use legacy index-based API
             let index = indexArg
             imageId = try doc.insertImage(
-                path: path,
+                path: effectivePath,
                 widthPx: width,
                 heightPx: height,
                 at: index,
@@ -10207,6 +10238,9 @@ actor WordMCPServer {
             ("elapsedMs", String(elapsedMs))
         ])
 
+        if let pdfSourceDescription {
+            return "Inserted image \(pdfSourceDescription) with id '\(imageId)' (\(width)x\(height) pixels)"
+        }
         let url = URL(fileURLWithPath: path)
         return "Inserted image '\(url.lastPathComponent)' with id '\(imageId)' (\(width)x\(height) pixels)"
     }
