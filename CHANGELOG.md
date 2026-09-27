@@ -820,6 +820,24 @@ PR [#111](https://github.com/PsychQuant/che-word-mcp/pull/111) closes three sist
   > `Error: insert_equation: display_mode must be a boolean true/false, not a string or other JSON type`
 - **#105 (P3)** — `paragraph_index` schema description clarified to distinguish display-mode (body.children index) from inline-mode (top-level paragraph ordinal) per the post-#91 inline branch behavior. The dedicated handler-level guard `args["paragraphIndex"]!` replaces the now-unreachable defensive `guard case .paragraphIndex(let idx)` arm; the `InsertLocationError.inlineModeRequiresParagraphIndex` catch arm is removed.
 
+#### BREAKING — 輸入驗證收緊（#106、#107）
+
+上面兩項（#106、#107）不只是新增檢查，是**行為改變**：兩種過去會靜默成功的
+呼叫，升級後會直接失敗。
+
+- **同時傳 `components` 與 `latex`**：過去 handler 會靜默選一個執行（不報
+  錯，也不告知呼叫者另一個參數被忽略）；升級後直接收到
+  `Error: insert_equation: pass either 'components' (JSON tree) OR 'latex' (LaTeX subset), not both`，
+  不產生任何公式。
+- **`display_mode` 傳非布林值**（例如字串 `"true"` / `"false"`）：過去
+  `args["display_mode"]?.boolValue` 對非布林值回傳 `nil`，靜默退回
+  `?? true`（一律當成 display mode，不論呼叫者原意）；升級後直接收到
+  `Error: insert_equation: display_mode must be a boolean true/false, not a string or other JSON type`，
+  不再猜測呼叫者的意圖。
+
+呼叫端若曾經（有意或無意）依賴上述兩種寬鬆行為，同樣的呼叫參數會從**過去
+成功**變成**現在失敗**，需要改成正確型別、或兩者只傳一個，才能繼續運作。
+
 #### What changed
 
 - `Server.swift:8843` `insertEquation(args:)` — added two pre-check guards (components+latex conflict, display_mode strict-bool) before entering the existing parsing logic.
