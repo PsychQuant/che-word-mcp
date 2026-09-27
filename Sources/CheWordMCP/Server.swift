@@ -8597,7 +8597,24 @@ actor WordMCPServer {
             }
 
             // per-item options, fall back to no-op defaults
-            let scopeString = item["scope"]?.stringValue ?? "body"
+            // R2 (independent review F1): `scope` declares an `enum` in
+            // this tool's schema (`items.properties.scope`, `["body",
+            // "all"]`) but was read with `item["scope"]?.stringValue ??
+            // "body"` — any non-"all" string, INCLUDING a wrong JSON type
+            // or a typo like "bogus", silently became `.bodyAndTables`.
+            // Same #240 failure shape as `wrap_type`, just at the
+            // array-item level instead of the tool's top level. Same
+            // soft-fail shape as `regex`/`matchCase` above: a malformed
+            // `scope` fails THIS item via `results`/`failed`, not the
+            // whole batch.
+            let scopeString: String
+            do {
+                scopeString = try Self.optionalStrictEnumString(item, "scope", allowed: ["body", "all"]) ?? "body"
+            } catch {
+                results.append(["index": idx, "error": "\(error)"])
+                failed += 1
+                if stopOnFirstFailure { break } else { continue }
+            }
             let scope: ReplaceScope = (scopeString == "all") ? .all : .bodyAndTables
             let options = ReplaceOptions(scope: scope, regex: regex, matchCase: matchCase)
 
