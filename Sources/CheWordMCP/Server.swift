@@ -61,7 +61,14 @@ struct ToolRefusal: LocalizedError {
 
 actor WordMCPServer {
     private let server: Server
-    private let transport: StdioTransport
+    /// R2 (#116 follow-up): wraps `StdioTransport` with a depth check on
+    /// raw JSON-RPC bytes, BEFORE swift-sdk's own decoder ever sees them.
+    /// See `DepthLimitedTransport`'s own doc comment for why this exists —
+    /// #116's `parseMathComponent` guard alone does not stop the crash
+    /// (the vulnerable recursion is inside the `swift-sdk` dependency, not
+    /// this repo, and is reachable via ANY tool call, not just
+    /// `insert_equation`).
+    private let transport: DepthLimitedTransport
 
     /// 目前開啟的文件 (doc_id -> WordDocument)
     internal var openDocuments: [String: WordDocument] = [:]
@@ -107,6 +114,25 @@ actor WordMCPServer {
     /// Bounded ring buffer (last 1000 events) to avoid unbounded growth.
     private var debugEventLog: [DebugLogEvent] = []
     private static let debugEventLogCapacity = 1000
+
+    /// R2 (#116 follow-up, `review-cwm450.md` C1) — the cap `DepthLimitedTransport`
+    /// (wrapping `StdioTransport`, see that type's own doc comment) enforces
+    /// on raw JSON-RPC message structural nesting (`{`/`[` depth across the
+    /// WHOLE message, envelope included), BEFORE any decoder — swift-sdk's
+    /// own or this repo's — ever touches the bytes.
+    ///
+    /// Empirical basis (real release `CheWordMCP` binary, real stdio JSON-RPC,
+    /// `insert_equation`'s `components:` argument nested via `radical`
+    /// wrapping `radical` — the same shape and tooling an independent review
+    /// used to find the original #116 fix insufficient; see `wave1-crash.md`
+    /// "R2" for the full probe transcript): the process survives at raw
+    /// depth 178 and dies (SIGBUS) at 180. 64 is comfortably under a third
+    /// of that — not "two orders of magnitude", the overclaim #116's first
+    /// pass made about `maxMathComponentDepth` alone (see that constant's
+    /// own doc comment for why THAT margin claim didn't hold), but a real,
+    /// measured margin against the actual crash point in the actual unit
+    /// being capped.
+    static let transportMaxRawJSONDepth = 64
 
     // MARK: - anchor-dx-consistency (#71): conflict-detection helper
 
@@ -767,7 +793,9 @@ actor WordMCPServer {
             instructions: Self.serverInstructions,
             capabilities: .init(tools: .init())
         )
-        self.transport = StdioTransport()
+        self.transport = DepthLimitedTransport(
+            wrapping: StdioTransport(), maxRawJSONDepth: Self.transportMaxRawJSONDepth
+        )
         // Phase A (#41 investigation): snapshot env-var ONCE at actor init.
         // Test seam: `forceDebugLogging: true` lets XCTests opt in without subprocess wrapping.
         let envValue = ProcessInfo.processInfo.environment["CHE_WORD_MCP_LOG_LEVEL"]
@@ -11063,20 +11091,61 @@ actor WordMCPServer {
     /// The `components` argument is caller-supplied JSON, not hand-typed
     /// LaTeX — a fuzzer or an AI-agent caller can trivially construct a
     /// tree thousands of levels deep, and each recursive call consumes a
-    /// non-trivial slice of the Swift call stack. Stack overflow is
-    /// uncatchable in Swift: it kills the whole MCP server process (SIGBUS/
-    /// SIGSEGV/SIGTRAP depending on platform), taking every other open
-    /// document session down with it — not just this one tool call.
+    /// non-trivial slice of the Swift call stack.
     ///
-    /// 64 is the cap: #117's own suggested fix used the same number, and it
-    /// is generous by a wide margin — Word's own equation editor UI does
-    /// not let a human author nest fractions/radicals/scripts anywhere near
-    /// this deep (a double-digit nesting depth is already an extreme,
-    /// unreadable equation in practice), while staying far below any
-    /// plausible Swift stack budget (the issue's own estimate: ~3,000
-    /// levels exhausts a 512 KB stack at ~160 bytes/frame; 64 levels is two
-    /// orders of magnitude under that).
-    private static let maxMathComponentDepth = 64
+    /// **R2 correction (`review-cwm450.md` C1/M2) — read before touching
+    /// this number.** The original R1 comment here claimed this guard,
+    /// alone, prevents the server process from crashing on a deep
+    /// `components` tree, with "two orders of magnitude" of stack margin.
+    /// An independent review proved that false with a real release binary
+    /// over real stdio: the actual crash is in `swift-sdk`'s own JSON
+    /// decode/re-encode of the raw message, which runs BEFORE this guard
+    /// (before any che-word-mcp handler code at all), and is reachable via
+    /// ANY tool call, not just `insert_equation`. This guard only ever sees
+    /// a `Value` tree that already survived that decode — it cannot, by
+    /// itself, stop the crash the issue described. The actual guard against
+    /// that crash is `DepthLimitedTransport` (see its own doc comment and
+    /// `WordMCPServer.transportMaxRawJSONDepth`'s doc comment for the
+    /// measured crash threshold), which rejects the raw bytes before
+    /// swift-sdk's decoder ever runs.
+    ///
+    /// So what IS this guard still for? Two things, both true independent
+    /// of the transport-layer fix above:
+    /// - It is the more SPECIFIC of the two errors — `"components tree
+    ///   exceeds max nesting depth 24"` names the actual problem, versus
+    ///   the transport layer's generic `"JSON nesting depth N exceeds
+    ///   server limit 64"`. A caller who ONLY sees the transport error has
+    ///   no idea `insert_equation` was involved at all.
+    /// - It still protects `parseMathComponent`'s own recursion as a
+    ///   defense in depth, in case `insertEquation` is ever reached through
+    ///   a path other than the JSON-RPC transport (e.g. a future direct
+    ///   Swift API, or a test harness that constructs a `Value` tree
+    ///   in-process — see `Issue116ParseMathComponentDepthCapTests`, which
+    ///   does exactly that and therefore exercises THIS guard specifically,
+    ///   not the transport one).
+    ///
+    /// **24, not the R1 value of 64 — measured, not assumed.** The two caps
+    /// are in different units: this one counts logical `MathComponent`
+    /// tree levels; `transportMaxRawJSONDepth` counts raw `{`/`[` bytes
+    /// across the whole JSON-RPC message. For THIS argument's shape
+    /// (`radical` wrapping `radical`, matching both the original #117 report
+    /// and the R2 review's reproduction), each logical level costs 2 raw
+    /// bytes of nesting (one `{`, one `[`), and the `tools/call` → `params`
+    /// → `arguments` envelope itself costs 3 more before the `components`
+    /// value's own outer `{` — measured directly against real generated
+    /// JSON, not derived: raw_depth = 2×(logical depth) + 4. At the R1
+    /// value of 64, raw_depth would be 132 — already past
+    /// `transportMaxRawJSONDepth` (64), meaning that value's own specific
+    /// error would NEVER be reachable through the real JSON-RPC transport;
+    /// the blunter transport error would always fire first. 24 keeps
+    /// raw_depth at 52 for calls right at the cap, leaving a real window
+    /// (logical depths 25–30, raw depth 54–64) where this guard's more
+    /// specific error is still reachable before the transport cap takes
+    /// over at 31+ — confirmed against the real binary (see `wave1-crash.md`
+    /// "R2"). 24 remains generous for genuine use: Word's own equation
+    /// editor UI does not let a human author nest fractions/radicals/
+    /// scripts anywhere near this deep.
+    private static let maxMathComponentDepth = 24
 
     /// Parse an MCP Value (JSON) into a MathComponent tree.
     /// Supported types: `run`, `fraction`, `radical`, `subSuperScript`, `nary`.
