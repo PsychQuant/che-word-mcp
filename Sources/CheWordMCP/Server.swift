@@ -946,11 +946,25 @@ actor WordMCPServer {
 
     let documentProfileStore: DocumentProfileStore
 
+    /// Single source of truth for the version this server reports over the
+    /// MCP `initialize` handshake (#211). `scripts/release.sh` greps this
+    /// EXACT declaration (`static let serverVersion = "X.Y.Z"`) to fail-fast
+    /// when it disagrees with the tag being released, or with
+    /// `mcpb/manifest.json` / `server.json` — before this constant existed
+    /// the version was an inline literal on the `Server(...)` call below,
+    /// and `scripts/tests/release-source-stability.sh` already had a grep
+    /// for a `static let serverVersion` that silently found nothing and fell
+    /// back to a dummy "9.9.9" (see that script's `TEST_VERSION` fallback) —
+    /// the tooling expected this constant to exist before it actually did.
+    /// `Issue211VersionConsistencyTests` locks this against
+    /// `mcpb/manifest.json` going forward.
+    static let serverVersion = "4.7.0"
+
     init(forceDebugLogging: Bool = false, documentConfigURL: URL? = nil) async {
         self.documentProfileStore = DocumentProfileStore(configURL: documentConfigURL ?? DocumentProfileStore.defaultConfigURL)
         self.server = Server(
             name: "che-word-mcp",
-            version: "4.7.0",
+            version: Self.serverVersion,
             instructions: Self.serverInstructions,
             capabilities: .init(tools: .init())
         )

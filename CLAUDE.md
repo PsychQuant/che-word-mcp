@@ -57,6 +57,21 @@ cd mcpb && zip -r che-word-mcp.mcpb .
    `README_zh-TW.md` 裡對該工具（或該工具所屬能力分類，如 Watermark CRUD）
    的敘述**——工具數量不變時上面第 3 項不會觸發，但過度宣稱能力（description
    誠實、README 卻仍寫成可用 CRUD）是使用者會直接被誤導的落差（#210）。
+5. **`Sources/CheWordMCP/Server.swift` 的 `static let serverVersion`**——
+   MCP `initialize` handshake 回報給 client 的版本，單一來源（`Server(...)`
+   建構時直接讀這個常數，不要再改回內嵌字面量）。這個常數曾經漏改超過
+   兩個大版本（#211）。
+6. **`server.json`**——`version`、`packages[0].version`、
+   `packages[0].identifier`（下載網址裡的 `vX.Y.Z`）三處都要跟著改；
+   `packages[0].fileSha256` 只能在 release binary 建好之後才知道正確值，
+   不要用舊值硬填。
+
+以上六項中，第 1、5、6 項（manifest.json／serverVersion／server.json 的
+version 與 identifier）由 `scripts/release.sh` 的 `[0.3/7]` 步驟在建置前
+fail-fast 檢查；`server.json` 的 `fileSha256` 由 `[5.5/7]` 步驟在 sha256
+算出後檢查。第 5 項另有 `Issue211VersionConsistencyTests`（`swift test`）
+鎖住 `serverVersion` 與 `mcpb/manifest.json` 的一致性，每次 `swift test`
+都會跑，不必等到真的要發版才發現漏改（#211）。
 
 ## GitHub Release
 
