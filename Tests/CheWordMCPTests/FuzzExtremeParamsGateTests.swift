@@ -16,8 +16,11 @@ import XCTest
 ///
 /// The script's exit code is the completion condition: no crash or hang
 /// (including the save after each probe), every "(must reject)" probe
-/// rejected, the largest legal table under the memory ceiling, and at least
-/// 97% of the schema's integer/number parameters actually reached (see the
+/// rejected, the largest legal table under the memory ceiling (measured at
+/// its PEAK, not just when the sequence finishes — #239), and at least
+/// `FUZZ_MIN_COVERAGE` (default 0.80 as of #239 — see that variable's own
+/// comment in `scripts/fuzz-extreme-params.py` for why it moved down from
+/// 0.97) of the schema's integer/number parameters actually reached (see the
 /// script's docstring).
 ///
 /// When to run this: before any release that touches integer/number

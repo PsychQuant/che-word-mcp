@@ -198,16 +198,24 @@ python3 scripts/fuzz-extreme-params.py .build/debug/CheWordMCP /tmp/fuzz-workdir
 
 Exit code is 0 only when there is no crash or hang (including the save
 that follows every probe), every "(must reject)" probe was rejected, the
-resident memory at the end of the largest-legal-table probe stays under a
-ceiling (end of probe, not peak), and at least 97% of the schema's
-integer/number parameters were judged **reached** — a probe stopped by an
-unrelated precondition proves nothing, so a fuzzer that stops reaching its
-targets fails instead of reporting zero crashes. The reach judgement
-currently overestimates: on 4.4.0 it counted 241/245, while an independent
-audit found about 227/245 actually reached (fix tracked in
-[#239](https://github.com/PsychQuant/che-word-mcp/issues/239)). A
-summary line, a coverage line (with the unreached parameters) and a
-per-probe TSV (`<workdir>/fuzz_results.tsv`) are always produced. It's also
+**peak** resident memory during the largest-legal-table probe (sampled
+throughout the sequence, not read once when it finishes — #239) stays
+under a ceiling, and at least `FUZZ_MIN_COVERAGE` (default **0.80**, down
+from 0.97 — see below) of the schema's integer/number parameters were
+judged **reached** — a probe stopped by an unrelated precondition proves
+nothing, so a fuzzer that stops reaching its targets fails instead of
+reporting zero crashes. "Reached" requires positive evidence (the response
+names the parameter or echoes its value, or is an index/not-found error
+addressed at it); a bare successful response is no longer enough by itself
+([#239](https://github.com/PsychQuant/che-word-mcp/issues/239) — the old
+criterion counted 241/245 on 4.4.0 while an independent audit found about
+227/245 actually reached). The honest criterion measures lower coverage
+than the old one ever did (~85% against the current, larger parameter
+set), which is why the default moved from 0.97 to 0.80: 0.97 was
+calibrated against the over-counting criterion and was never really met
+once measured honestly. A summary line, a coverage line (with the
+unreached parameters) and a per-probe TSV (`<workdir>/fuzz_results.tsv`)
+are always produced. It's also
 wired into `swift test` behind an opt-in gate (not run by default — about
 1,300 subprocesses and a compiled binary; with `RUN_FUZZ=1` set, a missing or
 out-of-date binary fails the gate):
