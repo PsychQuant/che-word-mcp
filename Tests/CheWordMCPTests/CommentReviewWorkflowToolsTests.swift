@@ -515,6 +515,47 @@ final class CommentReviewWorkflowToolsTests: XCTestCase {
         XCTAssertTrue(textOf(result).contains(#""resolved":1"#), textOf(result))
     }
 
+    /// The unique-id cap bounds real work, but the raw array still needs a
+    /// ceiling of its own: every invalid element adds a line to `failed`, so
+    /// an unbounded array of wrong-typed elements produces an unbounded
+    /// response. 100,000 is 100 times the unique cap.
+    func testBulkResolveCommentsRejectsRawArrayLongerThanSanityBound() async throws {
+        let url = try writeCommentFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("capraw")]
+        )
+        let ids: [Value] = Array(repeating: .string("x"), count: 100_001)
+        let result = await server.invokeToolForTesting(
+            name: "bulk_resolve_comments",
+            arguments: ["doc_id": .string("capraw"), "comment_ids": .array(ids)]
+        )
+        XCTAssertEqual(result.isError, true, String(textOf(result).prefix(300)))
+        XCTAssertTrue(textOf(result).contains("100000"), String(textOf(result).prefix(300)))
+        XCTAssertLessThan(textOf(result).utf8.count, 2_000, "the refusal must not echo the whole array")
+    }
+
+    /// Distinct ids past the cap are refused without scanning the rest of the
+    /// array: the refusal names the cap, and the document is not modified.
+    func testBulkResolveCommentsStopsCountingOnceUniqueCapIsExceeded() async throws {
+        let url = try writeCommentFixture()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "open_document",
+            arguments: ["path": .string(url.path), "doc_id": .string("capearly")]
+        )
+        let ids: [Value] = (1...5_000).map { .int($0) }
+        let result = await server.invokeToolForTesting(
+            name: "bulk_resolve_comments",
+            arguments: ["doc_id": .string("capearly"), "comment_ids": .array(ids)]
+        )
+        XCTAssertEqual(result.isError, true, textOf(result))
+        XCTAssertTrue(textOf(result).contains("超過 1000"), textOf(result))
+    }
+
     // MARK: - Issue #133 — add_comment_reply / reply_to_comment schema symmetry
 
     func testAddCommentReplyAndReplyToCommentSchemasAreSymmetric() async throws {
