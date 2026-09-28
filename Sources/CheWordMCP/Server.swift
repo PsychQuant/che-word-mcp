@@ -11414,23 +11414,41 @@ actor WordMCPServer {
         // all, so they can only be found by reading the actual package
         // bytes. `packageBytesForPartEnumeration` picks the byte source that
         // won't silently drop them (see that function's doc comment).
-        var refusedChartEntries: [UntypedPartImages.RefusedEntry] = []
+        //
+        // R2 (independent review, real-binary run): `collectImageRows`'s
+        // header/footer rows above are the untouched pre-#219 path — they
+        // extract only a DISPLAY filename from `rel.target`
+        // (`lastPathComponent`), never resolving it through
+        // `UntypedPartImages`'s safety check at all. Left alone, an unsafe
+        // header/footer Target showed up here as an ordinary row while
+        // `export_all_images`/`export_image` (which DO go through that
+        // check) silently skipped the very same relationship — a caller
+        // reading `list_images` saw nothing alarming. Now: any
+        // header/footer row `UntypedPartImages.entries` itself refused is
+        // removed from the ordinary listing and folded into the same
+        // "refused for security" line chart rows already used.
+        var refusedEntries: [UntypedPartImages.RefusedEntry] = []
         if let packageData = packageBytesForPartEnumeration(doc: doc, args: args),
            let tempDir = try? ZipHelper.unzip(data: packageData) {
             defer { ZipHelper.cleanup(tempDir) }
-            let (chartRows, refused) = UntypedPartImages.chartImageRows(doc: doc, tempDir: tempDir)
+            let (allEntries, refused) = UntypedPartImages.entries(doc: doc, tempDir: tempDir)
+            let chartRows: [(part: String, id: String, fileName: String, widthPx: Int?, heightPx: Int?)] = allEntries
+                .filter { $0.part.hasPrefix("word/charts/") }
+                .map { (part: $0.part, id: $0.id, fileName: $0.fileName, widthPx: nil, heightPx: nil) }
             rows += chartRows
-            refusedChartEntries = refused
+            refusedEntries = refused
+            let refusedKeys = Set(refused.map { "\($0.part)|\($0.id)" })
+            rows.removeAll { refusedKeys.contains("\($0.part)|\($0.id)") }
         }
         let (report, failureReason, unreferencedMedia) = imageConsistencyInspection(forDoc: doc, args: args)
         var text = Self.imageListing(rows: rows, report: report, inspectionFailureReason: failureReason, unreferencedMediaFiles: unreferencedMedia)
-        // Security: a chart rels Target that would have escaped the
-        // unzipped package (or declares TargetMode="External") is refused,
-        // never read — but never silently dropped either. See
+        // Security: a header/footer/chart rels Target that would have
+        // escaped the unzipped package (or declares TargetMode="External")
+        // is refused, never read — but never silently dropped either. See
         // `UntypedPartImages`'s doc comment.
-        if !refusedChartEntries.isEmpty {
-            text += "\n\n⚠ \(refusedChartEntries.count) chart image relationship(s) refused for security and NOT listed above (Target escapes the package, or is TargetMode=\"External\"): "
-                + refusedChartEntries.map { "\($0.part):\($0.id) (\($0.reason))" }.joined(separator: ", ")
+        if !refusedEntries.isEmpty {
+            text += "\n\n⚠ \(refusedEntries.count) image relationship(s) refused for security and NOT listed above (Target escapes the package, or is TargetMode=\"External\"): "
+                + refusedEntries.map { "\($0.part):\($0.id) (\($0.reason))" }.joined(separator: ", ")
         }
         return text
     }
