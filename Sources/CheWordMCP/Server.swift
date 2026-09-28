@@ -9289,6 +9289,14 @@ actor WordMCPServer {
                 doc: &doc, find: find, replacement: replace, options: options
             )
             try await storeDocument(doc, for: docId)
+            // #255: wire #189's glyph-coverage probe into the #192 advisory
+            // channel. Only when something actually changed, and only for
+            // `.noGlyph` verdicts — see `GlyphCoverageAdvisory.swift`.
+            if count > 0 {
+                for message in glyphCoverageAdvisories(doc: doc, replacement: replace, scope: scope) {
+                    recordAdvisory(message)
+                }
+            }
             let scopeLabel = scope == .all ? " (scope: all)" : ""
             let repairSummary = crossRunRepairSummary(repaired: repaired, collapsedUnrepaired: collapsedUnrepaired)
             let normalizedNote = usedNormalizedFallback
@@ -9382,6 +9390,10 @@ actor WordMCPServer {
         var results: [[String: Any]] = []
         var succeeded = 0
         var failed = 0
+        // #255: dedup across items in the SAME batch call — two items that
+        // both land the same unsafe (character, font) pair should not each
+        // repeat an identical advisory block.
+        var recordedGlyphAdvisories = Set<String>()
 
         for (idx, itemValue) in replacementsValue.enumerated() {
             guard case .object(let item) = itemValue else {
@@ -9443,6 +9455,15 @@ actor WordMCPServer {
                 let (count, repaired, collapsedUnrepaired, usedNormalizedFallback) = try replaceTextWithWhitespaceFallback(
                     doc: &doc, find: find, replacement: replace, options: options
                 )
+                // #255: same wiring as `replace_text` — see that call site's
+                // comment and `GlyphCoverageAdvisory.swift`.
+                if count > 0 {
+                    for message in glyphCoverageAdvisories(doc: doc, replacement: replace, scope: scope)
+                    where !recordedGlyphAdvisories.contains(message) {
+                        recordedGlyphAdvisories.insert(message)
+                        recordAdvisory(message)
+                    }
+                }
                 results.append([
                     "index": idx, "find": find, "replaced_count": count,
                     "cross_run_repaired": repaired, "cross_run_collapsed_unrepaired": collapsedUnrepaired,
