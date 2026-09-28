@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.9.0] - 2026-09-28
+
+> header／footer／chart 的圖片可以列出與匯出，並對這些位置的圖片關係做封裝內含檢查；anchor／搜尋／取代新增 `match_options.math_script_insensitive`；`replace_text` 對缺字形的字元發 advisory；`set_page_borders` 改為真的寫入；一批字串參數改為嚴格驗證；相依升到 ooxml-swift 3.19.0（見文末「升級注意」）。依本專案先例 bump minor。
+
 ### Added
 
 - **`match_options.math_script_insensitive`：anchor／搜尋／取代比對可忽略 Unicode 數學上下標與重音差異**（#90／#150／#151／#152／#153／#154，#115 驗證後續）。`insert_paragraph`／`insert_image_from_path`／`insert_equation`／`insert_caption` 的 `after_text`／`before_text`，以及 `search_text`／`search_text_batch`／`search_text_with_formatting`／`replace_text`／`replace_text_batch` 都新增 `match_options: { math_script_insensitive: bool }`。開啟後 `H₀`（Unicode 下標）與 `H0`（ASCII）視為相同，涵蓋 ooxml-swift `AnchorLookupOptions.mathScriptVariantMap` 逐字元列舉的 97 個字元（數字/運算符號上下標、13 個落在 U+2090–U+209C 連續區塊內的下標字母、另外 5 個不在此區塊內的下標字母、44 個分散在至少 5 個不相連 Unicode 區塊的上標字母、5 個 Greek 下標；schema 描述逐段列出實際碼位，不用單一範圍概括所有字母）、以及重音符號（如 `X̄` 的 combining macron，經 NFD 分解後去除）；預設 `false`，不影響既有呼叫端。`search_text`／`search_text_with_formatting` 是雙向正規化（needle 與 haystack 都正規化）；`replace_text`／`replace_text_batch` 受限於需要對文件做位元組級定位替換，只在逐字（含既有的去空白備援）都找不到時，額外嘗試「只正規化 find」的單方向備援——涵蓋「find 打 Unicode、文件內容是 OMML 攤平出的 ASCII」這個 #90 原始案例，不涵蓋反方向。`match_options` 內打錯或未知的 key（如缺一個字母的 `math_script_insensitve`）一律回 `isError` 並具名，不再靜默忽略；**執行期行為等同 `additionalProperties: false`，但 schema 本身依 #236 既有政策不宣告這個 JSON Schema keyword**（Gemini 的 function-declaration Schema 欄位清單不支援它，宣告了會讓 `tools/list` 被這類 client 拒絕），只在描述文字與執行期強制。Anchor 找不到、旗標未開、且 needle 含相關 Unicode 字元時，錯誤訊息會附上提示旗標存在的 hint（判斷依據與實際正規化邏輯同一來源，不是另一份手動維護的字元範圍）；schema 描述誠實列舉支援的 Unicode 碼位與完整 mapping 位置，不再籠統宣稱「等價」。#90 原始的 H₀/H0 案例與診斷過程中額外點名但當時未涵蓋的 `X̄`（combining macron）皆已驗證涵蓋。#153 新增 benchmark：實測開啟旗標的 anchor 查找延遲約為關閉時的 2.7 倍（未達 issue 原訂的 2 倍），根因是 `canonicalizeMathScriptVariants` 對不含任何相關字元的文字仍會做完整 NFD 分解，沒有短路判斷；修法屬於 ooxml-swift，已開 [PsychQuant/ooxml-swift#207](https://github.com/PsychQuant/ooxml-swift/issues/207) 追蹤，本 repo 測試只守 10 倍的災難性回歸門檻，不宣稱已達 2 倍目標。
