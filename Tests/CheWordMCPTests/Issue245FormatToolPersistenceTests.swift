@@ -39,13 +39,20 @@ import OOXMLSwift
 ///   xml:)` mechanism ooxml-swift already uses to preserve pPr children
 ///   outside its typed vocabulary. That mechanism is this fix's public path.
 ///
-/// `set_page_borders` could NOT be fixed the same way: `SectionProperties`
-/// has no field for `<w:pgBorders>` at all (verified against
-/// `.build/checkouts/ooxml-swift/Sources/OOXMLSwift/Models/Section.swift`).
-/// Per #245's own two-option framework and the `protect_document`/
-/// `insert_watermark` (#172/#201) precedent, it now fails loudly
-/// (`ToolNotImplemented` → `isError: true`) instead of returning a success
-/// string describing an OOXML change nothing wrote.
+/// `set_page_borders` could NOT be fixed the same way at the time: `SectionProperties`
+/// had no field for `<w:pgBorders>` at all (verified against
+/// `.build/checkouts/ooxml-swift/Sources/OOXMLSwift/Models/Section.swift`), so
+/// per #245's own two-option framework it failed loudly (`ToolNotImplemented` →
+/// `isError: true`) instead of returning a success string describing an OOXML
+/// change nothing wrote.
+///
+/// #256: ooxml-swift v3.18.0 (#191) added `SectionProperties.pageBorders`
+/// (`PageBorders`/`PageBorderSide`), so `set_page_borders` now writes real
+/// `<w:pgBorders>` — the `ToolNotImplemented` stub test below is replaced by
+/// real persistence + round-trip tests, alongside the strict-validation
+/// tests (#240 shape: wrong JSON type and well-typed-but-illegal value both
+/// rejected, naming the parameter) for `style`/`color`/`size`/`space`/
+/// `offset_from`.
 final class Issue245FormatToolPersistenceTests: XCTestCase {
 
     // MARK: - Helpers
@@ -113,22 +120,173 @@ final class Issue245FormatToolPersistenceTests: XCTestCase {
         XCTAssertEqual(saved.sectionProperties.columnSpacing, 1000, "space must round-trip, not just columns")
     }
 
-    // MARK: - set_page_borders
+    // MARK: - set_page_borders (#256)
 
-    func testSetPageBordersFailsInsteadOfClaimingSuccess() async throws {
+    func testSetPageBordersWritesPgBordersAndRoundTrips() async throws {
         let fixture = try makeMixedFixture(suffix: "borders")
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let savePath = fixture.path + ".out.docx"
+        defer { try? FileManager.default.removeItem(atPath: savePath) }
+        let server = await WordMCPServer()
+
+        let r = try await openAndSave(
+            server, fixture: fixture, docId: "b1", savePath: savePath,
+            toolName: "set_page_borders",
+            arguments: [
+                "doc_id": .string("b1"), "style": .string("double"), "color": .string("C00000"),
+                "size": .int(8), "space": .int(30), "offset_from": .string("page"),
+            ]
+        )
+        XCTAssertFalse(r.isError == true, textOf(r))
+
+        var saved = try DocxReader.read(from: URL(fileURLWithPath: savePath))
+        defer { saved.close() }
+        let pb = try XCTUnwrap(saved.sectionProperties.pageBorders, "pageBorders must round-trip on an already-open (overlay-mode) document")
+        XCTAssertEqual(pb.offsetFrom, "page")
+        for side in [pb.top, pb.bottom, pb.left, pb.right] {
+            let s = try XCTUnwrap(side)
+            XCTAssertEqual(s.style, "double")
+            XCTAssertEqual(s.color, "C00000")
+            XCTAssertEqual(s.size, 8)
+            XCTAssertEqual(s.space, 30)
+        }
+    }
+
+    func testSetPageBordersOmittedSideIsNilAfterRoundTrip() async throws {
+        let fixture = try makeMixedFixture(suffix: "borders-sides")
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let savePath = fixture.path + ".out.docx"
+        defer { try? FileManager.default.removeItem(atPath: savePath) }
+        let server = await WordMCPServer()
+
+        let r = try await openAndSave(
+            server, fixture: fixture, docId: "b2", savePath: savePath,
+            toolName: "set_page_borders",
+            arguments: ["doc_id": .string("b2"), "style": .string("single"), "top": .bool(false)]
+        )
+        XCTAssertFalse(r.isError == true, textOf(r))
+
+        var saved = try DocxReader.read(from: URL(fileURLWithPath: savePath))
+        defer { saved.close() }
+        let pb = try XCTUnwrap(saved.sectionProperties.pageBorders)
+        XCTAssertNil(pb.top, "top: false must omit the <w:top> element, not merely hide it")
+        XCTAssertNotNil(pb.bottom)
+        XCTAssertNotNil(pb.left)
+        XCTAssertNotNil(pb.right)
+    }
+
+    func testSetPageBordersRejectsUnknownStyle() async throws {
+        let fixture = try makeMixedFixture(suffix: "borders-badstyle")
         defer { try? FileManager.default.removeItem(at: fixture) }
         let server = await WordMCPServer()
         _ = await server.invokeToolForTesting(
-            name: "open_document", arguments: ["path": .string(fixture.path), "doc_id": .string("b1")]
+            name: "open_document", arguments: ["path": .string(fixture.path), "doc_id": .string("b3")]
         )
-
         let r = await server.invokeToolForTesting(
             name: "set_page_borders",
-            arguments: ["doc_id": .string("b1"), "style": .string("single")]
+            arguments: ["doc_id": .string("b3"), "style": .string("triple")]
         )
-        XCTAssertEqual(r.isError, true, "set_page_borders has no public ooxml-swift API to write <w:pgBorders> — it must fail, not claim success. Got: \(textOf(r))")
-        XCTAssertTrue(textOf(r).contains("pgBorders"), "the error should name the missing OOXML element. Got: \(textOf(r))")
+        XCTAssertEqual(r.isError, true, textOf(r))
+        XCTAssertTrue(textOf(r).contains("style"), textOf(r))
+    }
+
+    func testSetPageBordersRejectsWrongTypeStyle() async throws {
+        let fixture = try makeMixedFixture(suffix: "borders-styletype")
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "open_document", arguments: ["path": .string(fixture.path), "doc_id": .string("b4")]
+        )
+        let r = await server.invokeToolForTesting(
+            name: "set_page_borders",
+            arguments: ["doc_id": .string("b4"), "style": .int(5)]
+        )
+        XCTAssertEqual(r.isError, true, textOf(r))
+        XCTAssertTrue(textOf(r).contains("style"), textOf(r))
+    }
+
+    func testSetPageBordersRejectsMalformedColor() async throws {
+        let fixture = try makeMixedFixture(suffix: "borders-color")
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "open_document", arguments: ["path": .string(fixture.path), "doc_id": .string("b5")]
+        )
+        let r = await server.invokeToolForTesting(
+            name: "set_page_borders",
+            arguments: ["doc_id": .string("b5"), "style": .string("single"), "color": .string("GGGGGG")]
+        )
+        XCTAssertEqual(r.isError, true, textOf(r))
+        XCTAssertTrue(textOf(r).contains("color"), textOf(r))
+    }
+
+    func testSetPageBordersAcceptsAutoColor() async throws {
+        let fixture = try makeMixedFixture(suffix: "borders-autocolor")
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let savePath = fixture.path + ".out.docx"
+        defer { try? FileManager.default.removeItem(atPath: savePath) }
+        let server = await WordMCPServer()
+        let r = try await openAndSave(
+            server, fixture: fixture, docId: "b6", savePath: savePath,
+            toolName: "set_page_borders",
+            arguments: ["doc_id": .string("b6"), "style": .string("single"), "color": .string("auto")]
+        )
+        XCTAssertFalse(r.isError == true, textOf(r))
+        var saved = try DocxReader.read(from: URL(fileURLWithPath: savePath))
+        defer { saved.close() }
+        XCTAssertEqual(saved.sectionProperties.pageBorders?.top?.color, "auto")
+    }
+
+    func testSetPageBordersRejectsOutOfRangeSize() async throws {
+        let fixture = try makeMixedFixture(suffix: "borders-size")
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "open_document", arguments: ["path": .string(fixture.path), "doc_id": .string("b7")]
+        )
+        let tooSmall = await server.invokeToolForTesting(
+            name: "set_page_borders",
+            arguments: ["doc_id": .string("b7"), "style": .string("single"), "size": .int(1)]
+        )
+        XCTAssertEqual(tooSmall.isError, true, textOf(tooSmall))
+        XCTAssertTrue(textOf(tooSmall).contains("size"), textOf(tooSmall))
+
+        let tooBig = await server.invokeToolForTesting(
+            name: "set_page_borders",
+            arguments: ["doc_id": .string("b7"), "style": .string("single"), "size": .int(97)]
+        )
+        XCTAssertEqual(tooBig.isError, true, textOf(tooBig))
+        XCTAssertTrue(textOf(tooBig).contains("size"), textOf(tooBig))
+    }
+
+    func testSetPageBordersRejectsNegativeSpace() async throws {
+        let fixture = try makeMixedFixture(suffix: "borders-space")
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "open_document", arguments: ["path": .string(fixture.path), "doc_id": .string("b8")]
+        )
+        let r = await server.invokeToolForTesting(
+            name: "set_page_borders",
+            arguments: ["doc_id": .string("b8"), "style": .string("single"), "space": .int(-1)]
+        )
+        XCTAssertEqual(r.isError, true, textOf(r))
+        XCTAssertTrue(textOf(r).contains("space"), textOf(r))
+    }
+
+    func testSetPageBordersRejectsUnknownOffsetFrom() async throws {
+        let fixture = try makeMixedFixture(suffix: "borders-offset")
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(
+            name: "open_document", arguments: ["path": .string(fixture.path), "doc_id": .string("b9")]
+        )
+        let r = await server.invokeToolForTesting(
+            name: "set_page_borders",
+            arguments: ["doc_id": .string("b9"), "style": .string("single"), "offset_from": .string("margin")]
+        )
+        XCTAssertEqual(r.isError, true, textOf(r))
+        XCTAssertTrue(textOf(r).contains("offset_from"), textOf(r))
     }
 
     // MARK: - set_row_height
