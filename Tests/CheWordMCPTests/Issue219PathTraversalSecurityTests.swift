@@ -312,4 +312,239 @@ final class Issue219PathTraversalSecurityTests: XCTestCase {
                       "a malicious relationship Target must never cause a file outside the package to be deleted")
         XCTAssertEqual(try? Data(contentsOf: canaryFile), Data("keep me".utf8))
     }
+
+    // MARK: - R2 (independent review LOW-1): percent-encoded traversal must be a named refusal, not silence
+
+    func testPercentEncodedTraversalIsRefusedNotSilentlyDropped() throws {
+        let (root, word, charts) = try packageLayout()
+        try FileManager.default.createDirectory(at: word.appendingPathComponent("media"), withIntermediateDirectories: true)
+        let encoded = String(repeating: "%2e%2e%2f", count: 20) + "etc%2fhosts"
+        XCTAssertNil(UntypedPartImages.resolvePackageRelativeTarget(encoded, baseDir: charts, packageRoot: root),
+                    "a percent-encoded traversal-shaped Target must not resolve to a URL")
+    }
+
+    func testPercentEncodedTraversalEndToEndIsNamedInListImagesNotSilentlyMissing() async throws {
+        let encoded = String(repeating: "%2e%2e%2f", count: 20) + "etc%2fhosts"
+        let path = try buildFixtureWithMaliciousChartTarget(canaryPath: encoded)
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(name: "open_document", arguments: [
+            "path": .string(path), "doc_id": .string("sec-pct"),
+        ])
+        let r = await server.invokeToolForTesting(name: "list_images", arguments: ["doc_id": .string("sec-pct")])
+        let output = text(r)
+        XCTAssertTrue(output.contains("refused for security"), "a percent-encoded Target must be named as refused, not silently absent: \(output)")
+        XCTAssertTrue(output.contains("rIdEvil"), output)
+    }
+
+    // MARK: - R2 (independent review LOW-2): a Target resolving to a directory must not be listed as an exportable row
+
+    func testTargetResolvingToADirectoryIsRefusedNotListedAsAnImage() throws {
+        let (root, word, charts) = try packageLayout()
+        let aDirectory = word.appendingPathComponent("media/adir")
+        try FileManager.default.createDirectory(at: aDirectory, withIntermediateDirectories: true)
+        XCTAssertNil(UntypedPartImages.resolvePackageRelativeTarget("../media/adir", baseDir: charts, packageRoot: root),
+                    "a Target that resolves to an existing directory must be refused, not treated as an image file")
+    }
+
+    func testTargetResolvingToADirectoryEndToEndIsNotListedAsAnOrdinaryRow() async throws {
+        var doc = WordDocument()
+        doc.appendParagraph(Paragraph(text: "Body"))
+        let firstPassURL = tempDir.appendingPathComponent("dir-target-firstpass.docx")
+        try DocxWriter.write(doc, to: firstPassURL)
+        let unpacked = try ZipHelper.unzip(firstPassURL)
+        defer { ZipHelper.cleanup(unpacked) }
+        let wordDir = unpacked.appendingPathComponent("word")
+        let chartsDir = wordDir.appendingPathComponent("charts")
+        try FileManager.default.createDirectory(at: chartsDir.appendingPathComponent("_rels"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: wordDir.appendingPathComponent("media/adir"), withIntermediateDirectories: true)
+        // A directory with no entries inside it has no zip entry of its own
+        // (ZIPFoundation, like most zip writers, does not emit a separate
+        // entry for an empty directory) and so would not round-trip through
+        // the zip → open_document → re-serialize → unzip chain this test
+        // exercises — putting a file inside makes "adir" a real, persisted
+        // directory the same way a legitimate media subdirectory would be.
+        try Data([0x01]).write(to: wordDir.appendingPathComponent("media/adir/decoy.bin"))
+        try "<c:chartSpace/>".write(to: chartsDir.appendingPathComponent("chart1.xml"), atomically: true, encoding: .utf8)
+        let relsXML = """
+        <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="rIdDir" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/adir"/>
+        </Relationships>
+        """
+        try relsXML.write(to: chartsDir.appendingPathComponent("_rels/chart1.xml.rels"), atomically: true, encoding: .utf8)
+        let finalData = try ZipHelper.zipToData(unpacked)
+        let finalURL = tempDir.appendingPathComponent("dir-target-final.docx")
+        try finalData.write(to: finalURL)
+
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(name: "open_document", arguments: [
+            "path": .string(finalURL.path), "doc_id": .string("sec-dir"),
+        ])
+        let r = await server.invokeToolForTesting(name: "list_images", arguments: ["doc_id": .string("sec-dir")])
+        let output = text(r)
+        XCTAssertFalse(output.contains("part: word/charts/chart1.xml, id: rIdDir, file: adir, referenced: yes"),
+                       "a directory Target must not be listed as an ordinary exportable image row: \(output)")
+        XCTAssertTrue(output.contains("rIdDir"), "must still be named somewhere (refused list), not silently absent: \(output)")
+    }
+
+    // MARK: - R2 real-binary run finding: list_images must not list an unsafe header/footer row as ordinary
+
+    /// Found while doing the real-release-binary end-to-end pass R2
+    /// requirement 5 asked for: `export_all_images`/`export_image` already
+    /// refuse an unsafe header/footer Target (they go through
+    /// `UntypedPartImages.entries`), but `list_images` still showed that
+    /// SAME relationship as an ordinary row (`referenced: NO (orphan)`,
+    /// with the raw Target's last path component as `file:`) because its
+    /// header/footer rows come from the untouched, pre-#219
+    /// `collectImageRows`, which only ever extracts a display filename —
+    /// it never resolves the Target through the safety check at all. A
+    /// caller reading `list_images` would see nothing alarming, then have
+    /// `export_all_images` silently skip the very same row.
+    func testListImagesDoesNotListAnUnsafeHeaderTargetAsAnOrdinaryRow() async throws {
+        var doc = WordDocument()
+        doc.appendParagraph(Paragraph(text: "Body"))
+        _ = doc.addHeader(text: "Header", type: .default)
+        let firstPassURL = tempDir.appendingPathComponent("unsafe-header-firstpass.docx")
+        try DocxWriter.write(doc, to: firstPassURL)
+        let unpacked = try ZipHelper.unzip(firstPassURL)
+        defer { ZipHelper.cleanup(unpacked) }
+        let headerRelsURL = unpacked.appendingPathComponent("word/_rels/header1.xml.rels")
+        let relsXML = """
+        <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="rIdUnsafe" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../../../../../../../../etc/hosts"/>
+        </Relationships>
+        """
+        try relsXML.write(to: headerRelsURL, atomically: true, encoding: .utf8)
+        let finalData = try ZipHelper.zipToData(unpacked)
+        let finalURL = tempDir.appendingPathComponent("unsafe-header-final.docx")
+        try finalData.write(to: finalURL)
+
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(name: "open_document", arguments: [
+            "path": .string(finalURL.path), "doc_id": .string("sec-uh"),
+        ])
+        let r = await server.invokeToolForTesting(name: "list_images", arguments: ["doc_id": .string("sec-uh")])
+        let output = text(r)
+        XCTAssertFalse(output.contains("id: rIdUnsafe, file: hosts"),
+                       "an unsafe header Target must not be listed as an ordinary row just because collectImageRows never resolves it: \(output)")
+        XCTAssertTrue(output.contains("refused for security") && output.contains("rIdUnsafe"),
+                      "must instead appear in the refused-for-security list: \(output)")
+    }
+
+    // MARK: - R2 requirement 5: one document with a traversal Target in ALL FOUR locations at once
+
+    /// Independent review methodology this mirrors: attack document part,
+    /// header, footer, AND chart simultaneously in a single `.docx`, then
+    /// confirm `export_all_images`'s output directory contains not one byte
+    /// of canary content from any of the four. Document-part containment is
+    /// NOT this repo's code (ooxml-swift 3.18.1, `DocxReader.extractImages`
+    /// → `resolveContainedOOXMLTarget`) — this test still exercises it,
+    /// because it is exactly the attack surface the independent review used
+    /// to fail the previous round, and a regression there is exactly as bad
+    /// for a caller as a regression in the header/footer/chart code this
+    /// repo owns.
+    func testAllFourLocationsWithTraversalTargetsNeverLeakCanaryContent() async throws {
+        let canaryDir = tempDir.appendingPathComponent("canary4-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: canaryDir, withIntermediateDirectories: true)
+        let canaryFile = canaryDir.appendingPathComponent("do_not_leak.txt")
+        let canaryContent = "R2-CANARY-\(UUID().uuidString)"
+        try Data(canaryContent.utf8).write(to: canaryFile)
+
+        let ups = String(repeating: "../", count: 40)
+        let canaryTail = String(canaryFile.path.dropFirst()) // strip leading "/"
+        let maliciousTarget = ups + canaryTail
+
+        var doc = WordDocument()
+        doc.appendParagraph(Paragraph(text: "Body"))
+        _ = doc.addHeader(text: "Header", type: .default)
+        _ = doc.addFooter(text: "Footer", type: .default)
+        let firstPassURL = tempDir.appendingPathComponent("four-firstpass.docx")
+        try DocxWriter.write(doc, to: firstPassURL)
+
+        let unpacked = try ZipHelper.unzip(firstPassURL)
+        defer { ZipHelper.cleanup(unpacked) }
+        let wordDir = unpacked.appendingPathComponent("word")
+
+        // 1. Document part: append a malicious image relationship to the
+        // EXISTING word/_rels/document.xml.rels (already present because
+        // addHeader/addFooter each register their own "header"/"footer"
+        // relationship there).
+        let docRelsURL = wordDir.appendingPathComponent("_rels/document.xml.rels")
+        var docRelsXML = try String(contentsOf: docRelsURL, encoding: .utf8)
+        let evilImageRel = "<Relationship Id=\"rIdEvilDoc\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"\(maliciousTarget)\"/>"
+        docRelsXML = docRelsXML.replacingOccurrences(of: "</Relationships>", with: evilImageRel + "</Relationships>")
+        try docRelsXML.write(to: docRelsURL, atomically: true, encoding: .utf8)
+
+        // 2. Header: a freshly-added header with no prior relationships has
+        // no `header1.xml.rels` file at all yet (OOXML omits an empty
+        // `_rels` sidecar) — create it fresh rather than appending.
+        let headerRelsURL = wordDir.appendingPathComponent("_rels/header1.xml.rels")
+        let headerRelsXML = """
+        <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="rIdEvilHeader" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="\(maliciousTarget)"/>
+        </Relationships>
+        """
+        try headerRelsXML.write(to: headerRelsURL, atomically: true, encoding: .utf8)
+
+        // 3. Footer: same reasoning, footer1.xml.rels
+        let footerRelsURL = wordDir.appendingPathComponent("_rels/footer1.xml.rels")
+        let footerRelsXML = """
+        <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="rIdEvilFooter" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="\(maliciousTarget)"/>
+        </Relationships>
+        """
+        try footerRelsXML.write(to: footerRelsURL, atomically: true, encoding: .utf8)
+
+        // 4. Chart: brand-new chart part + its own rels (untyped, no
+        // existing file to append to).
+        let chartsDir = wordDir.appendingPathComponent("charts")
+        try FileManager.default.createDirectory(at: chartsDir.appendingPathComponent("_rels"), withIntermediateDirectories: true)
+        try "<c:chartSpace/>".write(to: chartsDir.appendingPathComponent("chart1.xml"), atomically: true, encoding: .utf8)
+        let chartRelsXML = """
+        <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="rIdEvilChart" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="\(maliciousTarget)"/>
+        </Relationships>
+        """
+        try chartRelsXML.write(to: chartsDir.appendingPathComponent("_rels/chart1.xml.rels"), atomically: true, encoding: .utf8)
+
+        let finalData = try ZipHelper.zipToData(unpacked)
+        let finalURL = tempDir.appendingPathComponent("four-final.docx")
+        try finalData.write(to: finalURL)
+
+        let server = await WordMCPServer()
+        let openResult = await server.invokeToolForTesting(name: "open_document", arguments: [
+            "path": .string(finalURL.path), "doc_id": .string("sec-four"),
+        ])
+        XCTAssertNotEqual(openResult.isError, true, text(openResult))
+
+        let listResult = await server.invokeToolForTesting(name: "list_images", arguments: ["doc_id": .string("sec-four")])
+        XCTAssertFalse(text(listResult).contains(canaryContent), "list_images text itself must never echo canary content: \(text(listResult))")
+
+        let outDir = tempDir.appendingPathComponent("four-out").path
+        let exportResult = await server.invokeToolForTesting(name: "export_all_images", arguments: [
+            "doc_id": .string("sec-four"), "output_dir": .string(outDir),
+        ])
+        XCTAssertFalse(text(exportResult).contains(canaryContent), text(exportResult))
+
+        // The decisive check: walk every file `export_all_images` actually
+        // wrote and confirm none of them is the canary's content, byte for
+        // byte — not just "the id looks refused in the summary text".
+        var leaked: [String] = []
+        if let names = try? FileManager.default.contentsOfDirectory(atPath: outDir) {
+            for name in names {
+                let fileURL = URL(fileURLWithPath: outDir).appendingPathComponent(name)
+                if let data = try? Data(contentsOf: fileURL), data == Data(canaryContent.utf8) {
+                    leaked.append(name)
+                }
+            }
+        }
+        XCTAssertTrue(leaked.isEmpty, "canary content leaked into export_all_images output as: \(leaked)")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: canaryFile.path))
+        XCTAssertEqual(try? Data(contentsOf: canaryFile), Data(canaryContent.utf8),
+                      "canary file itself must be untouched")
+    }
 }
