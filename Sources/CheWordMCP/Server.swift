@@ -714,6 +714,52 @@ actor WordMCPServer {
     /// citation for `ST_HpsMeasure` itself.
     static let unsignedHpsOrTwipsRange: ClosedRange<Int> = 0...4_294_967_295
 
+    /// #256: `set_page_borders`'s `size` (`<w:pgBorders>` per-side `w:sz`).
+    /// ECMA-376, 3rd Edition (June 2011) §17.6.10/§17.18.2, quoted verbatim
+    /// on officeopenxml.com's page-borders reference page (archived
+    /// 2012-10-09, https://web.archive.org/web/20121009060547/
+    /// http://officeopenxml.com/WPsectionBorders.php — the live site's TLS
+    /// endpoint could not be reached during this issue's research):
+    /// "If the border is a line border, the size is specified in eighths of
+    /// a point, with a minimum value of two (1/4 of a point) and a maximum
+    /// value of 96 (twelve points). If the border is an art border, the
+    /// width is given in points and a minimum of 1 and a maximum of 31."
+    /// This tool's `style` vocabulary (single/double/dotted/dashed/thick/
+    /// none) only ever selects LINE borders, never one of the ~150 named art
+    /// border styles ECMA-376 §17.18.2 separately enumerates, so only the
+    /// line-border range applies here.
+    static let pageBorderLineSizeRange: ClosedRange<Int> = 2...96
+
+    /// #256: `set_page_borders`'s `space` (`<w:pgBorders>` per-side
+    /// `w:space` — distance from the page edge or text margin, per
+    /// `offset_from`). The same officeopenxml.com reference page (cited
+    /// above for `pageBorderLineSizeRange`) documents its UNIT ("specified
+    /// in points") but not a min/max; no Word-specific ceiling for this
+    /// particular attribute was found during this issue's research (unlike
+    /// `w:sz`, which the same page bounds explicitly). Bounded only to
+    /// non-negative-and-XSD-unsigned-32-bit-shaped, the same honest
+    /// "no tighter number confirmed" fallback `unsignedHpsOrTwipsRange`
+    /// already uses for `kern` above, rather than asserting an unconfirmed
+    /// Word-UI number.
+    static let pageBorderSpacePointsRange: ClosedRange<Int> = unsignedHpsOrTwipsRange
+
+    /// #256: `set_page_borders`'s `color` (`<w:pgBorders>` per-side
+    /// `w:color`). Per the same officeopenxml.com reference page: "Values
+    /// are given as hex values (in RRGGBB format). No #... A value of `auto`
+    /// is also permitted." This tool never wrote OOXML before #256 (it was
+    /// a `ToolNotImplemented` stub, #245), so no caller has ever depended on
+    /// a malformed color silently reaching the file — validating it from
+    /// the start, rather than grandfathering an unchecked stub-era default.
+    static func validatedPageBorderColor(_ value: String) throws -> String {
+        if value.lowercased() == "auto" { return "auto" }
+        guard value.count == 6, value.allSatisfy({ $0.isHexDigit }) else {
+            throw WordError.invalidParameter(
+                "color", "必須是 6 位十六進位 RRGGBB（不含 #），或 'auto'；不接受 '\(value)'"
+            )
+        }
+        return value
+    }
+
     /// #235: shared range guard for the parameters bounded above — same
     /// shape as #234's `estimateCharsPerPage`-local `validated(_:_:_:)`, but
     /// generic (not tied to one function's "頁面設定" wording) so it can be
@@ -5466,7 +5512,10 @@ actor WordMCPServer {
             // 10.4 set_page_borders - 頁面邊框
             Tool(
                 name: "set_page_borders",
-                description: "設定頁面邊框（四邊可獨立設定）。目前未實作，呼叫會回 isError 並具名缺少的 OOXML（#245——ooxml-swift 的 SectionProperties 沒有 <w:pgBorders> 對應欄位，非本堆疊觸及範圍）",
+                description: "設定頁面邊框（四邊可獨立顯示/隱藏，樣式/顏色/粗細/起算位置四邊共用）。"
+                    + "#256：接上 ooxml-swift v3.18.0（#191）新增的 SectionProperties.pageBorders，真的寫入 "
+                    + "<w:pgBorders>，不再是回 isError 的未實作 stub。所有參數依 ECMA-376 §17.6.10/17.18.2 "
+                    + "嚴格驗證，型別錯誤或不合法值一律回 isError 並指名參數。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -5476,19 +5525,24 @@ actor WordMCPServer {
                         ]),
                         "style": .object([
                             "type": .string("string"),
-                            "description": .string("邊框樣式：single（單線）、double（雙線）、dotted（點線）、dashed（虛線）、thick（粗線）、none（無）")
+                            "description": .string("邊框樣式：single（單線）、double（雙線）、dotted（點線）、dashed（虛線）、thick（粗線）、none（無）。"
+                                + "不接受其他值（含 ECMA-376 另外定義的 ~150 種具名 art border 樣式，本工具未支援）")
                         ]),
                         "color": .object([
                             "type": .string("string"),
-                            "description": .string("邊框顏色（RGB 十六進位，如 000000）")
+                            "description": .string("邊框顏色：6 位十六進位 RRGGBB（不含 #，如 000000）或 'auto'")
                         ]),
                         "size": .object([
                             "type": .string("integer"),
-                            "description": .string("邊框粗細（1/8 點，預設 4 = 0.5pt）")
+                            "description": .string("邊框粗細（1/8 點；線邊框合法範圍 2–96，即 0.25pt–12pt；預設 4 = 0.5pt）")
+                        ]),
+                        "space": .object([
+                            "type": .string("integer"),
+                            "description": .string("邊框與起算位置的距離（點；非負整數；預設 24pt）")
                         ]),
                         "offset_from": .object([
                             "type": .string("string"),
-                            "description": .string("邊框起算位置：text（從文字）、page（從頁邊）")
+                            "description": .string("邊框起算位置：text（從文字，預設）、page（從頁邊）")
                         ]),
                         "top": .object([
                             "type": .string("boolean"),
@@ -17155,43 +17209,77 @@ actor WordMCPServer {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
         }
-        guard let style = args["style"]?.stringValue else {
-            throw WordError.missingParameter("style")
-        }
-        guard openDocuments[docId] != nil else {
+        guard var doc = openDocuments[docId] else {
             throw WordError.documentNotFound(docId)
         }
 
-        let color = args["color"]?.stringValue ?? "000000"
-        let size = try optionalInt(args, "size") ?? 4
-        let offsetFrom = args["offset_from"]?.stringValue ?? "text"
+        // #256:接上 ooxml-swift v3.18.0（#191）新增的 SectionProperties.pageBorders
+        // — 這個工具過去（#245）驗證完參數後直接回一句描述成功的字串，從未寫
+        // 任何 OOXML，因為 SectionProperties 當時根本沒有 `<w:pgBorders>` 對應
+        // 欄位，只能誠實回 isError（`ToolNotImplemented`）。欄位補上後改為真的
+        // 寫入；同時把每個參數的驗證從「型別錯就默默套用預設值」升級成
+        // #240 那套「型別錯或值不合法都具名回 isError」的嚴格驗證。
+
+        // `style` 是必填、封閉列舉：wrong type 與 well-typed-but-unrecognized
+        // value 都要拒絕（`optionalStrictEnumString` 只涵蓋可省略的參數，這裡
+        // 手寫同樣的兩段檢查）。刻意只維持既有 6 個值，不擴充到 ECMA-376
+        // §17.18.2 另外定義的 ~150 種具名 art border 樣式——那組樣式的
+        // `w:sz` 用點數（1–31）而非八分之一點，且 ooxml-swift 的
+        // `PageBorderSide.style` 本身保留為原始字串正是為了不受限枚舉，
+        // 擴充 art border 是這個 issue 之外的獨立擴充，不在此處臆測補齊。
+        guard let styleValue = args["style"] else {
+            throw WordError.missingParameter("style")
+        }
+        guard case .string(let style) = styleValue else {
+            throw WordError.invalidParameter("style", "必須是字串")
+        }
+        let validStyles = ["single", "double", "dotted", "dashed", "thick", "none"]
+        guard validStyles.contains(style) else {
+            throw WordError.invalidParameter(
+                "style",
+                "必須是 \(validStyles.joined(separator: "/")) 之一，不接受 '\(style)'（本工具不支援 ECMA-376 art border 樣式）"
+            )
+        }
+
+        let colorRaw = try Self.optionalStrictString(args, "color") ?? "000000"
+        let color = try Self.validatedPageBorderColor(colorRaw)
+
+        let sizeRaw = try optionalInt(args, "size") ?? 4
+        let size = try Self.validatedParamRange(sizeRaw, "size", Self.pageBorderLineSizeRange)
+
+        let spaceRaw = try optionalInt(args, "space") ?? 24
+        let space = try Self.validatedParamRange(spaceRaw, "space", Self.pageBorderSpacePointsRange)
+
+        let offsetFrom = try Self.optionalStrictEnumString(args, "offset_from", allowed: ["page", "text"]) ?? "text"
+
         let showTop = try optionalBool(args, "top") ?? true
         let showBottom = try optionalBool(args, "bottom") ?? true
         let showLeft = try optionalBool(args, "left") ?? true
         let showRight = try optionalBool(args, "right") ?? true
 
-        // 驗證樣式
-        let validStyles = ["single", "double", "dotted", "dashed", "thick", "none"]
-        guard validStyles.contains(style) else {
-            throw ToolRefusal("Invalid border style. Valid options: \(validStyles.joined(separator: ", "))")
-        }
+        // 四邊共用同一組 style/size/color/space；個別 boolean 只決定該邊要不要
+        // 寫出 `<w:top|bottom|left|right>` 元素本身——`false` 省略元素（沒有這
+        // 個邊框），`style: "none"` 則是明確寫出「這邊有邊框元素、但樣式是無」，
+        // 兩者視覺結果相同但 OOXML 不同，都保留給呼叫端依需要選擇。
+        let side = PageBorderSide(style: style, size: size, color: color, space: space)
+        var pageBorders = PageBorders(offsetFrom: offsetFrom)
+        if showTop { pageBorders.top = side }
+        if showBottom { pageBorders.bottom = side }
+        if showLeft { pageBorders.left = side }
+        if showRight { pageBorders.right = side }
 
-        // #245: 這個函式驗證參數後直接回一句描述成功的字串，從未寫任何
-        // OOXML——`_ = color/size/offsetFrom/showTop/showBottom/showLeft/
-        // showRight` 全部只是拼字串用。跟 #245 表格裡其他工具不同的是，
-        // 這裡不是「公開 API 沒被呼叫」，而是 ooxml-swift 的
-        // `SectionProperties` 根本沒有 `<w:pgBorders>` 對應欄位（#245 判讀
-        // 時已核對 `.build/checkouts/ooxml-swift/Sources/OOXMLSwift/Models/
-        // Section.swift`）——沒有公開路徑可以真的寫入，依 #201 的慣例回
-        // isError 並具名缺少的 OOXML，而不是繼續回報成功。
-        _ = color; _ = size; _ = offsetFrom
-        _ = showTop; _ = showBottom; _ = showLeft; _ = showRight
-        throw ToolNotImplemented(
-            tool: "set_page_borders", issue: "#245",
-            missing: "a <w:pgBorders w:offsetFrom=\"…\"><w:top w:val=\"…\" w:sz=\"…\" w:color=\"…\"/>"
-                + "<w:left .../><w:bottom .../><w:right .../></w:pgBorders> child of <w:sectPr> — "
-                + "ooxml-swift's SectionProperties has no field for it at all (not merely an unmarked-dirty "
-                + "typed mutation), so there is no public API this tool can call")
+        doc.sectionProperties.pageBorders = pageBorders
+        doc.markPartDirty("word/document.xml")
+        try await storeDocument(doc, for: docId)
+
+        var shownSides: [String] = []
+        if showTop { shownSides.append("top") }
+        if showBottom { shownSides.append("bottom") }
+        if showLeft { shownSides.append("left") }
+        if showRight { shownSides.append("right") }
+        let sidesDescription = shownSides.isEmpty ? "none" : shownSides.joined(separator: ", ")
+        return "Set page border (style: \(style), size: \(size), color: \(color), space: \(space)pt, "
+            + "offset_from: \(offsetFrom), sides: \(sidesDescription))"
     }
 
     /// 插入特殊符號
