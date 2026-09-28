@@ -154,7 +154,13 @@ final class RefusalIsErrorSweepTests: XCTestCase {
         try await freshDoc(server)
         let r = try await call(server, "replace_text",
                                ["doc_id": .string("d"), "find": .string("body"), "replace": .string("x"), "scope": .string("bogus")])
-        assertRefused(r, "replace_text (invalid scope)", expecting: "invalid scope")
+        // #253: `scope` now goes through `optionalStrictEnumString` (also
+        // closing the previously-unvalidated wrong-JSON-type case), which
+        // phrases the refusal as "Invalid parameter 'scope': 必須是
+        // body/all 之一，不接受 'bogus'" rather than the old ad-hoc
+        // "invalid scope 'bogus'" — still names the parameter and rejects
+        // the bad value, just with standardized wording.
+        assertRefused(r, "replace_text (invalid scope)", expecting: "scope")
         _ = try await call(server, "close_document", ["doc_id": .string("d"), "discard_changes": .bool(true)])
     }
 

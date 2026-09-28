@@ -9270,16 +9270,14 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let scopeString = args["scope"]?.stringValue ?? "body"
-        let scope: ReplaceScope
-        switch scopeString {
-        case "body":
-            scope = .bodyAndTables
-        case "all":
-            scope = .all
-        default:
-            throw ToolRefusal("invalid scope '\(scopeString)'. Use 'body' or 'all'.")
-        }
+        // #253: value errors were already rejected (the `default:` throw
+        // below), but a wrong JSON TYPE (`scope: 5`) took `?.stringValue`'s
+        // `nil` straight into the `?? "body"` fallback and was silently
+        // treated as if the caller had asked for "body" — same failure
+        // shape #240 closed for schema-declared `enum` parameters, applied
+        // here to a parameter that never declared one.
+        let scopeString = try Self.optionalStrictEnumString(args, "scope", allowed: ["body", "all"]) ?? "body"
+        let scope: ReplaceScope = (scopeString == "all") ? .all : .bodyAndTables
         let regex = try optionalBool(args, "regex") ?? false
         let matchCase = try optionalBool(args, "match_case") ?? true
 
@@ -10548,7 +10546,11 @@ actor WordMCPServer {
         }
 
         // 解析樣式類型
-        let typeStr = args["type"]?.stringValue ?? "paragraph"
+        // #253: neither a wrong JSON type NOR an unrecognized value was
+        // ever rejected — `RawRepresentable(rawValue:)`'s `nil` on either
+        // failure fell straight into `?? .paragraph`, reporting success
+        // while silently building a DIFFERENT style type than requested.
+        let typeStr = try Self.optionalStrictEnumString(args, "type", allowed: ["paragraph", "character", "table", "numbering"]) ?? "paragraph"
         let styleType = StyleType(rawValue: typeStr) ?? .paragraph
 
         // 解析段落屬性
@@ -10889,7 +10891,11 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let typeStr = args["type"]?.stringValue ?? "nextPage"
+        // #253: an unrecognized VALUE was already rejected below, but a
+        // wrong JSON type (`type: 5`) took `?.stringValue`'s `nil` straight
+        // into `?? "nextPage"` — a valid value — so the type error sailed
+        // through undetected.
+        let typeStr = try Self.optionalStrictEnumString(args, "type", allowed: ["nextPage", "continuous", "evenPage", "oddPage"]) ?? "nextPage"
         guard let breakType = SectionBreakType(rawValue: typeStr) else {
             throw WordError.invalidParameter("type", "Must be 'nextPage', 'continuous', 'evenPage', or 'oddPage'")
         }
@@ -10918,12 +10924,20 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let typeStr = args["type"]?.stringValue ?? "default"
+        // #253: had NO validation at all — a wrong JSON type OR an
+        // unrecognized value (a typo like "frist") both silently produced a
+        // `.default` header while reporting success. `optionalStrictString`
+        // still rejects only the type; the value check (case-insensitive,
+        // matching the pre-existing `.lowercased()` comparison so legitimate
+        // callers passing "First"/"Default" keep working) is added here.
+        let typeStr = try Self.optionalStrictString(args, "type") ?? "default"
         let headerType: HeaderFooterType
         switch typeStr.lowercased() {
         case "first": headerType = .first
         case "even": headerType = .even
-        default: headerType = .default
+        case "default": headerType = .default
+        default:
+            throw WordError.invalidParameter("type", "必須是 first/even/default 之一，不接受 '\(typeStr)'")
         }
 
         let header = doc.addHeader(text: text, type: headerType)
@@ -10960,12 +10974,15 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let typeStr = args["type"]?.stringValue ?? "default"
+        // #253: same shape as add_header.type above — no validation at all.
+        let typeStr = try Self.optionalStrictString(args, "type") ?? "default"
         let footerType: HeaderFooterType
         switch typeStr.lowercased() {
         case "first": footerType = .first
         case "even": footerType = .even
-        default: footerType = .default
+        case "default": footerType = .default
+        default:
+            throw WordError.invalidParameter("type", "必須是 first/even/default 之一，不接受 '\(typeStr)'")
         }
 
         let footer: Footer
@@ -12735,16 +12752,25 @@ actor WordMCPServer {
         throw WordError.invalidFormat("source_paragraph_index \(sourceParaIdx) out of range (only \(paraCounter) body paragraphs in source)")
     }
 
-    private func parseRpRMode(_ s: String?) -> OMathSpliceRpRMode {
-        switch s {
+    /// #253: replaces the old `parseRpRMode(_ s: String?)` /
+    /// `parseNamespacePolicy(_ s: String?)`, which took an already-lossy
+    /// `String?` (produced by `args[key]?.stringValue`, which silently turns
+    /// any non-string JSON value into `nil`) and had NO `default:` rejection
+    /// path at all — a wrong type (`rpr_mode: 5`) and an unrecognized value
+    /// (`rpr_mode: "bogus"`) were both read identically to "omitted",
+    /// reporting success while silently splicing with a different rPr
+    /// policy than the caller asked for. These take `args` directly so the
+    /// type check happens before the value is ever collapsed to `String?`.
+    private func strictRpRMode(_ args: [String: Value]) throws -> OMathSpliceRpRMode {
+        switch try Self.optionalStrictEnumString(args, "rpr_mode", allowed: ["full", "omathOnly", "discard"]) {
         case "omathOnly": return .omathOnly
-        case "discard":   return .discard
-        default:          return .full  // default + "full"
+        case "discard": return .discard
+        default: return .full // nil (omitted) or "full"
         }
     }
 
-    private func parseNamespacePolicy(_ s: String?) -> OMathSpliceNamespacePolicy {
-        s == "strict" ? .strict : .lenient
+    private func strictNamespacePolicy(_ args: [String: Value]) throws -> OMathSpliceNamespacePolicy {
+        try Self.optionalStrictEnumString(args, "namespace_policy", allowed: ["lenient", "strict"]) == "strict" ? .strict : .lenient
     }
 
     private func formatSpliceError(_ err: OMathSpliceError, tool: String) -> String {
@@ -12777,6 +12803,15 @@ actor WordMCPServer {
         guard let positionRaw = args["position"]?.stringValue else {
             throw WordError.missingParameter("position")
         }
+        // #253: validate BEFORE `resolveSourceParagraph` (which reads a
+        // source file / open document) — the same "reject cheap parameter
+        // mistakes before doing real work" ordering `insert_caption` already
+        // documents for its own anchor parsing. Previously `rpr_mode` /
+        // `namespace_policy` were parsed AFTER source resolution, via
+        // `parseRpRMode`/`parseNamespacePolicy`, which had no rejection path
+        // for either a wrong JSON type or an unrecognized value at all.
+        let rPrMode = try strictRpRMode(args)
+        let nsPolicy = try strictNamespacePolicy(args)
 
         let sourcePara = try await resolveSourceParagraph(args: args)
 
@@ -12806,8 +12841,6 @@ actor WordMCPServer {
         }
 
         let omathIndex = try optionalInt(args, "omath_index") ?? 0
-        let rPrMode = parseRpRMode(args["rpr_mode"]?.stringValue)
-        let nsPolicy = parseNamespacePolicy(args["namespace_policy"]?.stringValue)
 
         do {
             let n = try target.spliceOMath(
@@ -12854,9 +12887,12 @@ actor WordMCPServer {
             throw ToolRefusal("splice_paragraph_omath_from_source: target_paragraph_index \(targetParaIdx) out of range (document has \(targetParagraphCount) body paragraph(s))")
         }
 
+        // #253: validated before `resolveSourceParagraph` — see
+        // `spliceOMathFromSource`'s identical comment above.
+        let rPrMode = try strictRpRMode(args)
+        let nsPolicy = try strictNamespacePolicy(args)
+
         let sourcePara = try await resolveSourceParagraph(args: args)
-        let rPrMode = parseRpRMode(args["rpr_mode"]?.stringValue)
-        let nsPolicy = parseNamespacePolicy(args["namespace_policy"]?.stringValue)
 
         do {
             let n = try target.spliceParagraphOMath(
@@ -13140,7 +13176,12 @@ actor WordMCPServer {
             throw WordError.invalidIndex(paragraphIndex)
         }
 
-        let typeStr = args["type"]?.stringValue ?? "single"
+        // #253: neither a wrong JSON type nor an unrecognized value was
+        // ever rejected — `RawRepresentable(rawValue:)`'s `nil` on either
+        // failure fell straight into `?? .single`.
+        let typeStr = try Self.optionalStrictEnumString(
+            args, "type", allowed: ["none", "single", "thick", "double", "dotted", "dashed", "dashDotStroked", "threeDEmboss", "threeDEngrave", "wave"]
+        ) ?? "single"
         let size = try optionalInt(args, "size") ?? 4
         let color = args["color"]?.stringValue ?? "000000"
         let space = try optionalInt(args, "space") ?? 1
@@ -13898,7 +13939,13 @@ actor WordMCPServer {
         }
         try requireExistingTopLevelParagraphIndex(paragraphIndex, in: doc)
         let format = args["format"]?.stringValue ?? "yyyy-MM-dd"
-        let typeStr = args["type"]?.stringValue ?? "DATE"
+        // #253: no validation at all — a wrong JSON type OR an unrecognized
+        // value (e.g. "DATEE") both silently produced a DATE field while
+        // reporting success. `optionalStrictString` rejects the type; the
+        // value check below stays case-insensitive (pre-existing
+        // `.uppercased()` comparison) but now has an explicit rejection
+        // path instead of a silent `default: .date`.
+        let typeStr = try Self.optionalStrictString(args, "type") ?? "DATE"
 
         let fieldType: DateTimeFieldType
         switch typeStr.uppercased() {
@@ -13908,7 +13955,8 @@ actor WordMCPServer {
         case "SAVEDATE": fieldType = .saveDate
         case "CREATEDATE": fieldType = .createDate
         case "EDITTIME": fieldType = .editTime
-        default: fieldType = .date
+        default:
+            throw WordError.invalidParameter("type", "必須是 DATE/TIME/PRINTDATE/SAVEDATE/CREATEDATE/EDITTIME 之一，不接受 '\(typeStr)'")
         }
 
         let dateField = DateTimeField(type: fieldType, dateFormat: format)
@@ -13930,7 +13978,9 @@ actor WordMCPServer {
             throw WordError.missingParameter("paragraph_index")
         }
         try requireExistingTopLevelParagraphIndex(paragraphIndex, in: doc)
-        let typeStr = args["type"]?.stringValue ?? "PAGE"
+        // #253: same shape as insert_date_field.type above — no validation
+        // at all before this fix.
+        let typeStr = try Self.optionalStrictString(args, "type") ?? "PAGE"
 
         let infoType: DocumentInfoFieldType
         switch typeStr.uppercased() {
@@ -13942,7 +13992,8 @@ actor WordMCPServer {
         case "AUTHOR": infoType = .author
         case "TITLE": infoType = .title
         case "SECTIONPAGES": infoType = .sectionPages
-        default: infoType = .page
+        default:
+            throw WordError.invalidParameter("type", "必須是 PAGE/NUMPAGES/NUMWORDS/NUMCHARS/FILENAME/AUTHOR/TITLE/SECTIONPAGES 之一，不接受 '\(typeStr)'")
         }
 
         let infoField = DocumentInfoField(type: infoType)
@@ -17029,7 +17080,13 @@ actor WordMCPServer {
 
         let start = try optionalInt(args, "start") ?? 1
         let countBy = try optionalInt(args, "count_by") ?? 1
-        let restart = args["restart"]?.stringValue ?? "continuous"
+        // #253: no validation at all — matched against the same
+        // `LineNumberRestart` vocabulary `set_line_numbers_for_section`
+        // actually persists, even though THIS tool is a stub (#245: it never
+        // writes `<w:lnNumType>` at all). A stub still owes the caller a
+        // real rejection instead of echoing back whatever nonsense was
+        // passed as if it had been accepted.
+        let restart = try Self.optionalStrictEnumString(args, "restart", allowed: ["continuous", "newSection", "newPage"]) ?? "continuous"
         let distance = try optionalInt(args, "distance") ?? 360  // 預設 0.25 inch
 
         // 行號需要在 sectPr 中設定 <w:lnNumType>
@@ -17104,7 +17161,10 @@ actor WordMCPServer {
         }
 
         let font = args["font"]?.stringValue
-        let position = args["position"]?.stringValue ?? "end"
+        // #253: no validation at all — a wrong JSON type OR an
+        // unrecognized value (e.g. "middle") both silently fell into the
+        // `else` (append at end) branch below.
+        let position = try Self.optionalStrictEnumString(args, "position", allowed: ["start", "end"]) ?? "end"
 
         // 將十六進位字元碼轉換為字元
         guard let codePoint = UInt32(charCode, radix: 16),
@@ -17200,15 +17260,15 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let dropCapType = args["type"]?.stringValue ?? "drop"
+        // #253: an unrecognized VALUE was already rejected below, but a
+        // wrong JSON type (`type: 5`) took `?.stringValue`'s `nil` straight
+        // into `?? "drop"` — a valid value — so the type error sailed
+        // through undetected.
+        let validTypes = ["drop", "margin", "none"]
+        let dropCapType = try Self.optionalStrictEnumString(args, "type", allowed: validTypes) ?? "drop"
         let lines = min(max(try optionalInt(args, "lines") ?? 3, 2), 10)
         let distance = try optionalInt(args, "distance") ?? 0
         let font = args["font"]?.stringValue
-
-        let validTypes = ["drop", "margin", "none"]
-        guard validTypes.contains(dropCapType) else {
-            throw ToolRefusal("Invalid drop cap type. Valid options: drop, margin, none")
-        }
 
         // 取得段落
         let paragraphIndices = doc.body.children.enumerated().compactMap { (i, child) -> Int? in
@@ -17260,14 +17320,13 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let style = args["style"]?.stringValue ?? "single"
+        // #253: matches the #253 issue body's own flagship example — an
+        // unrecognized VALUE was already rejected below, but a wrong JSON
+        // type (`style: 5`) silently became "single".
+        let validStyles = ["single", "double", "dotted", "dashed", "thick"]
+        let style = try Self.optionalStrictEnumString(args, "style", allowed: validStyles) ?? "single"
         let color = args["color"]?.stringValue ?? "000000"
         let size = try optionalInt(args, "size") ?? 12  // 1.5pt
-
-        let validStyles = ["single", "double", "dotted", "dashed", "thick"]
-        guard validStyles.contains(style) else {
-            throw ToolRefusal("Invalid line style. Valid options: \(validStyles.joined(separator: ", "))")
-        }
 
         // 取得段落索引
         let paragraphIndices = doc.body.children.enumerated().compactMap { (i, child) -> Int? in
@@ -18183,7 +18242,10 @@ actor WordMCPServer {
 
         let captionText = args["caption_text"]?.stringValue ?? ""
         let includeChapterNumber = try optionalBool(args, "include_chapter_number") ?? false
-        let position = args["position"]?.stringValue ?? "below"
+        // #253: no validation at all — the caller-facing binary check
+        // below (`position == "above" ? ... : ...`) silently treated a
+        // wrong type OR any unrecognized value as "below".
+        let position = try Self.optionalStrictEnumString(args, "position", allowed: ["above", "below"]) ?? "below"
 
         // #232 R6 (review LOW-2): the two int-typed anchors are parsed here,
         // BEFORE `detectPresentAnchors`/the conflict/zero-anchor checks below
@@ -18803,17 +18865,12 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let alignment = args["alignment"]?.stringValue ?? "left"
-        let leaderArg = args["leader"]?.stringValue ?? "none"
-
+        // #253: unrecognized VALUES were already rejected below, but a
+        // wrong JSON type on either parameter silently became its default.
         let validAlignments = ["left", "center", "right", "decimal"]
-        guard validAlignments.contains(alignment) else {
-            throw ToolRefusal("Invalid alignment. Valid options: \(validAlignments.joined(separator: ", "))")
-        }
+        let alignment = try Self.optionalStrictEnumString(args, "alignment", allowed: validAlignments) ?? "left"
         let validLeaders = ["none", "dot", "hyphen", "underscore"]
-        guard validLeaders.contains(leaderArg) else {
-            throw ToolRefusal("Invalid leader. Valid options: \(validLeaders.joined(separator: ", "))")
-        }
+        let leaderArg = try Self.optionalStrictEnumString(args, "leader", allowed: validLeaders) ?? "none"
         let leader: String? = leaderArg == "none" ? nil : leaderArg
 
         // #245 (#139-style fix): bounds-check against the SAME top-level
@@ -19047,7 +19104,10 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let position = args["position"]?.stringValue ?? "end"
+        // #253: no validation at all — a wrong JSON type OR an
+        // unrecognized value (e.g. a typo like "strat") both silently fell
+        // into the `switch position { ...; default: /* "end" */ }` below.
+        let position = try Self.optionalStrictEnumString(args, "position", allowed: ["start", "after_row", "end"]) ?? "end"
         let rowIndex = try optionalInt(args, "row_index")
         let data = args["data"]?.arrayValue?.compactMap { $0.stringValue } ?? []
 
@@ -19111,7 +19171,8 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let position = args["position"]?.stringValue ?? "end"
+        // #253: same shape as add_row_to_table.position above.
+        let position = try Self.optionalStrictEnumString(args, "position", allowed: ["start", "after_col", "end"]) ?? "end"
         let colIndex = try optionalInt(args, "col_index")
         let data = args["data"]?.arrayValue?.compactMap { $0.stringValue } ?? []
 
@@ -19251,7 +19312,9 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let widthTypeStr = args["width_type"]?.stringValue ?? "dxa"
+        // #253: an unrecognized VALUE was already rejected below, but a
+        // wrong JSON type (`width_type: 5`) silently became "dxa".
+        let widthTypeStr = try Self.optionalStrictEnumString(args, "width_type", allowed: ["dxa", "pct", "auto"]) ?? "dxa"
         guard let widthType = WidthType(rawValue: widthTypeStr) else {
             throw ToolRefusal("Invalid width_type. Valid options: dxa, pct, auto")
         }
@@ -19320,7 +19383,8 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let heightRuleStr = args["height_rule"]?.stringValue ?? "atLeast"
+        // #253: same shape as set_cell_width.width_type above.
+        let heightRuleStr = try Self.optionalStrictEnumString(args, "height_rule", allowed: ["auto", "atLeast", "exact"]) ?? "atLeast"
         guard let heightRule = HeightRule(rawValue: heightRuleStr) else {
             throw ToolRefusal("Invalid height_rule. Valid options: auto, atLeast, exact")
         }
@@ -20780,7 +20844,11 @@ actor WordMCPServer {
         guard let sectionIndex = try optionalInt(args, "section_index") else { throw WordError.missingParameter("section_index") }
         guard let countBy = try optionalInt(args, "count_by") else { throw WordError.missingParameter("count_by") }
         let start = try optionalInt(args, "start")
-        let restartStr = args["restart"]?.stringValue ?? "continuous"
+        // #253: neither a wrong JSON type nor an unrecognized value was
+        // ever rejected — `RawRepresentable(rawValue:)`'s `nil` on either
+        // failure fell straight into `?? .continuous`, and unlike
+        // `set_line_numbers` above, THIS tool actually persists the value.
+        let restartStr = try Self.optionalStrictEnumString(args, "restart", allowed: ["continuous", "newSection", "newPage"]) ?? "continuous"
         let restart = LineNumberRestart(rawValue: restartStr) ?? .continuous
 
         do {
