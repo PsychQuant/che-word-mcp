@@ -14,14 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`list_images`／`export_all_images`／`export_image`／`remove_watermark` 修正 header／footer／chart 圖片關係 `Target` 的路徑穿越漏洞**（#219）。上一條「涵蓋 header／footer／chart 圖片」的初版實作把不可信 `.docx` 內容裡的 relationship `Target` 直接接上檔案路徑，未檢查結果是否仍在解壓封裝之內；惡意文件可藉此讓 `export_all_images`／`export_image` 讀出、`remove_watermark` 刪除封裝外的任意本機檔案。現在所有解析都經過同一個收斂檢查（收斂字面上的 `..`、追蹤封裝內指向封裝外的 symlink、`TargetMode="External"` 一律拒絕），逃出封裝的關係會被具名拒絕、列在結果文字裡，不會被讀取或刪除，也不會靜默消失。
+- **`list_images`／`export_all_images`／`export_image`／`remove_watermark` 修正 header／footer／chart 圖片關係 `Target` 的路徑穿越漏洞**（#219）。上一條「涵蓋 header／footer／chart 圖片」的初版實作把不可信 `.docx` 內容裡 header／footer／chart 的 relationship `Target` 直接接上檔案路徑，未檢查結果是否仍在解壓封裝之內；惡意文件可藉此讓 `export_all_images`／`export_image` 讀出、`remove_watermark` 刪除封裝外的任意本機檔案。**此條僅涵蓋 header／footer／chart 這三個 part；document part 本體的圖片關係另由 ooxml-swift 3.18.1 在函式庫端修正（見上方「Security」，不是本條的範圍，也不是同一段程式碼）。** 現在 header／footer／chart 的 Target 解析都經過同一個收斂檢查（收斂字面上的 `..`、偵測並拒絕 URL 百分比編碼的穿越序列、追蹤封裝內指向封裝外的 symlink、`TargetMode="External"` 一律拒絕、解析到目錄一律拒絕），逃出封裝或無法安全解析的關係會被具名拒絕、列在結果文字裡（`list_images` 也一併核對，不會讓同一個關係在列表裡看起來安全、匯出時卻被拒絕），不會被讀取或刪除，也不會靜默消失。
 - **一批未宣告 `enum`、但以固定值比對的字串參數，型別錯誤時不再靜默套用預設值**（#253）。涵蓋 `replace_text.scope`、`create_style.type`、`insert_section_break.type`、`add_header.type`、`add_footer.type`、`splice_omath_from_source`／`splice_paragraph_omath_from_source` 的 `rpr_mode`／`namespace_policy`、`set_paragraph_border.type`、`insert_date_field.type`、`insert_page_field.type`、`set_line_numbers.restart`、`set_line_numbers_for_section.restart`、`insert_symbol.position`、`insert_drop_cap.type`、`insert_horizontal_line.style`、`insert_caption.position`、`insert_tab_stop.alignment`／`.leader`、`add_row_to_table.position`、`add_column_to_table.position`、`set_cell_width.width_type`、`set_row_height.height_rule`（19 個工具、20 個參數位置）。其中 `create_style.type`／`add_header.type`／`add_footer.type`／`set_line_numbers.restart`／`set_line_numbers_for_section.restart`／`add_row_to_table.position`／`add_column_to_table.position` 過去連辨識不出的字串「值」都沒有拒絕路徑，現在型別與值皆會被拒絕；其餘工具過去已拒絕不合法的值，本次補上型別檢查。約 470 個其餘、以固定值比對的字串參數本輪未逐一盤點（盤點方法與完整清單見交付紀錄）。
 
 ### 升級注意
 
 - `replace_text`／`replace_text_batch` 的回應現在可能在主要 content 區塊之後多出一個以 `Advisory: ` 開頭的獨立 content 區塊，當替換文字含有宣告字型缺字形的字元時觸發。`isError` 不受影響；只讀第一個 content 區塊的呼叫端不受影響（#255）。
 - `export_all_images` 過去只匯出 document part 的圖片；現在也匯出 header／footer／chart 的圖片，輸出檔名可能因跨 part 撞名而被加上 `_2`／`_3` 等後綴——過去「輸出檔名＝原始檔名」的假設不再保證成立（#219）。
-- `list_images`／`export_all_images` 的結果文字現在可能多出一段「⚠ N image relationship(s) refused for security」——文件內宣告了跨出封裝或 `TargetMode="External"` 的圖片關係時觸發；這類關係本來就無法安全讀取，只是新增了明確揭露而非靜默略過（#219）。
+- `list_images`／`export_all_images` 的結果文字現在可能多出一段「⚠ N image relationship(s) refused for security」——header／footer／chart 的圖片關係宣告了跨出封裝、URL 編碼穿越、指向目錄、或 `TargetMode="External"` 時觸發；這類關係本來就無法安全讀取，只是新增了明確揭露而非靜默略過。過去 `list_images` 的 header／footer 行只顯示 `rel.target` 的檔名，不會反映這類關係其實無法匯出——現在會從一般列表移除、改列進這段拒絕清單，`list_images` 與 `export_all_images` 對同一個關係的判斷因此保持一致（#219）。
 - 上面列出的字串參數過去接受任意 JSON 型別（數字、布林、陣列……）並靜默套用預設值，現在型別錯誤會回 `isError`；`create_style.type`／`add_header.type`／`add_footer.type`／`set_line_numbers.restart`／`set_line_numbers_for_section.restart`／`add_row_to_table.position`／`add_column_to_table.position` 額外收緊：過去連拼字錯誤的值都會靜默套用預設值，現在也會回 `isError`（#253）。
 
 ## [4.8.0] - 2026-09-28
