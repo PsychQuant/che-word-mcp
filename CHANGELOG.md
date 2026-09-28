@@ -9,7 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [4.8.0] - 2026-09-28
 
-> 32 個寫側工具的 JSON 字面拒絕改為 `isError`；`execute_script` 驗證失敗的 body 改為 JSON；工具回應可能在主要內容之後多出 `Advisory: ` 區塊；讀取 .docx 套用解壓大小上限；`restrict_editing_region` 改為真的寫入（見文末「升級注意」）。依本專案先例 bump minor。
+> 32 個寫側工具的 JSON 字面拒絕改為 `isError`；`execute_script` 驗證失敗的 body 改為 JSON；工具回應可能在主要內容之後多出 `Advisory: ` 區塊；讀取 .docx 套用解壓大小上限；`restrict_editing_region` 改為真的寫入（見文末「升級注意」）。另外修正一個 4.7.0 已出貨的安全漏洞（見「Security」）。依本專案先例 bump minor。
+
+### Security
+
+- **`export_all_images`／`export_image` 不再能被惡意 .docx 用來讀取並匯出本機檔案**（ooxml-swift 3.18.1）。4.7.0 以前，document 本體的圖片關係 `Target` 若帶足夠的 `../`，`open_document` 會把封裝之外的本機檔案讀進記憶體，`export_all_images`／`export_image` 再把它寫進呼叫端指定的輸出目錄。現在 `Target` 依 OPC 規則解析，解開符號連結後必須落在封裝內且是一般檔案，`TargetMode="External"` 一律不讀；被拒絕的圖片不會出現在列表與匯出結果中。以真實 MCP 行程和惡意文件實測：修正前哨兵檔被匯出，修正後只匯出合法圖片；存檔後的 .docx 在修正前後都沒有嵌入這類內容。
 
 ### Added
 
