@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`list_images`／`export_all_images`／`export_image` 現在涵蓋 header／footer／chart 的圖片**（#219）。`list_images` 新增列出 chart part（`word/charts/chartN.xml`）的圖片關係；`export_all_images`／`export_image` 過去只匯出 document part 的圖片，只有 header／footer／chart 圖片的文件會回「No images to export」或「找不到圖片 ID」——現在兩者都會走訪 header／footer（既有的 typed 關係）與 chart（直接讀取 package 內的 `_rels/chartN.xml.rels`）的圖片。不同 part 若剛好宣告了同檔名的媒體檔，`export_all_images` 匯出時會替後匯出者加上 `_2`／`_3`…後綴避免覆寫，結果文字會具名列出哪些檔案被重新命名。
+- **`replace_text`／`replace_text_batch` 的替換文字若含有宣告字型缺字形的字元，現在會以 advisory 提示呼叫端**（#255）。接上 #189 的 `GlyphCoverageProbe`：依字元所屬 script 選出實際生效的 `<w:rFonts>` slot（ascii／hAnsi／eastAsia／cs），並解析 run 直接格式 → 字元樣式 → 段落樣式 → 文件預設樣式的繼承鏈找出宣告字型。只有確定「本機能解析該字型、且該字型缺這個字形」（`noGlyph`）才發 advisory；字型在本機無法解析（`unknown`，含在地化名稱、跨命名空間比對等既有的探測器邊界情況）絕不發出、更不會被說成「沒有字形」。Advisory 內容具名字元、宣告字型、建議改用 `■`(U+25A0)，並明說：只測過本機字型集、量測的是 regular 面（不隨 run 的粗斜體調整）、字型名稱比對可能因跨命名空間巧合誤判。
+
+### Fixed
+
+- **一批未宣告 `enum`、但以固定值比對的字串參數，型別錯誤時不再靜默套用預設值**（#253）。涵蓋 `replace_text.scope`、`create_style.type`、`insert_section_break.type`、`add_header.type`、`add_footer.type`、`splice_omath_from_source`／`splice_paragraph_omath_from_source` 的 `rpr_mode`／`namespace_policy`、`set_paragraph_border.type`、`insert_date_field.type`、`insert_page_field.type`、`set_line_numbers.restart`、`set_line_numbers_for_section.restart`、`insert_symbol.position`、`insert_drop_cap.type`、`insert_horizontal_line.style`、`insert_caption.position`、`insert_tab_stop.alignment`／`.leader`、`add_row_to_table.position`、`add_column_to_table.position`、`set_cell_width.width_type`、`set_row_height.height_rule`（19 個工具、20 個參數位置）。其中 `create_style.type`／`add_header.type`／`add_footer.type`／`set_line_numbers.restart`／`set_line_numbers_for_section.restart`／`add_row_to_table.position`／`add_column_to_table.position` 過去連辨識不出的字串「值」都沒有拒絕路徑，現在型別與值皆會被拒絕；其餘工具過去已拒絕不合法的值，本次補上型別檢查。約 470 個其餘、以固定值比對的字串參數本輪未逐一盤點（盤點方法與完整清單見交付紀錄）。
+
+### 升級注意
+
+- `replace_text`／`replace_text_batch` 的回應現在可能在主要 content 區塊之後多出一個以 `Advisory: ` 開頭的獨立 content 區塊，當替換文字含有宣告字型缺字形的字元時觸發。`isError` 不受影響；只讀第一個 content 區塊的呼叫端不受影響（#255）。
+- `export_all_images` 過去只匯出 document part 的圖片；現在也匯出 header／footer／chart 的圖片，輸出檔名可能因跨 part 撞名而被加上 `_2`／`_3` 等後綴——過去「輸出檔名＝原始檔名」的假設不再保證成立（#219）。
+- 上面列出的字串參數過去接受任意 JSON 型別（數字、布林、陣列……）並靜默套用預設值，現在型別錯誤會回 `isError`；`create_style.type`／`add_header.type`／`add_footer.type`／`set_line_numbers.restart`／`set_line_numbers_for_section.restart`／`add_row_to_table.position`／`add_column_to_table.position` 額外收緊：過去連拼字錯誤的值都會靜默套用預設值，現在也會回 `isError`（#253）。
+
 ## [4.8.0] - 2026-09-28
 
 > 32 個寫側工具的 JSON 字面拒絕改為 `isError`；`execute_script` 驗證失敗的 body 改為 JSON；工具回應可能在主要內容之後多出 `Advisory: ` 區塊；讀取 .docx 套用解壓大小上限；`restrict_editing_region` 改為真的寫入（見文末「升級注意」）。另外修正一個 4.7.0 已出貨的安全漏洞（見「Security」）。依本專案先例 bump minor。
