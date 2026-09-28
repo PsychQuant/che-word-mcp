@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`match_options.math_script_insensitive`：anchor／搜尋／取代比對可忽略 Unicode 數學上下標與重音差異**（#90／#150／#151／#152／#154，#115 驗證後續）。`insert_paragraph`／`insert_image_from_path`／`insert_equation`／`insert_caption` 的 `after_text`／`before_text`，以及 `search_text`／`search_text_batch`／`search_text_with_formatting`／`replace_text`／`replace_text_batch` 都新增 `match_options: { math_script_insensitive: bool }`。開啟後 `H₀`（Unicode 下標）與 `H0`（ASCII）視為相同，涵蓋數字/字母上下標（U+2070–U+209C 及 Latin-1 歷史上標 ²³¹）、Greek 下標（ᵦᵧᵨᵩᵪ）、以及重音符號（如 `X̄` 的 combining macron，經 NFD 分解後去除）；預設 `false`，不影響既有呼叫端。`search_text`／`search_text_with_formatting` 是雙向正規化（needle 與 haystack 都正規化）；`replace_text`／`replace_text_batch` 受限於需要對文件做位元組級定位替換，只在逐字（含既有的去空白備援）都找不到時，額外嘗試「只正規化 find」的單方向備援——涵蓋「find 打 Unicode、文件內容是 OMML 攤平出的 ASCII」這個 #90 原始案例，不涵蓋反方向。`match_options` 內打錯或未知的 key（如缺一個字母的 `math_script_insensitve`）一律回 `isError` 並具名，不再靜默忽略；schema 對 `additionalProperties` 為 `false`。Anchor 找不到、旗標未開、且 needle 含相關 Unicode 字元時，錯誤訊息會附上提示旗標存在的 hint；schema 描述誠實列舉支援的 Unicode 範圍與完整 mapping 位置，不再籠統宣稱「等價」。#90 原始的 H₀/H0 案例與診斷過程中額外點名但當時未涵蓋的 `X̄`（combining macron）皆已驗證涵蓋。
 - **`list_images`／`export_all_images`／`export_image` 現在涵蓋 header／footer／chart 的圖片**（#219）。`list_images` 新增列出 chart part（`word/charts/chartN.xml`）的圖片關係；`export_all_images`／`export_image` 過去只匯出 document part 的圖片，只有 header／footer／chart 圖片的文件會回「No images to export」或「找不到圖片 ID」——現在兩者都會走訪 header／footer（既有的 typed 關係）與 chart（直接讀取 package 內的 `_rels/chartN.xml.rels`）的圖片。不同 part 若剛好宣告了同檔名的媒體檔，`export_all_images` 匯出時會替後匯出者加上 `_2`／`_3`…後綴避免覆寫，結果文字會具名列出哪些檔案被重新命名。
 - **`replace_text`／`replace_text_batch` 的替換文字若含有宣告字型缺字形的字元，現在會以 advisory 提示呼叫端**（#255）。接上 #189 的 `GlyphCoverageProbe`：依字元所屬 script 選出實際生效的 `<w:rFonts>` slot（ascii／hAnsi／eastAsia／cs），並解析 run 直接格式 → 字元樣式 → 段落樣式 → 文件預設樣式的繼承鏈找出宣告字型。只有確定「本機能解析該字型、且該字型缺這個字形」（`noGlyph`）才發 advisory；字型在本機無法解析（`unknown`，含在地化名稱、跨命名空間比對等既有的探測器邊界情況）絕不發出、更不會被說成「沒有字形」。Advisory 內容具名字元、宣告字型、建議改用 `■`(U+25A0)，並明說：只測過本機字型集、量測的是 regular 面（不隨 run 的粗斜體調整）、字型名稱比對可能因跨命名空間巧合誤判。
 
@@ -20,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 升級注意
 
+- 新增 `match_options` 參數影響的九個工具（見上方 Added）：anchor 找不到時的錯誤訊息，在 needle 含 Unicode 數學上下標／重音字元且旗標未開時，現在會多附一句 hint；`search_text`／`search_text_with_formatting` 找到的結果現在可能多一行「(matched_form: math_script_normalized …)」標註（只在旗標開啟且逐字備援都落空時出現，此時 position／text 是正規化後座標）；`replace_text`／`replace_text_batch` 的回應／per-item 結果可能多一句「used match_options.math_script_insensitive normalization」的 NOTE。只讀取數量／是否成功的既有呼叫端不受影響；逐字解析整段訊息的呼叫端可能需要更新（#90／#150／#151）。
 - `set_page_borders` 過去（4.7.0 起）呼叫一律回 `isError`（未實作 stub）；現在會真的寫入 `<w:pgBorders>` 並回成功。過去能接受的寬鬆輸入（任意型別的 `color`、任意範圍的 `size`、未驗證的 `offset_from`）現在會被嚴格拒絕；新增 `space` 參數（點數，預設 24）（#256）。
 - `replace_text`／`replace_text_batch` 的回應現在可能在主要 content 區塊之後多出一個以 `Advisory: ` 開頭的獨立 content 區塊，當替換文字含有宣告字型缺字形的字元時觸發。`isError` 不受影響；只讀第一個 content 區塊的呼叫端不受影響（#255）。
 - `export_all_images` 過去只匯出 document part 的圖片；現在也匯出 header／footer／chart 的圖片，輸出檔名可能因跨 part 撞名而被加上 `_2`／`_3` 等後綴——過去「輸出檔名＝原始檔名」的假設不再保證成立（#219）。

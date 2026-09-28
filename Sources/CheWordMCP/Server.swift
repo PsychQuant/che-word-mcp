@@ -771,6 +771,110 @@ actor WordMCPServer {
         return value
     }
 
+    // MARK: - match_options (#90 / #115 follow-ups #150-#154)
+
+    /// #152 (Logic L1, PR #115 verify): the closed set of keys `match_options`
+    /// accepts. A single named constant so #150/#151's schema description and
+    /// #152's rejection logic can never drift apart from each other.
+    static let knownMatchOptionsKeys: Set<String> = ["math_script_insensitive"]
+
+    /// #150/#151/#152: parse and STRICTLY validate a tool's `match_options`
+    /// argument into an ooxml-swift `AnchorLookupOptions`. Absent/`null`
+    /// resolves to `.exact` (backward compatible — no existing caller has
+    /// ever sent this key). Three distinct rejections, each naming the
+    /// offending key/value (#240 shape):
+    /// - `match_options` present but not a JSON object → reject.
+    /// - any key inside it other than `math_script_insensitive` (a typo like
+    ///   `math_script_insensitve`, or an unrelated key) → reject BY NAME,
+    ///   never silently ignored (#152 — PR #115 verify Logic L1: a typo used
+    ///   to fall back to `.exact` with no signal the flag never took effect).
+    /// - `math_script_insensitive` present but not a boolean → reject.
+    static func parseAnchorLookupOptions(_ args: [String: Value], tool: String) throws -> AnchorLookupOptions {
+        guard let raw = args["match_options"] else { return .exact }
+        guard case .object(let opts) = raw else {
+            throw WordError.invalidParameter(
+                "match_options", "必須是物件（例如 {\"math_script_insensitive\": true}），不接受\(jsonTypeName(raw))"
+            )
+        }
+        let unknown = opts.keys.filter { !knownMatchOptionsKeys.contains($0) }
+        guard unknown.isEmpty else {
+            throw WordError.invalidParameter(
+                "match_options",
+                "不支援的 key：\(unknown.sorted().joined(separator: ", "))（目前只支援 "
+                    + "\(knownMatchOptionsKeys.sorted().joined(separator: ", "))；拼字錯誤的 key 一律拒絕，不會靜默忽略）"
+            )
+        }
+        switch opts["math_script_insensitive"] {
+        case nil, .null?:
+            return .exact
+        case .bool(let flag)?:
+            return AnchorLookupOptions(mathScriptInsensitive: flag)
+        case let other?:
+            throw WordError.invalidParameter(
+                "match_options.math_script_insensitive", "必須是布林值，不接受\(jsonTypeName(other))"
+            )
+        }
+    }
+
+    /// #150 (PR #115 verify, DA P2 #4/#5): the Unicode ranges this repo's
+    /// `math_script_insensitive` flag actually normalizes — kept in sync
+    /// BY HAND with ooxml-swift's `AnchorLookupOptions.mathScriptVariantMap`
+    /// (that table is `private` to ooxml-swift, so this is a deliberately
+    /// narrower, parallel detection set used ONLY to decide whether an
+    /// anchor-not-found error should mention the flag, never to perform any
+    /// matching itself — matching always goes through ooxml-swift or
+    /// `canonicalizeMathScriptVariants`, both of which are the actual
+    /// source of truth). Covers: subscript/superscript digits and letters
+    /// (U+2070–U+209C), the three legacy Latin-1 superscripts (U+00B2 ²,
+    /// U+00B3 ³, U+00B9 ¹), Greek subscripts (U+1D66–U+1D6A ᵦᵧᵨᵩᵪ), and
+    /// combining diacritics (U+0300–U+036F, e.g. the combining macron in
+    /// `X̄`) that `canonicalizeMathScriptVariants` strips via NFD.
+    static func containsMathScriptChars(_ text: String) -> Bool {
+        for scalar in text.unicodeScalars {
+            switch scalar.value {
+            case 0x2070...0x209C, 0x00B2, 0x00B3, 0x00B9, 0x1D66...0x1D6A, 0x0300...0x036F:
+                return true
+            default:
+                continue
+            }
+        }
+        return false
+    }
+
+    /// #150: builds the "text not found" refusal for anchor-based tools,
+    /// appending a discoverability hint (PR #115 verify DA P2 #4: "MCP
+    /// `text not found` error 沒提示有 `math_script_insensitive` flag，使用者
+    /// 照樣放棄") exactly when it would plausibly help: the flag is not
+    /// already on, AND the needle contains a character `math_script_insensitive`
+    /// would fold. A purely-ASCII needle that legitimately isn't in the
+    /// document never gets the hint (avoiding false hint spam — #150's own
+    /// test list names this negative case explicitly).
+    static func anchorNotFoundRefusal(
+        tool: String, searchText: String, instance: Int, options: AnchorLookupOptions
+    ) -> ToolRefusal {
+        var message = "\(tool): text '\(searchText)' not found (instance \(instance))"
+        if !options.mathScriptInsensitive && containsMathScriptChars(searchText) {
+            message += ". Hint: needle contains a Unicode math subscript/superscript or combining-accent "
+                + "character (e.g. ₀ ⁱ ᵦ X̄); try match_options.math_script_insensitive: true."
+        }
+        return ToolRefusal(message)
+    }
+
+    /// #151: `search_text`/`replace_text` and friends don't go through
+    /// ooxml-swift's `InsertLocation`/internal `AnchorLookupOptions.contains`
+    /// — they work off flattened plain text directly. `AnchorLookupOptions
+    /// .contains(_:in:)` itself is `internal` to ooxml-swift (module-private,
+    /// intentionally: it backs `findBodyChildContainingText`, not a public
+    /// string-matching utility), so this re-derives the identical behavior
+    /// from the PUBLIC `canonicalizeMathScriptVariants` — same normalization
+    /// table, same result, just recomposed at the call site instead of
+    /// calling a function this module cannot see.
+    static func mathScriptAwareContains(_ haystack: String, _ needle: String, options: AnchorLookupOptions) -> Bool {
+        guard options.mathScriptInsensitive else { return haystack.contains(needle) }
+        return AnchorLookupOptions.canonicalizeMathScriptVariants(haystack)
+            .contains(AnchorLookupOptions.canonicalizeMathScriptVariants(needle))
+    }
+
     /// R8 (independent fuzzer, `rev232b` H-234-3): `insert_table`/
     /// `insert_nested_table`'s `rows`/`cols` reach `Table(rowCount:
     /// columnCount:)` (ooxml-swift `Table.init`) completely unguarded,
@@ -1706,7 +1810,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "insert_paragraph",
-                description: "插入新段落（需先 open_document）。index 是 body.children 插入索引（top-level OOXML body child；計入 tables / block-level SDTs / bookmark markers / raw blocks）。v3.15.1+ 接受 after_text / before_text / text_instance / into_table_cell / after_image_id anchor（與 insert_image_from_path 對齊）；anchor 與 index 擇一，不傳則加到最後。v3.16.0+ 同時傳多個 anchor 會 return 「Error: insert_paragraph: received conflicting anchors: ...」（先前版本是 silent priority winner）。",
+                description: "插入新段落（需先 open_document）。index 是 body.children 插入索引（top-level OOXML body child；計入 tables / block-level SDTs / bookmark markers / raw blocks）。v3.15.1+ 接受 after_text / before_text / text_instance / into_table_cell / after_image_id anchor（與 insert_image_from_path 對齊）；anchor 與 index 擇一，不傳則加到最後。v3.16.0+ 同時傳多個 anchor 會 return 「Error: insert_paragraph: received conflicting anchors: ...」（先前版本是 silent priority winner）。#90/#115：after_text / before_text 支援 match_options.math_script_insensitive。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1736,7 +1840,7 @@ actor WordMCPServer {
                         ]),
                         "after_text": .object([
                             "type": .string("string"),
-                            "description": .string("在含此文字的段落**之後**插入新段落。substring match on flattened paragraph text（cross-run + 涵蓋 hyperlinks/fieldSimples/contentControls/alternateContents v3.14.5+）。配合 text_instance 指定第幾次出現（預設 1）。（anchor 擇一）")
+                            "description": .string("在含此文字的段落**之後**插入新段落。substring match on flattened paragraph text（cross-run + 涵蓋 hyperlinks/fieldSimples/contentControls/alternateContents v3.14.5+）。配合 text_instance 指定第幾次出現（預設 1）；配合 match_options 忽略數學上下標差異。（anchor 擇一）")
                         ]),
                         "before_text": .object([
                             "type": .string("string"),
@@ -1745,7 +1849,8 @@ actor WordMCPServer {
                         "text_instance": .object([
                             "type": .string("integer"),
                             "description": .string("after_text / before_text 的第 N 次匹配（1-based，預設 1）")
-                        ])
+                        ]),
+                        "match_options": Self.matchOptionsSchema
                     ]),
                     "required": .array([.string("doc_id"), .string("text")])
                 ])
@@ -1792,7 +1897,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "replace_text",
-                description: "搜尋並取代文字。v2.1+ cross-run 匹配自動生效；新增 scope / regex / match_case。BREAKING: all 參數已移除（現在恆為 replace-all）。（需先 open_document）\n\n【字元選擇】表單勾選請用 ■(U+25A0) 取代 □(U+25A1)，不要用 ☑(U+2611) 或 ☒(U+2612)。實測（本機當前版本）後兩者在 Times New Roman、Arial 與常見 CJK 字型中都沒有字形；缺字形時渲染器會改用別的字型——macOS 上通常是彩色 emoji 字型，其他平台可能是符號字型或 .notdef 方框——勾選框於是與表單其餘部分不一致。本工具不會改動 run 的字型宣告，但實際繪製的字型會變——所以逐格文字比對會全對、外觀卻是錯的。\n\n【跨 run 格式】match 到的文字若橫跨多個格式不同的 run（例如「符號 run＋標籤 run」的勾選列），find／replace 等長時會自動保留各段原本的格式；不等長、regex、或同一段落內有一個以上這種跨 run match 時無法安全拆分，回傳訊息會附上 WARNING 說明格式被合併，請自行檢查該處外觀（#190）。\n\n【空白字元】find 逐字比對找不到、且含空白字元時，會自動改用去除空白後的比對再試一次（解析後的文字模型偶爾會遺失純空白 run 的內容，見 #187）；命中時回傳訊息會附上 NOTE。replace 的內容一律照字面寫入，不受這個正規化影響——即使原文那段空白已經在解析時遺失，取代後新寫入的文字仍保留您在 replace 裡給的空白。",
+                description: "搜尋並取代文字。v2.1+ cross-run 匹配自動生效；新增 scope / regex / match_case。BREAKING: all 參數已移除（現在恆為 replace-all）。（需先 open_document）\n\n【字元選擇】表單勾選請用 ■(U+25A0) 取代 □(U+25A1)，不要用 ☑(U+2611) 或 ☒(U+2612)。實測（本機當前版本）後兩者在 Times New Roman、Arial 與常見 CJK 字型中都沒有字形；缺字形時渲染器會改用別的字型——macOS 上通常是彩色 emoji 字型，其他平台可能是符號字型或 .notdef 方框——勾選框於是與表單其餘部分不一致。本工具不會改動 run 的字型宣告，但實際繪製的字型會變——所以逐格文字比對會全對、外觀卻是錯的。\n\n【跨 run 格式】match 到的文字若橫跨多個格式不同的 run（例如「符號 run＋標籤 run」的勾選列），find／replace 等長時會自動保留各段原本的格式；不等長、regex、或同一段落內有一個以上這種跨 run match 時無法安全拆分，回傳訊息會附上 WARNING 說明格式被合併，請自行檢查該處外觀（#190）。\n\n【空白字元】find 逐字比對找不到、且含空白字元時，會自動改用去除空白後的比對再試一次（解析後的文字模型偶爾會遺失純空白 run 的內容，見 #187）；命中時回傳訊息會附上 NOTE。replace 的內容一律照字面寫入，不受這個正規化影響——即使原文那段空白已經在解析時遺失，取代後新寫入的文字仍保留您在 replace 裡給的空白。\n\n【數學上下標】#151：find 逐字（且去空白備援）都找不到、match_options.math_script_insensitive 為 true、且非 regex 時，會再試一次把 find 正規化成 ASCII 後的比對（例如 find: \"H₀\" 正規化成 \"H0\" 去比對）；命中時回傳訊息附 NOTE。這是單方向正規化（只正規化 find，不正規化文件內容），涵蓋「find 打 Unicode 上下標、文件內容是 OMML 攤平出的 ASCII」這個常見案例，不涵蓋反方向（文件內容本身就是 Unicode 上下標、find 打 ASCII）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1819,7 +1924,8 @@ actor WordMCPServer {
                         "match_case": .object([
                             "type": .string("boolean"),
                             "description": .string("是否區分大小寫（預設 true）")
-                        ])
+                        ]),
+                        "match_options": Self.matchOptionsSchema
                     ]),
                     "required": .array([.string("doc_id"), .string("find"), .string("replace")])
                 ])
@@ -1834,9 +1940,10 @@ actor WordMCPServer {
                             "type": .string("string"),
                             "description": .string("文件識別碼")
                         ]),
+                        "match_options": Self.matchOptionsSchema,
                         "replacements": .object([
                             "type": .string("array"),
-                            "description": .string("取代清單。每項 format: { find: string, replace: string, scope?: 'body'|'all', regex?: bool, match_case?: bool }。item-level 設定 override default。"),
+                            "description": .string("取代清單。每項 format: { find: string, replace: string, scope?: 'body'|'all', regex?: bool, match_case?: bool, match_options?: object }。item-level 設定 override default（見 replace_text 的 match_options 說明，含單方向正規化的限制）。"),
                             "items": .object([
                                 "type": .string("object"),
                                 "properties": .object([
@@ -1844,7 +1951,8 @@ actor WordMCPServer {
                                     "replace": .object(["type": .string("string")]),
                                     "scope": .object(["type": .string("string"), "enum": .array([.string("body"), .string("all")])]),
                                     "regex": .object(["type": .string("boolean")]),
-                                    "match_case": .object(["type": .string("boolean")])
+                                    "match_case": .object(["type": .string("boolean")]),
+                                    "match_options": Self.matchOptionsSchema
                                 ]),
                                 "required": .array([.string("find"), .string("replace")])
                             ])
@@ -2751,6 +2859,7 @@ actor WordMCPServer {
                             "type": .string("integer"),
                             "description": .string("after_text / before_text 的第 N 次匹配（1-based，預設 1）")
                         ]),
+                        "match_options": Self.matchOptionsSchema,
                         "name": .object([
                             "type": .string("string"),
                             "description": .string("圖片名稱（可選，用於替代文字）")
@@ -3616,7 +3725,8 @@ actor WordMCPServer {
                         "text_instance": .object([
                             "type": .string("integer"),
                             "description": .string("after_text / before_text 的第 N 次匹配（1-based，預設 1）")
-                        ])
+                        ]),
+                        "match_options": Self.matchOptionsSchema
                     ]),
                     "required": .array([.string("doc_id")])
                 ])
@@ -4809,7 +4919,7 @@ actor WordMCPServer {
             // 9.3 search_text - 搜尋文字並返回位置
             Tool(
                 name: "search_text",
-                description: "在文件中搜尋指定文字，返回所有符合的位置（支援 Direct Mode）。巢狀表格內容也會被搜尋，座標會標成「Table N, row R, col C > nested table K, row r, col c」（#188）。逐字比對找不到、且 query 含空白時，會自動改用去除空白後的比對再試一次；命中時結果會標註「(normalized match ...)」——解析後的文字模型偶爾會遺失純空白 run 的內容（已知的上游解析限制，見 #187），這個備援讓從原始 XML／pandoc／python-docx 擷取出來、含空白的查詢字串仍能命中，但回報的座標／文字仍以（可能已遺失空白的）解析後文字為準。",
+                description: "在文件中搜尋指定文字，返回所有符合的位置（支援 Direct Mode）。巢狀表格內容也會被搜尋，座標會標成「Table N, row R, col C > nested table K, row r, col c」（#188）。逐字比對找不到、且 query 含空白時，會自動改用去除空白後的比對再試一次；命中時結果會標註「(normalized match ...)」——解析後的文字模型偶爾會遺失純空白 run 的內容（已知的上游解析限制，見 #187），這個備援讓從原始 XML／pandoc／python-docx 擷取出來、含空白的查詢字串仍能命中，但回報的座標／文字仍以（可能已遺失空白的）解析後文字為準。#151：逐字比對找不到、且 match_options.math_script_insensitive 為 true 時，會另外試一次 Unicode 數學上下標正規化後的比對；命中時標註「(matched_form: math_script_normalized ...)」，此時 position／text 是正規化後字串的座標，不是原始 run 文字（只在逐字與空白備援都落空時才嘗試，避免同一筆命中被算兩次）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -4828,7 +4938,8 @@ actor WordMCPServer {
                         "case_sensitive": .object([
                             "type": .string("boolean"),
                             "description": .string("是否區分大小寫（預設 false）")
-                        ])
+                        ]),
+                        "match_options": Self.matchOptionsSchema
                     ]),
                     "required": .array([.string("query")])
                 ])
@@ -4876,7 +4987,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "search_text_batch",
-                description: "批次文字搜尋（減少 per-call round-trip）。每個 query 產出 { query, matches: [positions] }。Session Mode 需先 open_document；Direct Mode 傳 source_path 免開。",
+                description: "批次文字搜尋（減少 per-call round-trip）。每個 query 產出 { query, matches: [positions] }。Session Mode 需先 open_document；Direct Mode 傳 source_path 免開。#151：頂層 match_options 套用到所有 query（每項也可各自用 { query, match_options } 覆寫）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -4888,9 +4999,10 @@ actor WordMCPServer {
                             "type": .string("string"),
                             "description": .string("檔案路徑（Direct Mode，免開啟）")
                         ]),
+                        "match_options": Self.matchOptionsSchema,
                         "queries": .object([
                             "type": .string("array"),
-                            "description": .string("query 陣列。每項可為 plain string 或 { query: string, case_sensitive?: bool } object。"),
+                            "description": .string("query 陣列。每項可為 plain string 或 { query: string, case_sensitive?: bool, match_options?: object } object。"),
                             // #236: each item is EITHER a plain string OR an
                             // object — `anyOf`/`oneOf` composition is
                             // avoidable-by-precedent (see this file's other
@@ -5176,7 +5288,7 @@ actor WordMCPServer {
             // 9.16 search_text_with_formatting - 搜尋文字並顯示格式
             Tool(
                 name: "search_text_with_formatting",
-                description: "搜尋文字並返回匹配位置及其格式標記（粗體、斜體、顏色等）",
+                description: "搜尋文字並返回匹配位置及其格式標記（粗體、斜體、顏色等）。#151：逐字比對找不到、且 match_options.math_script_insensitive 為 true 時，會另外試一次 Unicode 數學上下標正規化後的比對（context 會標成正規化後座標）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -5195,7 +5307,8 @@ actor WordMCPServer {
                         "context_chars": .object([
                             "type": .string("integer"),
                             "description": .string("顯示匹配位置前後多少字元（預設 20）")
-                        ])
+                        ]),
+                        "match_options": Self.matchOptionsSchema
                     ]),
                     "required": .array([.string("doc_id"), .string("query")])
                 ])
@@ -6212,6 +6325,7 @@ actor WordMCPServer {
                             "type": .string("integer"),
                             "description": .string("after_text / before_text 的第 N 次匹配（1-based，預設 1）")
                         ]),
+                        "match_options": Self.matchOptionsSchema,
                         "position": .object([
                             "type": .string("string"),
                             "description": .string("搭配 paragraph_index 使用：above（上方）、below（下方，預設）")
@@ -8801,6 +8915,10 @@ actor WordMCPServer {
         // takes the earlier branch and the last `else if let index = ...`
         // is simply never evaluated.
         let indexArg = try optionalInt(args, "index")
+        // #90/#115/#150: parsed unconditionally (same reasoning as
+        // `indexArg` above) so a malformed `match_options` is always
+        // rejected, even alongside a higher-priority anchor.
+        let matchOptions = try Self.parseAnchorLookupOptions(args, tool: "insert_paragraph")
         let resultMessage: String
 
         if let cellDict = args["into_table_cell"]?.objectValue {
@@ -8834,17 +8952,21 @@ actor WordMCPServer {
             }
         } else if let afterText = args["after_text"]?.stringValue {
             do {
-                try doc.insertParagraph(para, at: .afterText(afterText, instance: textInstance))
+                try doc.insertParagraph(para, at: .afterText(afterText, instance: textInstance, options: matchOptions))
                 resultMessage = "Inserted paragraph after text '\(afterText)' (instance \(textInstance))"
             } catch let InsertLocationError.textNotFound(searchText, instance) {
-                throw ToolRefusal("insert_paragraph: text '\(searchText)' not found (instance \(instance))")
+                throw WordMCPServer.anchorNotFoundRefusal(
+                    tool: "insert_paragraph", searchText: searchText, instance: instance, options: matchOptions
+                )
             }
         } else if let beforeText = args["before_text"]?.stringValue {
             do {
-                try doc.insertParagraph(para, at: .beforeText(beforeText, instance: textInstance))
+                try doc.insertParagraph(para, at: .beforeText(beforeText, instance: textInstance, options: matchOptions))
                 resultMessage = "Inserted paragraph before text '\(beforeText)' (instance \(textInstance))"
             } catch let InsertLocationError.textNotFound(searchText, instance) {
-                throw ToolRefusal("insert_paragraph: text '\(searchText)' not found (instance \(instance))")
+                throw WordMCPServer.anchorNotFoundRefusal(
+                    tool: "insert_paragraph", searchText: searchText, instance: instance, options: matchOptions
+                )
             }
         } else if let index = indexArg {
             doc.insertParagraph(para, at: index)
@@ -9267,27 +9389,57 @@ actor WordMCPServer {
     /// find/query against the same document, both tools now always agree on
     /// whether a normalized match exists.
     private func replaceTextWithWhitespaceFallback(
-        doc: inout WordDocument, find: String, replacement: String, options: ReplaceOptions
-    ) throws -> (count: Int, repaired: Int, collapsedUnrepaired: Int, usedNormalizedFallback: Bool) {
+        doc: inout WordDocument, find: String, replacement: String, options: ReplaceOptions,
+        matchOptions: AnchorLookupOptions = .exact
+    ) throws -> (count: Int, repaired: Int, collapsedUnrepaired: Int, usedNormalizedFallback: Bool, usedMathScriptFallback: Bool) {
         let (count, repaired, collapsedUnrepaired) = try replaceTextPreservingCrossRunFormat(
             doc: &doc, find: find, replacement: replacement, options: options
         )
-        guard count == 0, !options.regex, find.contains(where: isWhitespaceCharacter) else {
-            return (count, repaired, collapsedUnrepaired, false)
+        if count == 0, !options.regex, find.contains(where: isWhitespaceCharacter) {
+            let strippedFind = stripWhitespace(find)
+            if !strippedFind.isEmpty, strippedFind != find {
+                let (retryCount, retryRepaired, retryCollapsed) = try replaceTextPreservingCrossRunFormat(
+                    doc: &doc, find: strippedFind, replacement: replacement, options: options
+                )
+                if retryCount > 0 {
+                    return (retryCount, retryRepaired, retryCollapsed, true, false)
+                }
+                // Normalizing didn't help either — fall through to try the
+                // math-script fallback below (or report the original zero).
+            }
         }
-        let strippedFind = stripWhitespace(find)
-        guard !strippedFind.isEmpty, strippedFind != find else {
-            return (count, repaired, collapsedUnrepaired, false)
+        // #151: math-script fallback — same "only tried when the literal
+        // pass found nothing" gating as the whitespace fallback above, tried
+        // AFTER it (not instead of), since #90's core case (an anchor typed
+        // with the Unicode glyph, e.g. `H₀`, against an OMML-flattened ASCII
+        // haystack like `H0`) is a DIFFERENT kind of mismatch than missing
+        // whitespace. This canonicalizes ONLY `find`, not the document's
+        // haystack — unlike the anchor-based tools above (which get true
+        // BIDIRECTIONAL matching for free from ooxml-swift's internal
+        // `AnchorLookupOptions.contains`), `replace_text` has to hand a
+        // literal string to `replaceTextPreservingCrossRunFormat` (which
+        // needs an exact byte-range to splice), and there is no public
+        // ooxml-swift API to search a haystack in canonicalized space and
+        // get back an original-space range. This ONE-DIRECTIONAL retry
+        // therefore only helps when the caller's `find` needed
+        // canonicalizing to become ASCII — the common case, since OMML
+        // flatten emits ASCII (`H0`, not `H₀`) per ooxml-swift's own
+        // documented Path-B design choice — NOT the reverse case (a plain
+        // text run genuinely contains a literal Unicode subscript character
+        // and the caller searched with the ASCII form). That residual gap
+        // is intentional and documented in #151's report, not an oversight.
+        if count == 0, matchOptions.mathScriptInsensitive, !options.regex {
+            let canonFind = AnchorLookupOptions.canonicalizeMathScriptVariants(find)
+            if !canonFind.isEmpty, canonFind != find {
+                let (retryCount, retryRepaired, retryCollapsed) = try replaceTextPreservingCrossRunFormat(
+                    doc: &doc, find: canonFind, replacement: replacement, options: options
+                )
+                if retryCount > 0 {
+                    return (retryCount, retryRepaired, retryCollapsed, false, true)
+                }
+            }
         }
-        let (retryCount, retryRepaired, retryCollapsed) = try replaceTextPreservingCrossRunFormat(
-            doc: &doc, find: strippedFind, replacement: replacement, options: options
-        )
-        guard retryCount > 0 else {
-            // Normalizing didn't help either — report the original (zero)
-            // outcome rather than a confusing "replaced 0 via fallback".
-            return (count, repaired, collapsedUnrepaired, false)
-        }
-        return (retryCount, retryRepaired, retryCollapsed, true)
+        return (count, repaired, collapsedUnrepaired, false, false)
     }
 
     /// replace_text MCP tool — now flatten-then-map + scope + regex.
@@ -9334,11 +9486,13 @@ actor WordMCPServer {
         let scope: ReplaceScope = (scopeString == "all") ? .all : .bodyAndTables
         let regex = try optionalBool(args, "regex") ?? false
         let matchCase = try optionalBool(args, "match_case") ?? true
+        // #151: parsed unconditionally, same reasoning as elsewhere.
+        let matchOptions = try Self.parseAnchorLookupOptions(args, tool: "replace_text")
 
         let options = ReplaceOptions(scope: scope, regex: regex, matchCase: matchCase)
         do {
-            let (count, repaired, collapsedUnrepaired, usedNormalizedFallback) = try replaceTextWithWhitespaceFallback(
-                doc: &doc, find: find, replacement: replace, options: options
+            let (count, repaired, collapsedUnrepaired, usedNormalizedFallback, usedMathScriptFallback) = try replaceTextWithWhitespaceFallback(
+                doc: &doc, find: find, replacement: replace, options: options, matchOptions: matchOptions
             )
             try await storeDocument(doc, for: docId)
             // #255: wire #189's glyph-coverage probe into the #192 advisory
@@ -9354,7 +9508,10 @@ actor WordMCPServer {
             let normalizedNote = usedNormalizedFallback
                 ? "; NOTE: literal text had no match, used whitespace-normalized matching instead (#187) — a whitespace-only run may be missing from the parsed document; please verify the surrounding layout"
                 : ""
-            return "Replaced \(count) occurrence(s) of '\(find)' with '\(replace)'\(scopeLabel)\(repairSummary)\(normalizedNote)"
+            let mathScriptNote = usedMathScriptFallback
+                ? "; NOTE: literal text had no match, used match_options.math_script_insensitive normalization instead (#151) — 'find' was canonicalized to match the document's flattened form, not the other way around"
+                : ""
+            return "Replaced \(count) occurrence(s) of '\(find)' with '\(replace)'\(scopeLabel)\(repairSummary)\(normalizedNote)\(mathScriptNote)"
         } catch ReplaceError.invalidRegex(let pattern) {
             throw ToolRefusal("invalid regex pattern '\(pattern)'")
         }
@@ -9372,6 +9529,7 @@ actor WordMCPServer {
         for (idx, qValue) in queriesValue.enumerated() {
             let queryStr: String
             let caseSensitive: Bool
+            var perItemMatchOptions: Value?
             switch qValue {
             case .string(let s):
                 queryStr = s
@@ -9395,6 +9553,13 @@ actor WordMCPServer {
                     continue
                 }
                 queryStr = q
+                // #151: per-item match_options overrides the batch-level
+                // default set below (mirrors case_sensitive's per-item
+                // override). Absent → the top-level value copied via
+                // `subArgs = args` below is left untouched.
+                if let itemMatchOptions = obj["match_options"] {
+                    perItemMatchOptions = itemMatchOptions
+                }
             default:
                 output += "\n=== [\(idx)] FAIL: query must be string or object ===\n"
                 continue
@@ -9404,6 +9569,9 @@ actor WordMCPServer {
             var subArgs = args
             subArgs["query"] = .string(queryStr)
             subArgs["case_sensitive"] = .bool(caseSensitive)
+            if let perItemMatchOptions {
+                subArgs["match_options"] = perItemMatchOptions
+            }
             subArgs.removeValue(forKey: "queries")
 
             do {
@@ -9438,6 +9606,9 @@ actor WordMCPServer {
         }
         let stopOnFirstFailure = try optionalBool(args, "stop_on_first_failure") ?? false
         let dryRun = try optionalBool(args, "dry_run") ?? false
+        // #151: batch-level default; each item may override via its own
+        // `match_options` (mirrors `scope`/`regex`/`match_case` below).
+        let defaultMatchOptions = try Self.parseAnchorLookupOptions(args, tool: "replace_text_batch")
 
         var results: [[String: Any]] = []
         var succeeded = 0
@@ -9502,10 +9673,21 @@ actor WordMCPServer {
             }
             let scope: ReplaceScope = (scopeString == "all") ? .all : .bodyAndTables
             let options = ReplaceOptions(scope: scope, regex: regex, matchCase: matchCase)
+            // #151: per-item override, same soft-fail shape as `scope` above.
+            let itemMatchOptions: AnchorLookupOptions
+            do {
+                itemMatchOptions = item["match_options"] != nil
+                    ? try Self.parseAnchorLookupOptions(item, tool: "replace_text_batch")
+                    : defaultMatchOptions
+            } catch {
+                results.append(["index": idx, "error": "\(error)", "find": find])
+                failed += 1
+                if stopOnFirstFailure { break } else { continue }
+            }
 
             do {
-                let (count, repaired, collapsedUnrepaired, usedNormalizedFallback) = try replaceTextWithWhitespaceFallback(
-                    doc: &doc, find: find, replacement: replace, options: options
+                let (count, repaired, collapsedUnrepaired, usedNormalizedFallback, usedMathScriptFallback) = try replaceTextWithWhitespaceFallback(
+                    doc: &doc, find: find, replacement: replace, options: options, matchOptions: itemMatchOptions
                 )
                 // #255: same wiring as `replace_text` — see that call site's
                 // comment and `GlyphCoverageAdvisory.swift`.
@@ -9520,6 +9702,7 @@ actor WordMCPServer {
                     "index": idx, "find": find, "replaced_count": count,
                     "cross_run_repaired": repaired, "cross_run_collapsed_unrepaired": collapsedUnrepaired,
                     "used_normalized_fallback": usedNormalizedFallback,
+                    "used_math_script_fallback": usedMathScriptFallback,
                 ])
                 succeeded += 1
             } catch ReplaceError.invalidRegex(let pattern) {
@@ -9558,7 +9741,11 @@ actor WordMCPServer {
                 let normalizedNote = usedNormalizedFallback
                     ? "; NOTE: used whitespace-normalized matching (#187)"
                     : ""
-                summary += "  [\(idx)] '\(find)' → \(count) replaced\(crossRunRepairSummary(repaired: repaired, collapsedUnrepaired: collapsedUnrepaired))\(normalizedNote)\n"
+                let usedMathScriptFallback = r["used_math_script_fallback"] as? Bool ?? false
+                let mathScriptNote = usedMathScriptFallback
+                    ? "; NOTE: used match_options.math_script_insensitive normalization (#151)"
+                    : ""
+                summary += "  [\(idx)] '\(find)' → \(count) replaced\(crossRunRepairSummary(repaired: repaired, collapsedUnrepaired: collapsedUnrepaired))\(normalizedNote)\(mathScriptNote)\n"
             }
         }
         return summary
@@ -11282,6 +11469,8 @@ actor WordMCPServer {
         // supplied alongside a HIGHER-priority anchor (e.g. `after_text`)
         // used to never be reached at all.
         let indexArg = try optionalInt(args, "index")
+        // #90/#115/#150: parsed unconditionally, same reasoning as `indexArg`.
+        let matchOptions = try Self.parseAnchorLookupOptions(args, tool: "insert_image_from_path")
         if let cellDict = args["into_table_cell"]?.objectValue {
             // F5 (v3.15.1): malformed partial dict returns structured error instead of silent fallthrough.
             // #232 R4: each field parsed independently (not chained in one
@@ -11329,12 +11518,14 @@ actor WordMCPServer {
                     path: effectivePath,
                     widthPx: width,
                     heightPx: height,
-                    at: .afterText(afterText, instance: textInstance),
+                    at: .afterText(afterText, instance: textInstance, options: matchOptions),
                     name: name,
                     description: description
                 )
             } catch let InsertLocationError.textNotFound(text, instance) {
-                throw ToolRefusal("insert_image_from_path: text '\(text)' not found (instance \(instance))")
+                throw WordMCPServer.anchorNotFoundRefusal(
+                    tool: "insert_image_from_path", searchText: text, instance: instance, options: matchOptions
+                )
             }
         } else if let beforeText = args["before_text"]?.stringValue {
             do {
@@ -11342,12 +11533,14 @@ actor WordMCPServer {
                     path: effectivePath,
                     widthPx: width,
                     heightPx: height,
-                    at: .beforeText(beforeText, instance: textInstance),
+                    at: .beforeText(beforeText, instance: textInstance, options: matchOptions),
                     name: name,
                     description: description
                 )
             } catch let InsertLocationError.textNotFound(text, instance) {
-                throw ToolRefusal("insert_image_from_path: text '\(text)' not found (instance \(instance))")
+                throw WordMCPServer.anchorNotFoundRefusal(
+                    tool: "insert_image_from_path", searchText: text, instance: instance, options: matchOptions
+                )
             }
         } else {
             // body-level: use legacy index-based API
@@ -12639,6 +12832,11 @@ actor WordMCPServer {
         if let explicit = try optionalInt(args, "text_instance"), explicit < 1 {
             throw ToolRefusal("insert_equation: text_instance must be ≥ 1, got \(explicit).")
         }
+        // #90/#115/#150: parsed unconditionally, same reasoning as elsewhere
+        // in this function — a malformed `match_options` must be rejected
+        // even when supplied alongside an anchor that turns out invalid for
+        // another reason (e.g. inline mode + after_text together).
+        let matchOptions = try Self.parseAnchorLookupOptions(args, tool: "insert_equation")
 
         // Anchors only meaningful in display mode (block-level new paragraph).
         // Inline mode appends an OMML run into an existing paragraph; anchor
@@ -12693,10 +12891,10 @@ actor WordMCPServer {
             location = .afterImageId(afterImageId)
             anchorInfo = "after image '\(afterImageId)'"
         } else if displayMode, let afterText = afterText {
-            location = .afterText(afterText, instance: textInstance)
+            location = .afterText(afterText, instance: textInstance, options: matchOptions)
             anchorInfo = "after text '\(afterText)' (instance \(textInstance))"
         } else if displayMode, let beforeText = beforeText {
-            location = .beforeText(beforeText, instance: textInstance)
+            location = .beforeText(beforeText, instance: textInstance, options: matchOptions)
             anchorInfo = "before text '\(beforeText)' (instance \(textInstance))"
         } else {
             // Display mode with no explicit anchor appends at end by passing
@@ -12795,7 +12993,9 @@ actor WordMCPServer {
         } catch let InsertLocationError.imageIdNotFound(rId) {
             throw ToolRefusal("insert_equation: image rId '\(rId)' not found")
         } catch let InsertLocationError.textNotFound(searchText, instance) {
-            throw ToolRefusal("insert_equation: text '\(searchText)' not found (instance \(instance))")
+            throw WordMCPServer.anchorNotFoundRefusal(
+                tool: "insert_equation", searchText: searchText, instance: instance, options: matchOptions
+            )
         } catch let InsertLocationError.invalidParagraphIndex(idx) {
             throw ToolRefusal("insert_equation: paragraph_index \(idx) out of range")
         }
@@ -14961,12 +15161,23 @@ actor WordMCPServer {
         let (doc, _) = try await resolveDocument(args: args)
 
         let caseSensitive = try optionalBool(args, "case_sensitive") ?? false
+        // #151: parsed unconditionally (same reasoning as the other tools in
+        // this batch — a malformed match_options must never be silently
+        // ignored just because the rest of the call would otherwise succeed).
+        let matchOptions = try Self.parseAnchorLookupOptions(args, tool: "search_text")
 
         struct SearchResult {
             let location: String
             let startPosition: Int
             let text: String
             let normalized: Bool
+            /// #151: true when this hit was only found via
+            /// `match_options.math_script_insensitive` canonicalization —
+            /// `startPosition`/`text` are then in the CANONICALIZED string's
+            /// coordinate space (e.g. an `X̄`'s combining macron is stripped),
+            /// not the original run text, since mapping a canonicalized range
+            /// back to original byte offsets is not implemented.
+            let mathScriptMatch: Bool
         }
 
         var results: [SearchResult] = []
@@ -14980,7 +15191,34 @@ actor WordMCPServer {
             while let range = haystack.range(of: needle, range: searchStart..<haystack.endIndex) {
                 let position = haystack.distance(from: haystack.startIndex, to: range.lowerBound)
                 let matchedText = String(paraText[range])
-                results.append(SearchResult(location: location, startPosition: position, text: matchedText, normalized: false))
+                results.append(SearchResult(location: location, startPosition: position, text: matchedText, normalized: false, mathScriptMatch: false))
+                searchStart = range.upperBound
+            }
+        }
+
+        // #151: math-script fallback pass — same "only tried when the exact
+        // pass found nothing" layering as the #187 whitespace fallback below,
+        // and for the same reason: avoiding double-counting a hit that the
+        // exact pass already reported (e.g. the caller typed the ASCII form
+        // and it is ALSO literally present verbatim). Canonicalizes BOTH
+        // haystack and needle via the same `AnchorLookupOptions
+        // .canonicalizeMathScriptVariants` ooxml-swift uses internally for
+        // anchor lookup (`AnchorLookupOptions.contains`, which this module
+        // cannot call directly — it is `internal` to ooxml-swift — so this
+        // re-derives the identical behavior from the public canonicalizer).
+        func searchInParagraphMathScript(_ para: Paragraph, location: String, canonQuery: String) {
+            let paraText = para.getText()
+            guard !paraText.isEmpty else { return }
+            let canonHaystack = AnchorLookupOptions.canonicalizeMathScriptVariants(paraText)
+            let haystack = caseSensitive ? canonHaystack : canonHaystack.lowercased()
+            let needle = caseSensitive ? canonQuery : canonQuery.lowercased()
+            guard !needle.isEmpty else { return }
+
+            var searchStart = haystack.startIndex
+            while let range = haystack.range(of: needle, range: searchStart..<haystack.endIndex) {
+                let position = haystack.distance(from: haystack.startIndex, to: range.lowerBound)
+                let matchedText = String(canonHaystack[range])
+                results.append(SearchResult(location: location, startPosition: position, text: matchedText, normalized: false, mathScriptMatch: true))
                 searchStart = range.upperBound
             }
         }
@@ -15015,7 +15253,7 @@ actor WordMCPServer {
             while let range = haystack.range(of: needle, range: searchStart..<haystack.endIndex) {
                 let position = haystack.distance(from: haystack.startIndex, to: range.lowerBound)
                 let matchedText = String(paraText[range])
-                results.append(SearchResult(location: location, startPosition: position, text: matchedText, normalized: true))
+                results.append(SearchResult(location: location, startPosition: position, text: matchedText, normalized: true, mathScriptMatch: false))
                 searchStart = range.upperBound
             }
         }
@@ -15026,11 +15264,13 @@ actor WordMCPServer {
         // Recursive walker so block-level SDT wrappers (#44) are transparent
         // for search purposes — matches inside SDT children appear with the
         // same paragraph/table index numbering as plain body siblings.
-        func walk(_ children: [BodyChild], normalizedQuery: String?) {
+        func walk(_ children: [BodyChild], normalizedQuery: String?, canonQuery: String? = nil) {
             for child in children {
                 switch child {
                 case .paragraph(let para):
-                    if let normalizedQuery {
+                    if let canonQuery {
+                        searchInParagraphMathScript(para, location: "Paragraph \(paraIndex)", canonQuery: canonQuery)
+                    } else if let normalizedQuery {
                         searchInParagraphNormalized(para, location: "Paragraph \(paraIndex)", strippedQuery: normalizedQuery)
                     } else {
                         searchInParagraph(para, location: "Paragraph \(paraIndex)")
@@ -15041,7 +15281,9 @@ actor WordMCPServer {
                         for (cellIdx, cell) in row.cells.enumerated() {
                             let cellLocation = "Table \(tableIndex), row \(rowIdx), col \(cellIdx)"
                             for para in cell.paragraphs {
-                                if let normalizedQuery {
+                                if let canonQuery {
+                                    searchInParagraphMathScript(para, location: cellLocation, canonQuery: canonQuery)
+                                } else if let normalizedQuery {
                                     searchInParagraphNormalized(para, location: cellLocation, strippedQuery: normalizedQuery)
                                 } else {
                                     searchInParagraph(para, location: cellLocation)
@@ -15050,7 +15292,9 @@ actor WordMCPServer {
                             // #188: nested tables were previously invisible
                             // to search_text — not just mis-numbered.
                             walkNestedTables(in: cell, pathPrefix: cellLocation) { nestedPara, nestedLocation in
-                                if let normalizedQuery {
+                                if let canonQuery {
+                                    searchInParagraphMathScript(nestedPara, location: nestedLocation, canonQuery: canonQuery)
+                                } else if let normalizedQuery {
                                     searchInParagraphNormalized(nestedPara, location: nestedLocation, strippedQuery: normalizedQuery)
                                 } else {
                                     searchInParagraph(nestedPara, location: nestedLocation)
@@ -15060,7 +15304,7 @@ actor WordMCPServer {
                     }
                     tableIndex += 1
                 case .contentControl(_, children: let inner):
-                    walk(inner, normalizedQuery: normalizedQuery)
+                    walk(inner, normalizedQuery: normalizedQuery, canonQuery: canonQuery)
                 case .bookmarkMarker, .rawBlockElement:
                     // ooxml-swift v0.19.6+ (#58): body-level markers carry no
                     // searchable text — skip.
@@ -15069,6 +15313,18 @@ actor WordMCPServer {
             }
         }
         walk(doc.body.children, normalizedQuery: nil)
+
+        // #151: only attempted when the exact pass found nothing AND the
+        // flag is on AND canonicalizing the query actually changes it
+        // (otherwise it's identical work the exact pass above already did).
+        if results.isEmpty, matchOptions.mathScriptInsensitive {
+            let canonQuery = AnchorLookupOptions.canonicalizeMathScriptVariants(query)
+            if !canonQuery.isEmpty, canonQuery != query {
+                paraIndex = 0
+                tableIndex = 0
+                walk(doc.body.children, normalizedQuery: nil, canonQuery: canonQuery)
+            }
+        }
 
         // #187: only attempted when the literal pass found nothing AND the
         // query actually contains whitespace (otherwise stripping changes
@@ -15088,9 +15344,15 @@ actor WordMCPServer {
 
         var output = "Found \(results.count) match(es) for '\(query)':\n"
         for result in results {
-            let suffix = result.normalized
-                ? " (normalized match — the parsed document text has NO whitespace between these characters even though the query does; a whitespace-only run may be missing from the parsed document, see search_text's tool description)"
-                : ""
+            let suffix: String
+            if result.mathScriptMatch {
+                suffix = " (matched_form: math_script_normalized — only found via match_options.math_script_insensitive; "
+                    + "position/text are in the canonicalized-text coordinate space, not the original run text)"
+            } else if result.normalized {
+                suffix = " (normalized match — the parsed document text has NO whitespace between these characters even though the query does; a whitespace-only run may be missing from the parsed document, see search_text's tool description)"
+            } else {
+                suffix = ""
+            }
             output += "- \(result.location), position \(result.startPosition): \"\(result.text)\"\(suffix)\n"
         }
         return output
@@ -15769,6 +16031,8 @@ actor WordMCPServer {
         }
 
         let caseSensitive = try optionalBool(args, "case_sensitive") ?? false
+        // #151: parsed unconditionally, same reasoning as `search_text`.
+        let matchOptions = try Self.parseAnchorLookupOptions(args, tool: "search_text_with_formatting")
         // #234 (full-file audit, beyond the issue's 8 listed sites): this
         // was the only `context_chars` in the file with NO upper bound at
         // all — `find_inline_math_gaps` already clamps to `min(max(0, …),
@@ -15784,55 +16048,77 @@ actor WordMCPServer {
         let contextChars = min(max(0, try optionalInt(args, "context_chars") ?? 20), 4096)
 
         let paragraphs = doc.getParagraphs()
-        var results: [(paraIndex: Int, position: Int, matchedText: String, context: String, formats: [String])] = []
+        var results: [(paraIndex: Int, position: Int, matchedText: String, context: String, formats: [String], mathScriptMatch: Bool)] = []
 
-        for (paraIndex, para) in paragraphs.enumerated() {
-            let paraText = para.getText()
-            let searchText = caseSensitive ? paraText : paraText.lowercased()
-            let searchQuery = caseSensitive ? query : query.lowercased()
+        // #151: `useCanonical` selects whether this pass matches against the
+        // math-script-canonicalized form of both paragraph text and run
+        // text (needed so `formats`' cumulative-length walk stays aligned
+        // with `position`, since canonicalization can change a run's
+        // character count — e.g. stripping a combining macron). The exact
+        // pass (`useCanonical: false`) runs first, unchanged from before
+        // this issue; the canonicalized pass only runs afterward, and only
+        // when the flag is on AND the exact pass found nothing (same
+        // "avoid double-counting a hit already found verbatim" reasoning as
+        // `search_text`'s fallback).
+        func runPass(useCanonical: Bool) {
+            let effectiveQuery = useCanonical ? AnchorLookupOptions.canonicalizeMathScriptVariants(query) : query
+            guard !effectiveQuery.isEmpty else { return }
+            for (paraIndex, para) in paragraphs.enumerated() {
+                let rawParaText = para.getText()
+                let paraText = useCanonical ? AnchorLookupOptions.canonicalizeMathScriptVariants(rawParaText) : rawParaText
+                let searchText = caseSensitive ? paraText : paraText.lowercased()
+                let searchQuery = caseSensitive ? effectiveQuery : effectiveQuery.lowercased()
 
-            var searchStart = searchText.startIndex
-            while let range = searchText.range(of: searchQuery, range: searchStart..<searchText.endIndex) {
-                let position = searchText.distance(from: searchText.startIndex, to: range.lowerBound)
-                let matchedText = String(paraText[range])
+                var searchStart = searchText.startIndex
+                while let range = searchText.range(of: searchQuery, range: searchStart..<searchText.endIndex) {
+                    let position = searchText.distance(from: searchText.startIndex, to: range.lowerBound)
+                    let matchedText = String(paraText[range])
 
-                // 取得上下文
-                let contextStart = max(0, position - contextChars)
-                let contextEnd = min(paraText.count, position + matchedText.count + contextChars)
-                let startIndex = paraText.index(paraText.startIndex, offsetBy: contextStart)
-                let endIndex = paraText.index(paraText.startIndex, offsetBy: contextEnd)
-                var context = String(paraText[startIndex..<endIndex])
-                if contextStart > 0 { context = "..." + context }
-                if contextEnd < paraText.count { context = context + "..." }
+                    // 取得上下文
+                    let contextStart = max(0, position - contextChars)
+                    let contextEnd = min(paraText.count, position + matchedText.count + contextChars)
+                    let startIndex = paraText.index(paraText.startIndex, offsetBy: contextStart)
+                    let endIndex = paraText.index(paraText.startIndex, offsetBy: contextEnd)
+                    var context = String(paraText[startIndex..<endIndex])
+                    if contextStart > 0 { context = "..." + context }
+                    if contextEnd < paraText.count { context = context + "..." }
 
-                // 找出該位置的格式
-                var formats: [String] = []
-                var currentPos = 0
-                for run in para.runs {
-                    let runEnd = currentPos + run.text.count
-                    // 檢查這個 run 是否包含搜尋結果
-                    if currentPos <= position && position < runEnd {
-                        let props = run.properties
-                        if props.bold { formats.append("bold") }
-                        if props.italic { formats.append("italic") }
-                        if props.strikethrough { formats.append("strikethrough") }
-                        if let color = props.color {
-                            formats.append("color:\(colorHexToName(color))")
+                    // 找出該位置的格式（canonical pass 用每個 run 各自正規化後的長度累計，
+                    // 讓 position 的座標系跟 searchText 一致）
+                    var formats: [String] = []
+                    var currentPos = 0
+                    for run in para.runs {
+                        let runText = useCanonical ? AnchorLookupOptions.canonicalizeMathScriptVariants(run.text) : run.text
+                        let runEnd = currentPos + runText.count
+                        // 檢查這個 run 是否包含搜尋結果
+                        if currentPos <= position && position < runEnd {
+                            let props = run.properties
+                            if props.bold { formats.append("bold") }
+                            if props.italic { formats.append("italic") }
+                            if props.strikethrough { formats.append("strikethrough") }
+                            if let color = props.color {
+                                formats.append("color:\(colorHexToName(color))")
+                            }
+                            if let highlight = props.highlight {
+                                formats.append("highlight:\(highlight.rawValue)")
+                            }
+                            if let underline = props.underline {
+                                formats.append("underline:\(underline.rawValue)")
+                            }
+                            break
                         }
-                        if let highlight = props.highlight {
-                            formats.append("highlight:\(highlight.rawValue)")
-                        }
-                        if let underline = props.underline {
-                            formats.append("underline:\(underline.rawValue)")
-                        }
-                        break
+                        currentPos = runEnd
                     }
-                    currentPos = runEnd
-                }
 
-                results.append((paraIndex, position, matchedText, context, formats))
-                searchStart = range.upperBound
+                    results.append((paraIndex, position, matchedText, context, formats, useCanonical))
+                    searchStart = range.upperBound
+                }
             }
+        }
+
+        runPass(useCanonical: false)
+        if results.isEmpty, matchOptions.mathScriptInsensitive {
+            runPass(useCanonical: true)
         }
 
         if results.isEmpty {
@@ -15841,7 +16127,10 @@ actor WordMCPServer {
 
         var output = "Found \(results.count) match(es) for '\(query)':\n"
         for result in results {
-            output += "[Para \(result.paraIndex)] \(result.context)\n"
+            let mathScriptSuffix = result.mathScriptMatch
+                ? " (matched_form: math_script_normalized — only found via match_options.math_script_insensitive; context is in the canonicalized-text coordinate space)"
+                : ""
+            output += "[Para \(result.paraIndex)] \(result.context)\(mathScriptSuffix)\n"
             if result.formats.isEmpty {
                 output += "  Format: (none)\n"
             } else {
@@ -18442,6 +18731,8 @@ actor WordMCPServer {
         if let explicit = try optionalInt(args, "text_instance"), explicit < 1 {
             throw ToolRefusal("insert_caption: text_instance must be ≥ 1, got \(explicit).")
         }
+        // #90/#115/#150: parsed unconditionally, same reasoning as elsewhere.
+        let matchOptions = try Self.parseAnchorLookupOptions(args, tool: "insert_caption")
 
         // Build caption paragraph: label text + optional chapter STYLEREF + SEQ field + optional caption text
         var runs: [Run] = [Run(text: "\(label) ")]
@@ -18479,9 +18770,9 @@ actor WordMCPServer {
         } else if let tableIdx = afterTableIndexArg {
             location = .afterTableIndex(tableIdx)
         } else if let afterText = afterTextArg {
-            location = .afterText(afterText, instance: textInstance)
+            location = .afterText(afterText, instance: textInstance, options: matchOptions)
         } else {
-            location = .beforeText(beforeTextArg!, instance: textInstance)
+            location = .beforeText(beforeTextArg!, instance: textInstance, options: matchOptions)
         }
 
         do {
@@ -18495,7 +18786,9 @@ actor WordMCPServer {
         } catch let InsertLocationError.tableIndexOutOfRange(i) {
             throw ToolRefusal("insert_caption: table index \(i) out of range")
         } catch let InsertLocationError.textNotFound(text, instance) {
-            throw ToolRefusal("insert_caption: text '\(text)' not found (instance \(instance))")
+            throw WordMCPServer.anchorNotFoundRefusal(
+                tool: "insert_caption", searchText: text, instance: instance, options: matchOptions
+            )
         }
     }
 
