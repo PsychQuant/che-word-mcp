@@ -816,29 +816,38 @@ actor WordMCPServer {
         }
     }
 
-    /// #150 (PR #115 verify, DA P2 #4/#5): the Unicode ranges this repo's
-    /// `math_script_insensitive` flag actually normalizes — kept in sync
-    /// BY HAND with ooxml-swift's `AnchorLookupOptions.mathScriptVariantMap`
-    /// (that table is `private` to ooxml-swift, so this is a deliberately
-    /// narrower, parallel detection set used ONLY to decide whether an
-    /// anchor-not-found error should mention the flag, never to perform any
-    /// matching itself — matching always goes through ooxml-swift or
-    /// `canonicalizeMathScriptVariants`, both of which are the actual
-    /// source of truth). Covers: subscript/superscript digits and letters
-    /// (U+2070–U+209C), the three legacy Latin-1 superscripts (U+00B2 ²,
-    /// U+00B3 ³, U+00B9 ¹), Greek subscripts (U+1D66–U+1D6A ᵦᵧᵨᵩᵪ), and
-    /// combining diacritics (U+0300–U+036F, e.g. the combining macron in
-    /// `X̄`) that `canonicalizeMathScriptVariants` strips via NFD.
+    /// #150 (PR #115 verify, DA P2 #4/#5), R2 fix (independent review
+    /// MEDIUM-2): whether `text` contains anything
+    /// `match_options.math_script_insensitive` would fold. The first version
+    /// of this function hand-maintained its own parallel scalar-range set,
+    /// commented "kept in sync BY HAND" — that comment was aspirational, not
+    /// true: it covered `U+2070–U+209C` as one contiguous block, but the
+    /// real `mathScriptVariantMap` (ooxml-swift `InsertLocation.swift`) has
+    /// 5 subscript letters (`ᵢᵣᵤᵥ` at U+1D62–U+1D65, `ⱼ` at U+2C7C) and 44
+    /// superscript letters scattered across Spacing Modifier Letters,
+    /// Phonetic Extensions, Phonetic Extensions Supplement, and Latin
+    /// Extended-C — none of which fall inside that one range. A caller
+    /// searching for `xᵢ` (U+1D62 — arguably the single most common
+    /// subscript in statistics/math writing) got NO hint, reproduced
+    /// end-to-end by the independent review.
+    ///
+    /// Fixed by deriving this ENTIRELY from `canonicalizeMathScriptVariants`
+    /// itself — the actual thing that performs matching — instead of
+    /// maintaining a second, parallel description of the same table. If
+    /// canonicalizing `text` changes it at all, at least one character in it
+    /// is something the flag would fold, and the hint is warranted. This
+    /// can never drift from `AnchorLookupOptions.mathScriptVariantMap` again
+    /// because it no longer has its own copy of that table to drift from.
+    ///
+    /// One accepted, documented side effect: `canonicalizeMathScriptVariants`
+    /// also NFD-strips ANY nonspacing combining mark (not just the specific
+    /// accented Latin/Greek letters math writing uses), per its own doc
+    /// comment ("combining-mark stripping also folds language diacritics").
+    /// So a needle like `café` also triggers this — which is still an
+    /// accurate hint: turning the flag on WOULD change how that needle
+    /// matches, exactly what the hint promises to tell the caller.
     static func containsMathScriptChars(_ text: String) -> Bool {
-        for scalar in text.unicodeScalars {
-            switch scalar.value {
-            case 0x2070...0x209C, 0x00B2, 0x00B3, 0x00B9, 0x1D66...0x1D6A, 0x0300...0x036F:
-                return true
-            default:
-                continue
-            }
-        }
-        return false
+        AnchorLookupOptions.canonicalizeMathScriptVariants(text) != text
     }
 
     /// #150: builds the "text not found" refusal for anchor-based tools,
