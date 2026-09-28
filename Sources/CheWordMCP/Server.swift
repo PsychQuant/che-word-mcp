@@ -2763,7 +2763,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "list_images",
-                description: "列出文件中的圖片：word/document.xml 的 body 圖片（含尺寸）＋ 每個 header/footer 的圖片關係（#199/#219）。每列帶 `referenced: yes|NO (orphan)|unknown` —— 以序列化後的 package 用 PackageInspector 實際掃描為準（與 save_document 的 E_IMAGE_CONSISTENCY 閘門同一份真相），relationship 存在但該 part 沒有 <w:drawing>／<v:imagedata> 引用的孤兒會被具名標示，不會被當成「存在」。孤兒會讓下次 save_document 拒絕（除非 allow_orphan_images: true）。另外會具名列出 word/media/ 裡沒有任何 relationship 指向的殘留檔案（反方向的孤兒——relationship 已不存在、只剩檔案，例如浮水印圖片移除後的遺留，R2 F2）。支援 Direct Mode",
+                description: "列出文件中的圖片：word/document.xml 的 body 圖片（含尺寸）＋ 每個 header/footer 的圖片關係 ＋ 每個 chart part（word/charts/chartN.xml）的圖片關係（#199/#219）。每列帶 `referenced: yes|NO (orphan)|unknown` —— 以序列化後的 package 用 PackageInspector 實際掃描為準（與 save_document 的 E_IMAGE_CONSISTENCY 閘門同一份真相），relationship 存在但該 part 沒有 <w:drawing>／<v:imagedata> 引用的孤兒會被具名標示，不會被當成「存在」。孤兒會讓下次 save_document 拒絕（除非 allow_orphan_images: true）。另外會具名列出 word/media/ 裡沒有任何 relationship 指向的殘留檔案（反方向的孤兒——relationship 已不存在、只剩檔案，例如浮水印圖片移除後的遺留，R2 F2）。支援 Direct Mode",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -2780,7 +2780,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "export_image",
-                description: "匯出單一圖片到檔案（需先 open_document）",
+                description: "匯出單一圖片到檔案（需先 open_document）。image_id 除了 document part 的圖片，也會在 header／footer／chart 的圖片關係中查找（#219）；不同 part 若剛好共用同一個 id 字串，取第一個找到的（先 document，再 header/footer，再 chart）",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -2802,7 +2802,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "export_all_images",
-                description: "匯出所有圖片到目錄（需先 open_document）",
+                description: "匯出所有圖片到目錄（需先 open_document）：document part ＋ 每個 header/footer ＋ 每個 chart 的圖片（#219）。不同 part 若有同名檔案，後匯出的會加上 _2/_3… 後綴避免覆蓋，結果文字會具名列出哪些檔案被重新命名",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -11371,12 +11371,31 @@ actor WordMCPServer {
 
     private func listImages(args: [String: Value]) async throws -> String {
         let (doc, _) = try await resolveDocument(args: args)
-        let rows = Self.collectImageRows(doc)
+        var rows = Self.collectImageRows(doc)
+        // #219 (reopened): chart-part images have no typed representation at
+        // all, so they can only be found by reading the actual package
+        // bytes. `packageBytesForPartEnumeration` picks the byte source that
+        // won't silently drop them (see that function's doc comment).
+        if let packageData = packageBytesForPartEnumeration(doc: doc, args: args),
+           let tempDir = try? ZipHelper.unzip(data: packageData) {
+            defer { ZipHelper.cleanup(tempDir) }
+            rows += UntypedPartImages.chartImageRows(doc: doc, tempDir: tempDir)
+        }
         let (report, failureReason, unreferencedMedia) = imageConsistencyInspection(forDoc: doc, args: args)
         return Self.imageListing(rows: rows, report: report, inspectionFailureReason: failureReason, unreferencedMediaFiles: unreferencedMedia)
     }
 
     // MARK: - 9.17 export_image - 匯出單一圖片
+    //
+    // #219 (reopened): `image_id` used to only ever search `doc.images`
+    // (the document part). A header/footer/chart-only image was
+    // unreachable — "找不到圖片 ID" even for an id `list_images` had just
+    // printed. Fallback order: document part (existing, in-memory, no
+    // package read needed) → header/footer/chart (package bytes required —
+    // see `packageBytesForPartEnumeration`). First match wins; a part-level
+    // id collision (rare — different parts each define their own id
+    // namespace) is not disambiguated further, same limitation `list_images`
+    // already lives with via its `part:` column.
     private func exportImage(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -11391,24 +11410,44 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        // 找到對應的圖片
-        guard let imageRef = doc.images.first(where: { $0.id == imageId }) else {
-            throw WordError.parseError("找不到圖片 ID: \(imageId)")
-        }
-
-        // 確保目錄存在
         let url = URL(fileURLWithPath: savePath)
         let directory = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        // 寫入檔案
-        try imageRef.data.write(to: url)
+        if let imageRef = doc.images.first(where: { $0.id == imageId }) {
+            try imageRef.data.write(to: url)
+            let sizeKB = imageRef.data.count / 1024
+            return "Saved image \(imageId) to \(savePath) (\(sizeKB)KB)"
+        }
 
-        let sizeKB = imageRef.data.count / 1024
-        return "Saved image \(imageId) to \(savePath) (\(sizeKB)KB)"
+        if let packageData = packageBytesForPartEnumeration(doc: doc, args: args),
+           let tempDir = try? ZipHelper.unzip(data: packageData) {
+            defer { ZipHelper.cleanup(tempDir) }
+            if let entry = UntypedPartImages.entries(doc: doc, tempDir: tempDir).first(where: { $0.id == imageId }),
+               let data = FileManager.default.contents(atPath: entry.mediaURL.path) {
+                try data.write(to: url)
+                let sizeKB = data.count / 1024
+                return "Saved image \(imageId) to \(savePath) (\(sizeKB)KB) [\(entry.part)]"
+            }
+        }
+
+        throw WordError.parseError("找不到圖片 ID: \(imageId)")
     }
 
     // MARK: - 9.18 export_all_images - 匯出所有圖片
+    //
+    // #219 (reopened): only ever exported `doc.images` (the document part).
+    // A document with ONLY a header/footer/chart image reported "No images
+    // to export" even though `list_images` correctly showed one. Now also
+    // walks header/footer (typed relationships) and chart (untyped, parsed
+    // from package bytes) images via `UntypedPartImages`.
+    //
+    // Filename collision handling (explicit #219 requirement): two parts
+    // can each declare a relationship targeting a media file with the same
+    // base name (own numbering per part, e.g. two independent "image1.png"
+    // targets) — writing both into the SAME flat `output_dir` would let the
+    // second overwrite the first silently. `writeUnique` renames on
+    // collision (`name_2.ext`, `name_3.ext`, …) and the result text says so.
     private func exportAllImages(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -11420,24 +11459,56 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let images = doc.images
-        if images.isEmpty {
-            return "No images to export"
-        }
-
-        // 建立輸出目錄
         let dirURL = URL(fileURLWithPath: outputDir)
         try FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true)
 
-        var result = "Exported \(images.count) image(s) to \(outputDir):\n"
-        for imageRef in images {
-            let fileURL = dirURL.appendingPathComponent(imageRef.fileName)
-            try imageRef.data.write(to: fileURL)
-            let sizeKB = imageRef.data.count / 1024
-            result += "  - \(imageRef.fileName) (\(sizeKB)KB)\n"
+        var writtenNames = Set<String>()
+        func writeUnique(fileName: String, data: Data) throws -> (name: String, renamed: Bool) {
+            var candidate = fileName
+            var suffix = 2
+            while writtenNames.contains(candidate) {
+                let ns = fileName as NSString
+                let ext = ns.pathExtension
+                let base = ns.deletingPathExtension
+                candidate = ext.isEmpty ? "\(base)_\(suffix)" : "\(base)_\(suffix).\(ext)"
+                suffix += 1
+            }
+            writtenNames.insert(candidate)
+            try data.write(to: dirURL.appendingPathComponent(candidate))
+            return (candidate, candidate != fileName)
         }
 
-        return result
+        var lines: [String] = []
+        var renamedCount = 0
+
+        for imageRef in doc.images {
+            let (name, renamed) = try writeUnique(fileName: imageRef.fileName, data: imageRef.data)
+            if renamed { renamedCount += 1 }
+            let sizeKB = imageRef.data.count / 1024
+            let renameNote = renamed ? " [renamed from \(imageRef.fileName) — filename collision across parts]" : ""
+            lines.append("  - \(name) (\(sizeKB)KB)\(renameNote)")
+        }
+
+        if let packageData = packageBytesForPartEnumeration(doc: doc, args: args),
+           let tempDir = try? ZipHelper.unzip(data: packageData) {
+            defer { ZipHelper.cleanup(tempDir) }
+            for entry in UntypedPartImages.entries(doc: doc, tempDir: tempDir) {
+                guard let data = FileManager.default.contents(atPath: entry.mediaURL.path) else { continue }
+                let (name, renamed) = try writeUnique(fileName: entry.fileName, data: data)
+                if renamed { renamedCount += 1 }
+                let sizeKB = data.count / 1024
+                let renameNote = renamed ? " [renamed from \(entry.fileName) — filename collision across parts]" : ""
+                lines.append("  - \(name) (\(sizeKB)KB) [\(entry.part)]\(renameNote)")
+            }
+        }
+
+        guard !lines.isEmpty else { return "No images to export" }
+
+        var header = "Exported \(lines.count) image(s) to \(outputDir)"
+        if renamedCount > 0 {
+            header += " (\(renamedCount) renamed to avoid filename collisions across parts)"
+        }
+        return header + ":\n" + lines.joined(separator: "\n") + "\n"
     }
 
     private func setImageStyle(args: [String: Value]) async throws -> String {
