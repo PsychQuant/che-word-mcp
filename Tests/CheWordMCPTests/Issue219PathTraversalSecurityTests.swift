@@ -251,10 +251,77 @@ final class Issue219PathTraversalSecurityTests: XCTestCase {
         try Data("keep me".utf8).write(to: canaryFile)
         XCTAssertTrue(FileManager.default.fileExists(atPath: canaryFile.path))
 
+        let finalURL = try buildDocumentWithMaliciousWatermarkTarget(pointingAt: canaryFile)
+
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(name: "open_document", arguments: [
+            "path": .string(finalURL.path), "doc_id": .string("sec-wm"),
+        ])
+        let r = await server.invokeToolForTesting(name: "remove_watermark", arguments: ["doc_id": .string("sec-wm")])
+
+        XCTAssertNotEqual(r.isError, true, text(r))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: canaryFile.path),
+                      "a malicious relationship Target must never cause a file outside the package to be deleted")
+        XCTAssertEqual(try? Data(contentsOf: canaryFile), Data("keep me".utf8))
+    }
+
+    /// `FileManager.removeItem` deletes directories recursively, so on 4.7.0
+    /// and 4.8.0 a Target naming a DIRECTORY removed the whole tree — the
+    /// most damaging form of this bug, and the one the file-only test above
+    /// would not notice. Reproduced against the 4.8.0 release binary before
+    /// this test was written.
+    func testRemoveWatermarkDoesNotDeleteADirectoryOutsideThePackage() async throws {
+        let canaryDir = tempDir.appendingPathComponent("canary-dir-\(UUID().uuidString)")
+        let innerFile = canaryDir.appendingPathComponent("inner.txt")
+        try FileManager.default.createDirectory(at: canaryDir, withIntermediateDirectories: true)
+        try Data("keep me".utf8).write(to: innerFile)
+
+        let finalURL = try buildDocumentWithMaliciousWatermarkTarget(pointingAt: canaryDir)
+
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(name: "open_document", arguments: [
+            "path": .string(finalURL.path), "doc_id": .string("sec-wm-dir"),
+        ])
+        let r = await server.invokeToolForTesting(name: "remove_watermark", arguments: ["doc_id": .string("sec-wm-dir")])
+
+        XCTAssertNotEqual(r.isError, true, text(r))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: innerFile.path),
+                      "a malicious Target naming a directory must never cause that directory to be removed")
+    }
+
+    /// `insert_watermark` / `insert_image_watermark` replace an existing
+    /// watermark and then run the same orphaned-media cleanup, so they were a
+    /// second route to the same deletion (reproduced against the 4.8.0
+    /// release binary with `insert_watermark`).
+    func testInsertWatermarkReplacingAMaliciousWatermarkDoesNotDeleteOutsideThePackage() async throws {
+        let canaryDir = tempDir.appendingPathComponent("canary-ins-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: canaryDir, withIntermediateDirectories: true)
+        let canaryFile = canaryDir.appendingPathComponent("do_not_delete.txt")
+        try Data("keep me".utf8).write(to: canaryFile)
+
+        let finalURL = try buildDocumentWithMaliciousWatermarkTarget(pointingAt: canaryFile)
+
+        let server = await WordMCPServer()
+        _ = await server.invokeToolForTesting(name: "open_document", arguments: [
+            "path": .string(finalURL.path), "doc_id": .string("sec-wm-ins"),
+        ])
+        let r = await server.invokeToolForTesting(name: "insert_watermark", arguments: [
+            "doc_id": .string("sec-wm-ins"), "text": .string("DRAFT"),
+        ])
+
+        XCTAssertNotEqual(r.isError, true, text(r))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: canaryFile.path),
+                      "replacing a watermark must never delete a file outside the package")
+    }
+
+    /// Builds a document whose header carries a real watermark-shaped
+    /// paragraph (so `stripWatermark` fires) but whose OWN relationship
+    /// Target has been hand-edited to path-traverse out to `victim`.
+    private func buildDocumentWithMaliciousWatermarkTarget(pointingAt victim: URL) throws -> URL {
         var doc = WordDocument()
         doc.appendParagraph(Paragraph(text: "Body"))
         _ = doc.addHeader(text: "Header", type: .default)
-        let firstPassURL = tempDir.appendingPathComponent("wm-mal-firstpass.docx")
+        let firstPassURL = tempDir.appendingPathComponent("wm-mal-firstpass-\(UUID().uuidString).docx")
         try DocxWriter.write(doc, to: firstPassURL)
 
         let unpacked = try ZipHelper.unzip(firstPassURL)
@@ -262,12 +329,11 @@ final class Issue219PathTraversalSecurityTests: XCTestCase {
 
         // A large `..` run guarantees walking up to the real filesystem
         // root regardless of how deep this unzip tempDir happens to be,
-        // then descends via the canary's own absolute path — so the
-        // Target deterministically points at the canary no matter where
+        // then descends via the victim's own absolute path — so the
+        // Target deterministically points at the victim no matter where
         // the test runner happens to place its temp directories.
         let ups = String(repeating: "../", count: 40)
-        let canaryAbsoluteMinusLeadingSlash = String(canaryFile.path.dropFirst())
-        let maliciousTarget = ups + canaryAbsoluteMinusLeadingSlash
+        let maliciousTarget = ups + String(victim.path.dropFirst())
 
         let headerXML = """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -298,19 +364,9 @@ final class Issue219PathTraversalSecurityTests: XCTestCase {
         try headerRelsXML.write(to: headerRelsDir.appendingPathComponent("header1.xml.rels"), atomically: true, encoding: .utf8)
 
         let finalData = try ZipHelper.zipToData(unpacked)
-        let finalURL = tempDir.appendingPathComponent("wm-mal-final.docx")
+        let finalURL = tempDir.appendingPathComponent("wm-mal-final-\(UUID().uuidString).docx")
         try finalData.write(to: finalURL)
-
-        let server = await WordMCPServer()
-        _ = await server.invokeToolForTesting(name: "open_document", arguments: [
-            "path": .string(finalURL.path), "doc_id": .string("sec-wm"),
-        ])
-        let r = await server.invokeToolForTesting(name: "remove_watermark", arguments: ["doc_id": .string("sec-wm")])
-
-        XCTAssertNotEqual(r.isError, true, text(r))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: canaryFile.path),
-                      "a malicious relationship Target must never cause a file outside the package to be deleted")
-        XCTAssertEqual(try? Data(contentsOf: canaryFile), Data("keep me".utf8))
+        return finalURL
     }
 
     // MARK: - R2 (independent review LOW-1): percent-encoded traversal must be a named refusal, not silence
