@@ -11414,13 +11414,25 @@ actor WordMCPServer {
         // all, so they can only be found by reading the actual package
         // bytes. `packageBytesForPartEnumeration` picks the byte source that
         // won't silently drop them (see that function's doc comment).
+        var refusedChartEntries: [UntypedPartImages.RefusedEntry] = []
         if let packageData = packageBytesForPartEnumeration(doc: doc, args: args),
            let tempDir = try? ZipHelper.unzip(data: packageData) {
             defer { ZipHelper.cleanup(tempDir) }
-            rows += UntypedPartImages.chartImageRows(doc: doc, tempDir: tempDir)
+            let (chartRows, refused) = UntypedPartImages.chartImageRows(doc: doc, tempDir: tempDir)
+            rows += chartRows
+            refusedChartEntries = refused
         }
         let (report, failureReason, unreferencedMedia) = imageConsistencyInspection(forDoc: doc, args: args)
-        return Self.imageListing(rows: rows, report: report, inspectionFailureReason: failureReason, unreferencedMediaFiles: unreferencedMedia)
+        var text = Self.imageListing(rows: rows, report: report, inspectionFailureReason: failureReason, unreferencedMediaFiles: unreferencedMedia)
+        // Security: a chart rels Target that would have escaped the
+        // unzipped package (or declares TargetMode="External") is refused,
+        // never read — but never silently dropped either. See
+        // `UntypedPartImages`'s doc comment.
+        if !refusedChartEntries.isEmpty {
+            text += "\n\n⚠ \(refusedChartEntries.count) chart image relationship(s) refused for security and NOT listed above (Target escapes the package, or is TargetMode=\"External\"): "
+                + refusedChartEntries.map { "\($0.part):\($0.id) (\($0.reason))" }.joined(separator: ", ")
+        }
+        return text
     }
 
     // MARK: - 9.17 export_image - 匯出單一圖片
@@ -11461,11 +11473,18 @@ actor WordMCPServer {
         if let packageData = packageBytesForPartEnumeration(doc: doc, args: args),
            let tempDir = try? ZipHelper.unzip(data: packageData) {
             defer { ZipHelper.cleanup(tempDir) }
-            if let entry = UntypedPartImages.entries(doc: doc, tempDir: tempDir).first(where: { $0.id == imageId }),
+            let (found, refused) = UntypedPartImages.entries(doc: doc, tempDir: tempDir)
+            if let entry = found.first(where: { $0.id == imageId }),
                let data = FileManager.default.contents(atPath: entry.mediaURL.path) {
                 try data.write(to: url)
                 let sizeKB = data.count / 1024
                 return "Saved image \(imageId) to \(savePath) (\(sizeKB)KB) [\(entry.part)]"
+            }
+            // Security: name a refusal instead of falling through to the
+            // generic "not found" below, which would look identical to a
+            // truly-absent id and hide WHY nothing was exported.
+            if let r = refused.first(where: { $0.id == imageId }) {
+                throw ToolRefusal("圖片 ID '\(imageId)' 的關係 Target '\(r.target)' 無法安全解析（\(r.reason)），拒絕匯出")
             }
         }
 
@@ -11527,10 +11546,13 @@ actor WordMCPServer {
             lines.append("  - \(name) (\(sizeKB)KB)\(renameNote)")
         }
 
+        var refusedEntries: [UntypedPartImages.RefusedEntry] = []
         if let packageData = packageBytesForPartEnumeration(doc: doc, args: args),
            let tempDir = try? ZipHelper.unzip(data: packageData) {
             defer { ZipHelper.cleanup(tempDir) }
-            for entry in UntypedPartImages.entries(doc: doc, tempDir: tempDir) {
+            let (found, refused) = UntypedPartImages.entries(doc: doc, tempDir: tempDir)
+            refusedEntries = refused
+            for entry in found {
                 guard let data = FileManager.default.contents(atPath: entry.mediaURL.path) else { continue }
                 let (name, renamed) = try writeUnique(fileName: entry.fileName, data: data)
                 if renamed { renamedCount += 1 }
@@ -11540,13 +11562,22 @@ actor WordMCPServer {
             }
         }
 
-        guard !lines.isEmpty else { return "No images to export" }
+        guard !lines.isEmpty || !refusedEntries.isEmpty else { return "No images to export" }
 
-        var header = "Exported \(lines.count) image(s) to \(outputDir)"
+        var header = lines.isEmpty ? "Exported 0 image(s) to \(outputDir)" : "Exported \(lines.count) image(s) to \(outputDir)"
         if renamedCount > 0 {
             header += " (\(renamedCount) renamed to avoid filename collisions across parts)"
         }
-        return header + ":\n" + lines.joined(separator: "\n") + "\n"
+        var result = header + ":\n" + lines.joined(separator: "\n")
+        // Security: a relationship Target that would have escaped the
+        // unzipped package (or declares TargetMode="External") is refused,
+        // never read — but named here instead of silently absent from the
+        // export. See `UntypedPartImages`'s doc comment.
+        if !refusedEntries.isEmpty {
+            result += "\n⚠ \(refusedEntries.count) image relationship(s) refused for security and NOT exported (Target escapes the package, or is TargetMode=\"External\"): "
+                + refusedEntries.map { "\($0.part):\($0.id) (\($0.reason))" }.joined(separator: ", ")
+        }
+        return result + "\n"
     }
 
     private func setImageStyle(args: [String: Value]) async throws -> String {
@@ -17551,8 +17582,21 @@ actor WordMCPServer {
     /// skipped rather than failing the whole remove/replace.
     private func cleanupOrphanedWatermarkMedia(_ removedTargets: [String], in doc: WordDocument) {
         guard let archiveTempDir = doc.archiveTempDir, !removedTargets.isEmpty else { return }
+        let wordDir = archiveTempDir.appendingPathComponent("word")
         for target in Set(removedTargets) where !Self.mediaTargetStillReferenced(target, in: doc) {
-            try? FileManager.default.removeItem(at: archiveTempDir.appendingPathComponent("word/\(target)"))
+            // Security: `target` is an attacker-controlled relationship
+            // Target string read from inside the .docx (a header rels entry
+            // a malicious document declared) — this is the DELETE-side
+            // sibling of the path-traversal `UntypedPartImages` documents
+            // fixing on the read side. A `Target` such as
+            // "../../../../etc/hosts" would, unchecked, hand
+            // `FileManager.removeItem` a path outside the unzipped package
+            // entirely. Reuse the same containment check: refuse (skip)
+            // anything that would resolve outside `archiveTempDir`.
+            guard let resolved = UntypedPartImages.resolvePackageRelativeTarget(
+                target, baseDir: wordDir, packageRoot: archiveTempDir
+            ) else { continue }
+            try? FileManager.default.removeItem(at: resolved)
         }
     }
 
