@@ -41,8 +41,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/PsychQuant/ooxml-swift.git",
       "state" : {
-        "revision" : "f9830e4ff502156f5aa2846dec57954a27c33dd3",
-        "version" : "3.17.0"
+        "revision" : "97bad364587ba6b15d1728fae703d778ecbd3cba",
+        "version" : "3.18.1"
       }
     },
     {
