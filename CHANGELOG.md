@@ -36,6 +36,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `enable_track_changes` 的 session 作者也一樣；`author`／`date` 必須是字串——兩者只在追蹤時讀取與驗證，
   未追蹤時任何型別都忽略。
 
+- **`insert_text_as_revision` 把文字寫在指定位置，並真的追蹤**（#276）。過去從檔案讀進來的段落，新字會被寫到段尾、
+  沒有 `<w:ins>`，`get_revisions` 存檔前列得到、存檔後就不見；現在寫在指定偏移處、包在 `<w:ins>` 內，回傳的修訂 id
+  存檔重開後仍在。偏移量一律「已插入的字算、已刪除的字不算」（過去檔案讀進來的刪除不算、同一 session 內做的刪除
+  卻算，存檔重開前後同一數字指向不同位置）；`delete_text_as_revision` 用同一規則。位置或範圍落在另一筆追蹤插入或
+  搬移的內部時拒絕，不再把別人插入的字搬出他的修訂（巢狀修訂另見 #276 Stage 2）。
+- **`replace_text`／`replace_text_batch` 在本 session 開啟修訂時寫成修訂取代**（#276）。過去一律直接改字、不留
+  修訂，在別人的 `<w:ins>` 裡取代時新字會掛在對方名下。現在舊字包 `<w:del>`、新字包 `<w:ins>`（session 作者，
+  沿用被取代文字的格式），結果列出修訂 id。目前限頂層內文段落的字面比對；`regex`、`scope: "all"`、`match_options`
+  在修訂模式下拒絕；符合處落在表格、content control、超連結、欄位，或與既有修訂重疊時整個呼叫拒絕、不改任何內容。
+  未開修訂時行為不變。需要 ooxml-swift 的 `replaceAllAsRevision`。
+
 ### Changed
 
 - **`insert_paragraph` 以 `after_text`／`before_text` 定位且未給 `style` 時，照 Word 按 Enter 的
