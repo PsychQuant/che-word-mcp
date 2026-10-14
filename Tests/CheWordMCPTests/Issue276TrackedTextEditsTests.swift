@@ -5,10 +5,10 @@ import MCP
 
 /// Regression tests for [PsychQuant/che-word-mcp#276](https://github.com/PsychQuant/che-word-mcp/issues/276), Stage 1,
 /// through the MCP tools: `insert_text_as_revision` lands in place and is
-/// tracked (case 1); `replace_text` under session tracking writes `<w:del>` +
-/// `<w:ins>` (case 2); an edit inside another author's insertion is refused
-/// instead of rewriting their text (case 3); every returned revision id is in
-/// the saved file (Expected 5).
+/// tracked (case 1); `replace_text` under session tracking refuses (case 2 —
+/// tracked replacement was withdrawn from stage 1, #292); an edit inside
+/// another author's insertion is refused instead of rewriting their text
+/// (case 3); every returned revision id is in the saved file (Expected 5).
 final class Issue276TrackedTextEditsTests: XCTestCase {
 
     private var tempDir: URL!
@@ -126,16 +126,17 @@ final class Issue276TrackedTextEditsTests: XCTestCase {
 
     // MARK: - Case 2
 
-    func testReplaceTextUnderSessionTrackingWritesDeletionAndInsertion() async throws {
+    /// Tracked replacement was taken out of stage 1 (#292): under session
+    /// tracking replace_text refuses and points to the revision tools —
+    /// never an untracked edit.
+    func testReplaceTextUnderSessionTrackingIsRefused() async throws {
         let path = try makeFixture(withInsertion: false)
         let server = await session(path, tracked: true)
         let r = await call(server, "replace_text", ["find": .string("Alphaland"), "replace": .string("Alpha")])
-        XCTAssertNotEqual(r.isError, true, text(r))
-        XCTAssertTrue(text(r).contains("tracked"), "got: \(text(r))")
+        XCTAssertEqual(r.isError, true, text(r))
+        XCTAssertTrue(text(r).contains("delete_text_as_revision") && text(r).contains("#292"), "got: \(text(r))")
         _ = await call(server, "save_document")
-        let xml = try documentXML(at: path)
-        XCTAssertTrue(matches(xml, #"<w:del [^>]*w:author="CHE CHENG"[^>]*><w:r><w:delText[^>]*>Alphaland</w:delText></w:r></w:del><w:ins [^>]*w:author="CHE CHENG"[^>]*><w:r><w:t[^>]*>Alpha</w:t></w:r></w:ins>"#),
-                      "got: \(xml)")
+        XCTAssertTrue(try documentXML(at: path).contains("Data came from Alphaland, Betaland"))
     }
 
     func testReplaceTextWithoutSessionOptInIsUnchanged() async throws {
@@ -157,19 +158,16 @@ final class Issue276TrackedTextEditsTests: XCTestCase {
         XCTAssertEqual(r.isError, true, text(r))
     }
 
-    func testReplaceTextBatchUnderSessionTrackingIsTracked() async throws {
+    func testReplaceTextBatchUnderSessionTrackingIsRefused() async throws {
         let path = try makeFixture(withInsertion: false)
         let server = await session(path, tracked: true)
         let r = await call(server, "replace_text_batch", ["replacements": .array([
             .object(["find": .string("Alphaland"), "replace": .string("Alpha")]),
             .object(["find": .string("Betaland"), "replace": .string("Beta")]),
         ])])
-        XCTAssertNotEqual(r.isError, true, text(r))
+        XCTAssertEqual(r.isError, true, text(r))
         _ = await call(server, "save_document")
-        let xml = try documentXML(at: path)
-        for old in ["Alphaland", "Betaland"] {
-            XCTAssertTrue(matches(xml, "<w:delText[^>]*>\(old)</w:delText>"), "\(old) must be a tracked deletion — got: \(xml)")
-        }
+        XCTAssertTrue(try documentXML(at: path).contains("Data came from Alphaland, Betaland"))
     }
 
     // MARK: - Case 3 (Stage 1: refuse instead of rewriting another author's text)
@@ -195,8 +193,9 @@ final class Issue276TrackedTextEditsTests: XCTestCase {
         let ins = text(await call(first, "insert_text_as_revision", [
             "paragraph_index": .int(0), "position": .int(0), "text": .string("NEW "),
         ]))
-        let rep = text(await call(first, "replace_text", ["find": .string("Gammaland"), "replace": .string("Gamma")]))
-        XCTAssertTrue(rep.contains("revision ids"), "replace_text must report its revision ids — got: \(rep)")
+        let del = text(await call(first, "delete_text_as_revision", [
+            "paragraph_index": .int(0), "start": .int(4), "end": .int(9),
+        ]))
         _ = await call(first, "save_document")
         _ = await call(first, "close_document")
 
@@ -204,12 +203,58 @@ final class Issue276TrackedTextEditsTests: XCTestCase {
             let re = try! NSRegularExpression(pattern: "\\d+")
             return re.matches(in: s, range: NSRange(s.startIndex..., in: s)).compactMap { Range($0.range, in: s).map { Int(s[$0])! } }
         }
-        let returned = Set([numbers(ins).last!] + numbers(rep).dropFirst())   // "Replaced 1 occurrence(s) … (revision ids a, b)"
+        let returned = Set([numbers(ins).last!, numbers(del).last!])
 
         let second = await session(path, tracked: true)
         let listed = text(await call(second, "get_revisions"))
         for id in returned {
             XCTAssertTrue(listed.contains("[\(id)]"), "revision \(id) missing after reopen — got: \(listed)")
         }
+    }
+
+    // MARK: - Stage 1 round 2 (verify findings)
+
+    /// The pre-check names the paragraph length callers read: text deleted
+    /// in the session no longer counts.
+    func testDeletePreCheckUsesTheVisibleLength() async throws {
+        let path = try makeFixture(withInsertion: false)
+        let server = await session(path, tracked: true)
+        _ = await call(server, "delete_text_as_revision", ["paragraph_index": .int(0), "start": .int(0), "end": .int(5)])
+        let visible = "Data came from Alphaland, Betaland, and Gammaland. Table 1, 2, 3, and 4 list the sample sizes.".count - 5
+        let r = await call(server, "delete_text_as_revision", [
+            "paragraph_index": .int(0), "start": .int(0), "end": .int(visible + 1),
+        ])
+        XCTAssertEqual(r.isError, true, text(r))
+        XCTAssertTrue(text(r).contains("paragraph length \(visible)"), "got: \(text(r))")
+    }
+
+    func testInsertTextRefusesCharactersXMLCannotStore() async throws {
+        let path = try makeFixture(withInsertion: false)
+        let server = await session(path, tracked: true)
+        let r = await call(server, "insert_text_as_revision", [
+            "paragraph_index": .int(0), "position": .int(0), "text": .string("Bad\u{01}"),
+        ])
+        XCTAssertEqual(r.isError, true, text(r))
+        let a = await call(server, "delete_text_as_revision", [
+            "paragraph_index": .int(0), "start": .int(0), "end": .int(4), "author": .string("Bad\u{FFFF}"),
+        ])
+        XCTAssertEqual(a.isError, true, text(a))
+    }
+
+    /// Refusal paths reach the caller as errors and change nothing.
+    func testInsertInsideAnotherAuthorsInsertionIsRefusedThroughMCP() async throws {
+        let path = try makeFixture(withInsertion: true)
+        let server = await session(path, tracked: true)
+        let r = await call(server, "insert_text_as_revision", [
+            "paragraph_index": .int(0), "position": .int(60), "text": .string("X"),
+        ])
+        XCTAssertEqual(r.isError, true, text(r))
+        XCTAssertTrue(text(r).contains("#293"), "got: \(text(r))")
+        let d = await call(server, "delete_text_as_revision", [
+            "paragraph_index": .int(0), "start": .int(51), "end": .int(71),
+        ])
+        XCTAssertEqual(d.isError, true, text(d))
+        _ = await call(server, "save_document")
+        XCTAssertFalse(try documentXML(at: path).contains("CHE CHENG"))
     }
 }
