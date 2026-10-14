@@ -172,6 +172,16 @@ actor WordMCPServer {
     /// `enable_track_changes`). Tools that track by default follow this, not
     /// the file's own review-mode setting, like every explicit tracked tool.
     private var trackChangesOptedIn: [String: Bool] = [:]
+    /// #275 round 3: the session's revision author, so a document reloaded
+    /// from disk (revert / reload) can be put back into the session's mode.
+    private var trackChangesAuthor: [String: String] = [:]
+
+    /// #275 round 3: revert_to_disk / reload_from_disk read the file afresh;
+    /// an opted-in session keeps tracking with its author.
+    private func reapplySessionTracking(_ docId: String, to doc: inout WordDocument) {
+        guard trackChangesOptedIn[docId] == true else { return }
+        doc.enableTrackChanges(author: trackChangesAuthor[docId] ?? defaultRevisionAuthor)
+    }
     /// Disk-drift detection (3.0.0 — Refs #12 #13 #15)
     private var documentDiskHash: [String: Data] = [:]
     private var documentDiskMtime: [String: Date] = [:]
@@ -1186,6 +1196,7 @@ actor WordMCPServer {
         documentDirtyState.removeValue(forKey: docId)
         documentAutosave.removeValue(forKey: docId)
         trackChangesOptedIn.removeValue(forKey: docId)
+        trackChangesAuthor.removeValue(forKey: docId)
         documentImageOrphanBaseline.removeValue(forKey: docId)
         documentUnsavedSidecars.removeValue(forKey: docId)   // files stay: they are the user's safety net
         documentImageRelationshipCountAtBaseline.removeValue(forKey: docId)
@@ -1847,7 +1858,7 @@ actor WordMCPServer {
                         ]),
                         "inherit_format": .object([
                             "type": .string("boolean"),
-                            "description": .string("#275：以 after_text / before_text 定位且未給 style 時，是否照 Word 按 Enter 的規則沿用 anchor 格式。after_text：anchor 樣式有 w:next（如標題 → 內文）時改用該樣式、不帶 anchor 的直接格式；否則沿用段落屬性（編號、大綱層級延續）。before_text：沿用同一樣式與段落屬性。新文字的 run 格式取段落記號的 rPr，沒有時取插入點旁的 run。分節符號、段落前分頁、隱藏文字、修訂標記一律不複製。預設 true；傳 false 得到不帶格式的段落")
+                            "description": .string("#275：以 after_text / before_text 定位且未給 style 時，是否照 Word 按 Enter 的規則沿用 anchor 格式。after_text：anchor 樣式有 w:next（如標題 → 內文）時改用該樣式、不帶 anchor 的直接格式；否則沿用段落屬性（編號、大綱層級延續）。before_text：沿用同一樣式與段落屬性（與 Word 在段首按 Enter 相同——指向標題時新段落也是標題、指向清單項目時也是清單項目；要插一段內文請改用前一段的 after_text，或傳 style）。新文字的 run 格式取段落記號的 rPr，沒有時取插入點旁的 run。分節符號、段落前分頁、隱藏文字、修訂標記一律不複製。預設 true；傳 false 得到不帶格式的段落")
                         ]),
                         "author": .object([
                             "type": .string("string"),
@@ -8048,6 +8059,7 @@ actor WordMCPServer {
         // while both reported a default.
         documentTrackChangesEnforced[docId] = trackChanges
         trackChangesOptedIn[docId] = trackChanges
+        if trackChanges { trackChangesAuthor[docId] = doc.revisions.settings.author }
 
         if profile?.kind == .official {
             try await storeDocument(doc, for: docId)
@@ -8116,6 +8128,7 @@ actor WordMCPServer {
         // Override trackChangesEnforced default (initializeSession sets true)
         documentTrackChangesEnforced[docId] = trackChanges
         trackChangesOptedIn[docId] = trackChanges
+        if trackChanges { trackChangesAuthor[docId] = doc.revisions.settings.author }
 
         // Capture disk-hash + mtime from freshly opened file (3.0.0 — Refs #15)
         if let hash = try? SessionState.computeSHA256(path: path) {
@@ -8513,7 +8526,8 @@ actor WordMCPServer {
         }
 
         let url = URL(fileURLWithPath: path)
-        let fresh = try DocxReader.read(from: url)
+        var fresh = try DocxReader.read(from: url)
+        reapplySessionTracking(docId, to: &fresh)
         // R2 (#221 H1): see `recoverFromAutosave`'s matching comment.
         logDebug(event: "revertToDisk.archiveExtracted", [
             ("doc_id", docId), ("archive_temp_dir", fresh.archiveTempDir?.path ?? "nil"),
@@ -8552,7 +8566,8 @@ actor WordMCPServer {
             throw ToolRefusal("document '\(docId)' has no known source path to reload from")
         }
         let url = URL(fileURLWithPath: path)
-        let fresh = try DocxReader.read(from: url)
+        var fresh = try DocxReader.read(from: url)
+        reapplySessionTracking(docId, to: &fresh)
         // R2 (#221 H1): see `recoverFromAutosave`'s matching comment.
         logDebug(event: "reloadFromDisk.archiveExtracted", [
             ("doc_id", docId), ("archive_temp_dir", fresh.archiveTempDir?.path ?? "nil"),
@@ -8978,10 +8993,21 @@ actor WordMCPServer {
         // unchanged. Round 2: the session opt-in decides, not the file's own
         // review-mode setting.
         let tracked = (trackChangesOptedIn[docId] ?? false) && doc.isTrackChangesEnabled()
-        let revisionAuthor = args["author"]?.stringValue
-        let revisionDate = parseISODate(args["date"]?.stringValue)
-        if let raw = args["date"]?.stringValue, revisionDate == nil {
-            throw ToolRefusal("insert_paragraph: date '\(raw)' is not an ISO 8601 date-time")
+        // Round 3: strict types; values only matter (and are only validated)
+        // when the insertion is tracked.
+        let revisionAuthor = try Self.optionalStrictString(args, "author")
+        let rawDate = try Self.optionalStrictString(args, "date")
+        var revisionDate: Date?
+        if tracked {
+            if let revisionAuthor, revisionAuthor.unicodeScalars.contains(where: {
+                $0.value < 0x20 && $0 != "\t" && $0 != "\n" && $0 != "\r"
+            }) {
+                throw ToolRefusal("insert_paragraph: author contains control characters, which XML 1.0 cannot store")
+            }
+            revisionDate = parseISODate(rawDate)
+            if let rawDate, revisionDate == nil {
+                throw ToolRefusal("insert_paragraph: date '\(rawDate)' is not an ISO 8601 date-time")
+            }
         }
         var revisionId: Int?
         func place(_ location: InsertLocation) throws {
@@ -9103,9 +9129,12 @@ actor WordMCPServer {
         if let mark = properties.markRunProperties {
             properties.markRunProperties = cleaned(mark)
         }
+        // A mark rPr that held only revision / hidden markers carries no
+        // formatting (round 3): fall back to the run at the insertion point.
+        let markFormatting = properties.markRunProperties.flatMap { $0.hasDirectFormatting ? $0 : nil }
         let textRuns = anchor.runs.filter { !$0.text.isEmpty }
         let adjacent = after ? textRuns.last : textRuns.first
-        return (properties, properties.markRunProperties ?? adjacent.map { cleaned($0.properties) })
+        return (properties, markFormatting ?? adjacent.map { cleaned($0.properties) })
     }
 
     private func updateParagraph(args: [String: Value]) async throws -> String {
@@ -12519,6 +12548,7 @@ actor WordMCPServer {
         let author = args["author"]?.stringValue ?? "Unknown"
         doc.enableTrackChanges(author: author)
         trackChangesOptedIn[docId] = true
+        trackChangesAuthor[docId] = author
         try await storeDocument(doc, for: docId)
 
         return "Track changes enabled for '\(author)'"

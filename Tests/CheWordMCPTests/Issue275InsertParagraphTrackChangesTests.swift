@@ -74,7 +74,7 @@ final class Issue275InsertParagraphTrackChangesTests: XCTestCase {
         if settingsTrackChanges {
             parts.append(("word/settings.xml", """
                 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-                <w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:trackChanges/></w:settings>
+                <w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:trackRevisions/><w:trackChanges/></w:settings>
                 """))
         }
         for (relPath, content) in parts {
@@ -326,5 +326,69 @@ final class Issue275InsertParagraphTrackChangesTests: XCTestCase {
         XCTAssertNotNil(paragraph(containing: "Two.", in: xml))
         XCTAssertNotNil(paragraph(containing: "Alpha paragraph.", in: xml))
         XCTAssertNotNil(paragraph(containing: "Beta paragraph.", in: xml))
+    }
+
+    // MARK: - Verify round 2 (round 3 of #275)
+
+    /// revert_to_disk / reload_from_disk swap in a fresh read; the session's
+    /// opt-in must carry over, or the next insert is silently untracked.
+    func testSessionOptInSurvivesRevertToDisk() async throws {
+        let path = try makeFixture()
+        let server = await session(path, trackChanges: false, enableAuthor: "Editor B")
+        _ = await call(server, "revert_to_disk", [:])
+        let r = await call(server, "insert_paragraph", ["after_text": .string("Alpha paragraph."), "text": .string("After revert.")])
+        XCTAssertTrue(text(r).contains("revision id"), "got: \(text(r))")
+        _ = await call(server, "save_document", [:])
+        let p = try XCTUnwrap(paragraph(containing: "After revert.", in: try unzipDocumentXML(at: path)))
+        XCTAssertTrue(p.contains("w:author=\"Editor B\""), "got: \(p)")
+    }
+
+    /// An anchor whose paragraph-mark rPr holds only a revision marker (any
+    /// tracked paragraph) has no mark formatting: fall back to the run.
+    func testMarkerOnlyMarkRPrFallsBackToTheAdjacentRun() async throws {
+        let body = """
+            <w:p><w:pPr><w:rPr><w:ins w:id="5" w:author="A" w:date="2026-10-01T00:00:00Z"/></w:rPr></w:pPr>\
+            <w:ins w:id="5" w:author="A" w:date="2026-10-01T00:00:00Z"><w:r><w:rPr><w:sz w:val="28"/></w:rPr><w:t>Alpha paragraph.</w:t></w:r></w:ins></w:p>
+            """
+        let p = try await insertAndSave(trackChanges: false, body: body)
+        XCTAssertTrue(p.range(of: "<w:r><w:rPr>.*<w:sz w:val=\"28\"/>.*</w:rPr><w:t>New paragraph.", options: .regularExpression) != nil,
+                      "got: \(p)")
+    }
+
+    func testAuthorWithControlCharactersIsRefused() async throws {
+        let path = try makeFixture()
+        let server = await session(path, trackChanges: true, enableAuthor: "Editor B")
+        let r = await call(server, "insert_paragraph", [
+            "after_text": .string("Alpha paragraph."), "text": .string("X."), "author": .string("Bad\u{01}Name"),
+        ])
+        XCTAssertEqual(r.isError, true, text(r))
+    }
+
+    func testNonStringDateIsRefusedAndDateIsIgnoredWhenUntracked() async throws {
+        let path = try makeFixture()
+        let tracked = await session(path, trackChanges: true, enableAuthor: "Editor B")
+        let bad = await call(tracked, "insert_paragraph", [
+            "after_text": .string("Alpha paragraph."), "text": .string("X."), "date": .int(5),
+        ])
+        XCTAssertEqual(bad.isError, true, text(bad))
+
+        let path2 = try makeFixture()
+        let untracked = await session(path2, trackChanges: false)
+        let ok = await call(untracked, "insert_paragraph", [
+            "after_text": .string("Alpha paragraph."), "text": .string("X."), "date": .string("not a date"),
+        ])
+        XCTAssertNotEqual(ok.isError, true, "date is ignored when not tracking — got: \(text(ok))")
+    }
+
+    func testIntoTableCellIsTracked() async throws {
+        let body = "<w:tbl><w:tr><w:tc><w:p><w:r><w:t>cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"
+        let path = try makeFixture(body: body)
+        let server = await session(path, trackChanges: true, enableAuthor: "Editor B")
+        _ = await call(server, "insert_paragraph", [
+            "into_table_cell": .object(["table_index": .int(0), "row": .int(0), "col": .int(0)]), "text": .string("New paragraph."),
+        ])
+        _ = await call(server, "save_document", [:])
+        let p = try XCTUnwrap(paragraph(containing: "New paragraph.", in: try unzipDocumentXML(at: path)))
+        XCTAssertTrue(p.contains("<w:ins") && p.contains("w:author=\"Editor B\""), "got: \(p)")
     }
 }

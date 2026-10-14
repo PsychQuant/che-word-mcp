@@ -20,10 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   修訂設定不會觸發，避免 session 回報「修訂關閉」卻寫出作者為 "Unknown" 的修訂。附加到最後時
   不會讓整份文件重新序列化。需要 ooxml-swift 的 `insertParagraphAsRevision`（PsychQuant/ooxml-swift#224）。
 - **`accept_revision`／`reject_revision` 在插入或刪除段落後找錯段落**（#280，與 #275 一起修）。
-  依修訂 id 找目標，不再依記錄下來的段落索引與文字比對；連續兩次 `insert_paragraph` 後拒絕第一段，
-  不會再刪到其他段落的文字（ooxml-swift#224）。
+  依修訂 id 與型別找目標，不再依記錄下來的段落索引與文字比對；連續兩次 `insert_paragraph` 後拒絕
+  第一段、或段落被 `delete_paragraph` 刪掉後再接受／拒絕它的修訂，都不會再刪到其他段落的文字
+  （ooxml-swift#224）。拒絕一個段落仍含書籤、註解、超連結等內容的插入段落時會明確失敗，而不是
+  悄悄保留段落。
 - **`open_document(track_changes: true)` 開啟本身已在修訂模式的文件時，作者不再是 "Unknown"**
   （#275）：檔案不帶作者（Word 依使用者記錄），過去因為文件已啟用就略過設定作者；現在補上預設作者。
+  `revert_to_disk`／`reload_from_disk` 之後 session 的修訂狀態（與作者）照舊。`author` 含 XML 不能
+  存的控制字元時拒絕；`author`／`date` 必須是字串，且只在追蹤時驗證。
 
 ### Changed
 
