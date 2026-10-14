@@ -1819,7 +1819,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "insert_paragraph",
-                description: "插入新段落（需先 open_document）。index 是 body.children 插入索引（top-level OOXML body child；計入 tables / block-level SDTs / bookmark markers / raw blocks）。v3.15.1+ 接受 after_text / before_text / text_instance / into_table_cell / after_image_id anchor（與 insert_image_from_path 對齊）；anchor 與 index 擇一，不傳則加到最後。v3.16.0+ 同時傳多個 anchor 會 return 「Error: insert_paragraph: received conflicting anchors: ...」（先前版本是 silent priority winner）。#90/#115：after_text / before_text 支援 match_options.math_script_insensitive。",
+                description: "插入新段落（需先 open_document）。index 是 body.children 插入索引（top-level OOXML body child；計入 tables / block-level SDTs / bookmark markers / raw blocks）。v3.15.1+ 接受 after_text / before_text / text_instance / into_table_cell / after_image_id anchor（與 insert_image_from_path 對齊）；anchor 與 index 擇一，不傳則加到最後。v3.16.0+ 同時傳多個 anchor 會 return 「Error: insert_paragraph: received conflicting anchors: ...」（先前版本是 silent priority winner）。#90/#115：after_text / before_text 支援 match_options.math_script_insensitive。#275：修訂模式開啟時，新段落以追蹤修訂插入（run 外的 <w:ins> 與段落記號的 <w:ins/>，作者為 enable_track_changes 設定的作者）；以 after_text / before_text 定位時預設沿用 anchor 段落格式（見 inherit_format）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1837,7 +1837,11 @@ actor WordMCPServer {
                         ]),
                         "style": .object([
                             "type": .string("string"),
-                            "description": .string("段落樣式（如 Heading1, Normal）")
+                            "description": .string("段落樣式（如 Heading1, Normal）。給定時只套用此樣式，不繼承 anchor 段落的格式")
+                        ]),
+                        "inherit_format": .object([
+                            "type": .string("boolean"),
+                            "description": .string("#275：以 after_text / before_text 定位且未給 style 時，是否沿用 anchor 段落的格式（段落屬性，以及段落記號的 run 格式套到新文字；分節符號與修訂標記不複製）。預設 true；傳 false 得到不帶格式的段落")
                         ]),
                         "into_table_cell": .object([
                             "type": .string("object"),
@@ -8896,6 +8900,8 @@ actor WordMCPServer {
         }
 
         let style = args["style"]?.stringValue
+        // #275: copy the anchor paragraph's formatting by default.
+        let inheritFormat = try optionalBool(args, "inherit_format") ?? true
 
         var para = Paragraph(text: text)
         if let style = style {
@@ -8930,6 +8936,32 @@ actor WordMCPServer {
         let matchOptions = try Self.parseAnchorLookupOptions(args, tool: "insert_paragraph")
         let resultMessage: String
 
+        // #275: a paragraph added next to existing text should look like it —
+        // Word's Enter copies the paragraph properties and applies the
+        // paragraph-mark run properties to the new text. Only for text
+        // anchors, and never over an explicit `style`.
+        if style == nil, inheritFormat,
+           let anchorText = args["after_text"]?.stringValue ?? args["before_text"]?.stringValue,
+           let anchorIdx = doc.findBodyChildContainingText(anchorText, nthInstance: textInstance, options: matchOptions),
+           case .paragraph(let anchor) = doc.body.children[anchorIdx] {
+            let inherited = Self.inheritableFormat(from: anchor)
+            para.properties = inherited.paragraph
+            if let runProperties = inherited.run {
+                for i in para.runs.indices { para.runs[i].properties = runProperties }
+            }
+        }
+
+        // #275: with track changes on, the paragraph is inserted as a tracked
+        // insertion (runs + paragraph mark, session author); off → unchanged.
+        let tracked = doc.isTrackChangesEnabled()
+        func place(_ location: InsertLocation) throws {
+            if tracked {
+                _ = try doc.insertParagraphAsRevision(para, at: location)
+            } else {
+                try doc.insertParagraph(para, at: location)
+            }
+        }
+
         if let cellDict = args["into_table_cell"]?.objectValue {
             // F5 (v3.15.1): malformed partial dict returns structured error instead of silent fallthrough.
             // #232 R4: each field parsed independently (not chained in one
@@ -8944,7 +8976,7 @@ actor WordMCPServer {
                 throw ToolRefusal("insert_paragraph: into_table_cell requires all three fields (table_index, row, col); got partial dict")
             }
             do {
-                try doc.insertParagraph(para, at: .intoTableCell(tableIndex: tableIdx, row: row, col: col))
+                try place(.intoTableCell(tableIndex: tableIdx, row: row, col: col))
                 resultMessage = "Inserted paragraph into table[\(tableIdx)] cell (row: \(row), col: \(col))"
             } catch let InsertLocationError.tableIndexOutOfRange(i) {
                 throw ToolRefusal("insert_paragraph: table index \(i) out of range")
@@ -8954,14 +8986,14 @@ actor WordMCPServer {
         } else if let afterImageId = args["after_image_id"]?.stringValue {
             // F1 (v3.15.1): after_image_id anchor.
             do {
-                try doc.insertParagraph(para, at: .afterImageId(afterImageId))
+                try place(.afterImageId(afterImageId))
                 resultMessage = "Inserted paragraph after image '\(afterImageId)'"
             } catch let InsertLocationError.imageIdNotFound(rId) {
                 throw ToolRefusal("insert_paragraph: image rId '\(rId)' not found")
             }
         } else if let afterText = args["after_text"]?.stringValue {
             do {
-                try doc.insertParagraph(para, at: .afterText(afterText, instance: textInstance, options: matchOptions))
+                try place(.afterText(afterText, instance: textInstance, options: matchOptions))
                 resultMessage = "Inserted paragraph after text '\(afterText)' (instance \(textInstance))"
             } catch let InsertLocationError.textNotFound(searchText, instance) {
                 throw WordMCPServer.anchorNotFoundRefusal(
@@ -8970,7 +9002,7 @@ actor WordMCPServer {
             }
         } else if let beforeText = args["before_text"]?.stringValue {
             do {
-                try doc.insertParagraph(para, at: .beforeText(beforeText, instance: textInstance, options: matchOptions))
+                try place(.beforeText(beforeText, instance: textInstance, options: matchOptions))
                 resultMessage = "Inserted paragraph before text '\(beforeText)' (instance \(textInstance))"
             } catch let InsertLocationError.textNotFound(searchText, instance) {
                 throw WordMCPServer.anchorNotFoundRefusal(
@@ -8978,10 +9010,19 @@ actor WordMCPServer {
                 )
             }
         } else if let index = indexArg {
-            doc.insertParagraph(para, at: index)
+            if tracked {
+                // Same clamping as the untracked Int overload.
+                try place(.paragraphIndex(min(max(0, index), doc.body.children.count)))
+            } else {
+                doc.insertParagraph(para, at: index)
+            }
             resultMessage = "Inserted paragraph at index \(index)"
         } else {
-            doc.appendParagraph(para)
+            if tracked {
+                try place(.paragraphIndex(doc.body.children.count))
+            } else {
+                doc.appendParagraph(para)
+            }
             // #69: report body.children index (matches Document.insertParagraph(_:at:Int)
             // semantics — Document.swift:266-270). getParagraphs() skips tables/SDTs so
             // its count - 1 mis-reports the index in docs with non-paragraph body children.
@@ -8991,6 +9032,28 @@ actor WordMCPServer {
         try await storeDocument(doc, for: docId)
 
         return resultMessage
+    }
+
+    /// #275: the formatting a paragraph inserted next to `anchor` inherits —
+    /// Word's Enter behaviour: the anchor's paragraph properties, and its
+    /// paragraph-mark run properties for the new text. Things that belong to
+    /// the anchor itself are dropped: a section break (it would split the
+    /// section again) and revision markers (`<w:ins>`/`<w:del>`/moves on the
+    /// mark, `<w:rPrChange>`, `<w:pPrChange>`) — copying those would hand the
+    /// new paragraph someone else's revision ids.
+    static func inheritableFormat(from anchor: Paragraph) -> (paragraph: ParagraphProperties, run: RunProperties?) {
+        let revisionMarkers: Set<String> = ["ins", "del", "moveFrom", "moveTo", "rPrChange", "pPrChange"]
+        var properties = anchor.properties
+        properties.sectionBreak = nil
+        properties.rawChildren.removeAll { revisionMarkers.contains($0.name) || $0.name == "sectPr" }
+        if var mark = properties.markRunProperties {
+            if let raw = mark.rawChildren {
+                let kept = raw.filter { !revisionMarkers.contains($0.name) }
+                mark.rawChildren = kept.isEmpty ? nil : kept
+            }
+            properties.markRunProperties = mark
+        }
+        return (properties, properties.markRunProperties)
     }
 
     private func updateParagraph(args: [String: Value]) async throws -> String {

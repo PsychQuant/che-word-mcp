@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`insert_paragraph` 在修訂模式下改為追蹤修訂插入**（#275）。過去即使 `open_document(track_changes: true)`
+  並呼叫 `enable_track_changes(author:)`，新段落仍以原文寫入——沒有 `<w:ins>`、沒有作者，在 Word 裡看起來就是原作者
+  寫的。現在修訂模式開啟時，新段落的 run 包在 `<w:ins>` 內，段落記號標上 `<w:pPr><w:rPr><w:ins …/></w:rPr></w:pPr>`，
+  兩者共用一個修訂 id、作者為 session 設定的作者；在 Word 裡接受會保留段落，拒絕會整段移除。修訂模式關閉時行為不變。
+  需要 ooxml-swift 的 `insertParagraphAsRevision`（PsychQuant/ooxml-swift，che-word-mcp#275）。
+
+### Changed
+
+- **`insert_paragraph` 以 `after_text`／`before_text` 定位且未給 `style` 時，新段落沿用 anchor 段落的格式**（#275）。
+  與 Word 按 Enter 的行為一致：複製段落屬性（縮排、行距、對齊、樣式、編號……），並把段落記號的 run 格式套到新文字；
+  分節符號與修訂標記（`<w:ins>`／`<w:del>`／`<w:rPrChange>`／`<w:pPrChange>`）不複製。過去新段落不帶任何格式，
+  插在內文中間時缺首行縮排等。給了 `style` 時只套用該樣式；新增 `inherit_format: false` 可取回舊行為。
+  `index`／`into_table_cell`／`after_image_id`／附加到最後的定位方式不受影響。縮排參數另見 #278。
+
 ## [4.9.0] - 2026-09-28
 
 > **安全修正：`remove_watermark`／`insert_watermark`／`insert_image_watermark` 在 4.7.0–4.8.0 可被惡意 .docx 誘導刪除封裝外的本機檔案或整個目錄（見 Security）。** header／footer／chart 的圖片可以列出與匯出，並對這些位置的圖片關係做封裝內含檢查；anchor／搜尋／取代新增 `match_options.math_script_insensitive`；`replace_text` 對缺字形的字元發 advisory；`set_page_borders` 改為真的寫入；一批字串參數改為嚴格驗證；相依升到 ooxml-swift 3.19.0（見文末「升級注意」）。依本專案先例 bump minor。
