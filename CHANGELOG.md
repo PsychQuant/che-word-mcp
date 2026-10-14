@@ -9,19 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`insert_paragraph` 在修訂模式下改為追蹤修訂插入**（#275）。過去即使 `open_document(track_changes: true)`
-  並呼叫 `enable_track_changes(author:)`，新段落仍以原文寫入——沒有 `<w:ins>`、沒有作者，在 Word 裡看起來就是原作者
-  寫的。現在修訂模式開啟時，新段落的 run 包在 `<w:ins>` 內，段落記號標上 `<w:pPr><w:rPr><w:ins …/></w:rPr></w:pPr>`，
-  兩者共用一個修訂 id、作者為 session 設定的作者；在 Word 裡接受會保留段落，拒絕會整段移除。修訂模式關閉時行為不變。
-  需要 ooxml-swift 的 `insertParagraphAsRevision`（PsychQuant/ooxml-swift，che-word-mcp#275）。
+- **`insert_paragraph` 在本 session 開啟修訂時改為追蹤修訂插入**（#275）。過去即使
+  `open_document(track_changes: true)` 並呼叫 `enable_track_changes(author:)`，新段落仍以原文寫入——
+  沒有 `<w:ins>`、沒有作者，在 Word 裡看起來就是原作者寫的。現在新段落的 run 包在 `<w:ins>` 內，
+  段落記號標上 `<w:pPr><w:rPr><w:ins …/></w:rPr></w:pPr>`，兩者共用一個修訂 id；作者為新參數
+  `author`，省略時用 session 作者（`date` 參數可指定時間）；結果訊息附上修訂 id。在 Word 裡
+  接受會保留段落，拒絕會整段移除，存檔後在另一個 session 重新開啟也一樣（ooxml-swift 讀回段落
+  記號修訂）。觸發條件是**本 session 的明確開啟**（`open_document`／`create_document` 傳
+  `track_changes: true`，或呼叫 `enable_track_changes`），與其他修訂工具一致；只看文件本身的
+  修訂設定不會觸發，避免 session 回報「修訂關閉」卻寫出作者為 "Unknown" 的修訂。附加到最後時
+  不會讓整份文件重新序列化。需要 ooxml-swift 的 `insertParagraphAsRevision`（PsychQuant/ooxml-swift#224）。
+- **`accept_revision`／`reject_revision` 在插入或刪除段落後找錯段落**（#280，與 #275 一起修）。
+  依修訂 id 找目標，不再依記錄下來的段落索引與文字比對；連續兩次 `insert_paragraph` 後拒絕第一段，
+  不會再刪到其他段落的文字（ooxml-swift#224）。
+- **`open_document(track_changes: true)` 開啟本身已在修訂模式的文件時，作者不再是 "Unknown"**
+  （#275）：檔案不帶作者（Word 依使用者記錄），過去因為文件已啟用就略過設定作者；現在補上預設作者。
 
 ### Changed
 
-- **`insert_paragraph` 以 `after_text`／`before_text` 定位且未給 `style` 時，新段落沿用 anchor 段落的格式**（#275）。
-  與 Word 按 Enter 的行為一致：複製段落屬性（縮排、行距、對齊、樣式、編號……），並把段落記號的 run 格式套到新文字；
-  分節符號與修訂標記（`<w:ins>`／`<w:del>`／`<w:rPrChange>`／`<w:pPrChange>`）不複製。過去新段落不帶任何格式，
-  插在內文中間時缺首行縮排等。給了 `style` 時只套用該樣式；新增 `inherit_format: false` 可取回舊行為。
-  `index`／`into_table_cell`／`after_image_id`／附加到最後的定位方式不受影響。縮排參數另見 #278。
+- **`insert_paragraph` 以 `after_text`／`before_text` 定位且未給 `style` 時，照 Word 按 Enter 的
+  規則沿用 anchor 格式**（#275）。`after_text`（在段尾按 Enter）：anchor 樣式有 `w:next`（例如
+  標題 1 → 內文）時改用該樣式，不帶 anchor 的直接格式；否則沿用段落屬性（編號、大綱層級延續）。
+  `before_text`（在段首按 Enter）：沿用同一樣式與段落屬性。新文字的 run 格式取段落記號的 rPr，
+  沒有時取插入點旁的 run（after 取最後一個、before 取第一個）。分節符號、段落前分頁、隱藏文字
+  （`vanish`／`specVanish`／`webHidden`）與修訂標記一律不複製。過去新段落不帶任何格式，插在
+  內文中間時缺首行縮排等。給了 `style` 時只套用該樣式；`inherit_format: false` 取回舊行為；
+  `index`／`into_table_cell`／`after_image_id`／附加到最後的定位方式不受影響。此預設也適用於
+  未開修訂的呼叫。縮排參數另見 #278。
 
 ## [4.9.0] - 2026-09-28
 

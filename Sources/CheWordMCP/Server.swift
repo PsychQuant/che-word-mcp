@@ -167,6 +167,11 @@ actor WordMCPServer {
     /// (R3 logic N4: the typed enumeration kept cancelling new inspector coverage).
     private var documentImageRelationshipCountAtBaseline: [String: Int] = [:]
     private var documentTrackChangesEnforced: [String: Bool] = [:]
+    /// #275 round 2: track changes was opted into in this session
+    /// (`open_document` / `create_document` with `track_changes: true`, or
+    /// `enable_track_changes`). Tools that track by default follow this, not
+    /// the file's own review-mode setting, like every explicit tracked tool.
+    private var trackChangesOptedIn: [String: Bool] = [:]
     /// Disk-drift detection (3.0.0 — Refs #12 #13 #15)
     private var documentDiskHash: [String: Data] = [:]
     private var documentDiskMtime: [String: Date] = [:]
@@ -1180,6 +1185,7 @@ actor WordMCPServer {
         documentOriginalPaths.removeValue(forKey: docId)
         documentDirtyState.removeValue(forKey: docId)
         documentAutosave.removeValue(forKey: docId)
+        trackChangesOptedIn.removeValue(forKey: docId)
         documentImageOrphanBaseline.removeValue(forKey: docId)
         documentUnsavedSidecars.removeValue(forKey: docId)   // files stay: they are the user's safety net
         documentImageRelationshipCountAtBaseline.removeValue(forKey: docId)
@@ -1819,7 +1825,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "insert_paragraph",
-                description: "插入新段落（需先 open_document）。index 是 body.children 插入索引（top-level OOXML body child；計入 tables / block-level SDTs / bookmark markers / raw blocks）。v3.15.1+ 接受 after_text / before_text / text_instance / into_table_cell / after_image_id anchor（與 insert_image_from_path 對齊）；anchor 與 index 擇一，不傳則加到最後。v3.16.0+ 同時傳多個 anchor 會 return 「Error: insert_paragraph: received conflicting anchors: ...」（先前版本是 silent priority winner）。#90/#115：after_text / before_text 支援 match_options.math_script_insensitive。#275：修訂模式開啟時，新段落以追蹤修訂插入（run 外的 <w:ins> 與段落記號的 <w:ins/>，作者為 enable_track_changes 設定的作者）；以 after_text / before_text 定位時預設沿用 anchor 段落格式（見 inherit_format）。",
+                description: "插入新段落（需先 open_document）。index 是 body.children 插入索引（top-level OOXML body child；計入 tables / block-level SDTs / bookmark markers / raw blocks）。v3.15.1+ 接受 after_text / before_text / text_instance / into_table_cell / after_image_id anchor（與 insert_image_from_path 對齊）；anchor 與 index 擇一，不傳則加到最後。v3.16.0+ 同時傳多個 anchor 會 return 「Error: insert_paragraph: received conflicting anchors: ...」（先前版本是 silent priority winner）。#90/#115：after_text / before_text 支援 match_options.math_script_insensitive。#275：本 session 開啟修訂（open_document / create_document 傳 track_changes: true，或呼叫 enable_track_changes）時，新段落以追蹤修訂插入（run 外的 <w:ins> 與段落記號的 <w:ins/>），作者為 author 參數或 session 作者，結果訊息附修訂 id；只看文件本身的修訂設定不會觸發。以 after_text / before_text 定位時預設照 Word 按 Enter 的規則沿用 anchor 格式（見 inherit_format）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1841,7 +1847,15 @@ actor WordMCPServer {
                         ]),
                         "inherit_format": .object([
                             "type": .string("boolean"),
-                            "description": .string("#275：以 after_text / before_text 定位且未給 style 時，是否沿用 anchor 段落的格式（段落屬性，以及段落記號的 run 格式套到新文字；分節符號與修訂標記不複製）。預設 true；傳 false 得到不帶格式的段落")
+                            "description": .string("#275：以 after_text / before_text 定位且未給 style 時，是否照 Word 按 Enter 的規則沿用 anchor 格式。after_text：anchor 樣式有 w:next（如標題 → 內文）時改用該樣式、不帶 anchor 的直接格式；否則沿用段落屬性（編號、大綱層級延續）。before_text：沿用同一樣式與段落屬性。新文字的 run 格式取段落記號的 rPr，沒有時取插入點旁的 run。分節符號、段落前分頁、隱藏文字、修訂標記一律不複製。預設 true；傳 false 得到不帶格式的段落")
+                        ]),
+                        "author": .object([
+                            "type": .string("string"),
+                            "description": .string("#275：追蹤插入的作者；省略時用 session 作者（enable_track_changes）。未開啟修訂時忽略")
+                        ]),
+                        "date": .object([
+                            "type": .string("string"),
+                            "description": .string("#275：追蹤插入的時間（ISO 8601，例如 2026-10-01T00:00:00Z）；省略時用現在。未開啟修訂時忽略")
                         ]),
                         "into_table_cell": .object([
                             "type": .string("object"),
@@ -8033,6 +8047,7 @@ actor WordMCPServer {
         // not here, so the two entry points disagreed for two major versions
         // while both reported a default.
         documentTrackChangesEnforced[docId] = trackChanges
+        trackChangesOptedIn[docId] = trackChanges
 
         if profile?.kind == .official {
             try await storeDocument(doc, for: docId)
@@ -8080,7 +8095,12 @@ actor WordMCPServer {
             doc.close()
             throw error
         }
-        if trackChanges && !doc.isTrackChangesEnabled() {
+        // #275 round 2: a file already in review mode carries no author
+        // (Word keeps it per user), so opting in on it left revisions by
+        // "Unknown".
+        if trackChanges && (!doc.isTrackChangesEnabled()
+                            || doc.revisions.settings.author.isEmpty
+                            || doc.revisions.settings.author == "Unknown") {
             doc.enableTrackChanges(author: defaultRevisionAuthor)
         }
         initializeSession(
@@ -8095,6 +8115,7 @@ actor WordMCPServer {
         recordImageBaseline(docId: docId, path: path)
         // Override trackChangesEnforced default (initializeSession sets true)
         documentTrackChangesEnforced[docId] = trackChanges
+        trackChangesOptedIn[docId] = trackChanges
 
         // Capture disk-hash + mtime from freshly opened file (3.0.0 — Refs #15)
         if let hash = try? SessionState.computeSHA256(path: path) {
@@ -8944,19 +8965,29 @@ actor WordMCPServer {
            let anchorText = args["after_text"]?.stringValue ?? args["before_text"]?.stringValue,
            let anchorIdx = doc.findBodyChildContainingText(anchorText, nthInstance: textInstance, options: matchOptions),
            case .paragraph(let anchor) = doc.body.children[anchorIdx] {
-            let inherited = Self.inheritableFormat(from: anchor)
+            let inherited = Self.inheritableFormat(
+                from: anchor, after: args["after_text"] != nil, styles: doc.styles)
             para.properties = inherited.paragraph
             if let runProperties = inherited.run {
                 for i in para.runs.indices { para.runs[i].properties = runProperties }
             }
         }
 
-        // #275: with track changes on, the paragraph is inserted as a tracked
-        // insertion (runs + paragraph mark, session author); off → unchanged.
-        let tracked = doc.isTrackChangesEnabled()
+        // #275: with track changes opted into in this session, the paragraph
+        // is inserted as a tracked insertion (runs + paragraph mark); off →
+        // unchanged. Round 2: the session opt-in decides, not the file's own
+        // review-mode setting.
+        let tracked = (trackChangesOptedIn[docId] ?? false) && doc.isTrackChangesEnabled()
+        let revisionAuthor = args["author"]?.stringValue
+        let revisionDate = parseISODate(args["date"]?.stringValue)
+        if let raw = args["date"]?.stringValue, revisionDate == nil {
+            throw ToolRefusal("insert_paragraph: date '\(raw)' is not an ISO 8601 date-time")
+        }
+        var revisionId: Int?
         func place(_ location: InsertLocation) throws {
             if tracked {
-                _ = try doc.insertParagraphAsRevision(para, at: location)
+                revisionId = try doc.insertParagraphAsRevision(
+                    para, at: location, author: revisionAuthor, date: revisionDate)
             } else {
                 try doc.insertParagraph(para, at: location)
             }
@@ -9031,29 +9062,50 @@ actor WordMCPServer {
 
         try await storeDocument(doc, for: docId)
 
+        if let revisionId {
+            return resultMessage + " as a tracked insertion (revision id \(revisionId))"
+        }
         return resultMessage
     }
 
-    /// #275: the formatting a paragraph inserted next to `anchor` inherits —
-    /// Word's Enter behaviour: the anchor's paragraph properties, and its
-    /// paragraph-mark run properties for the new text. Things that belong to
-    /// the anchor itself are dropped: a section break (it would split the
-    /// section again) and revision markers (`<w:ins>`/`<w:del>`/moves on the
-    /// mark, `<w:rPrChange>`, `<w:pPrChange>`) — copying those would hand the
-    /// new paragraph someone else's revision ids.
-    static func inheritableFormat(from anchor: Paragraph) -> (paragraph: ParagraphProperties, run: RunProperties?) {
+    /// #275: the formatting a paragraph inserted next to `anchor` takes —
+    /// Word's Enter. `after` (Enter at the end of the anchor): a style with
+    /// `w:next` starts that style (Heading 1 → Normal) and nothing else of
+    /// the anchor carries. Otherwise the anchor's paragraph properties carry
+    /// (numbering and outline level continue). Run formatting: the
+    /// paragraph-mark rPr, else the run at the insertion point (the last run
+    /// when after, the first when before). Never copied: the section break,
+    /// page break before, revision markers (copying them would hand the new
+    /// paragraph someone else's revision ids) and hidden-text marks.
+    static func inheritableFormat(
+        from anchor: Paragraph, after: Bool, styles: [Style]
+    ) -> (paragraph: ParagraphProperties, run: RunProperties?) {
         let revisionMarkers: Set<String> = ["ins", "del", "moveFrom", "moveTo", "rPrChange", "pPrChange"]
+        let hiddenMarks: Set<String> = ["vanish", "specVanish", "webHidden"]
+        func cleaned(_ properties: RunProperties) -> RunProperties {
+            var properties = properties
+            if let raw = properties.rawChildren {
+                let kept = raw.filter { !revisionMarkers.contains($0.name) && !hiddenMarks.contains($0.name) }
+                properties.rawChildren = kept.isEmpty ? nil : kept
+            }
+            return properties
+        }
+        if after, let styleId = anchor.properties.style,
+           let next = styles.first(where: { $0.id == styleId })?.nextStyle, next != styleId {
+            var properties = ParagraphProperties()
+            properties.style = next
+            return (properties, nil)
+        }
         var properties = anchor.properties
         properties.sectionBreak = nil
+        properties.pageBreakBefore = false
         properties.rawChildren.removeAll { revisionMarkers.contains($0.name) || $0.name == "sectPr" }
-        if var mark = properties.markRunProperties {
-            if let raw = mark.rawChildren {
-                let kept = raw.filter { !revisionMarkers.contains($0.name) }
-                mark.rawChildren = kept.isEmpty ? nil : kept
-            }
-            properties.markRunProperties = mark
+        if let mark = properties.markRunProperties {
+            properties.markRunProperties = cleaned(mark)
         }
-        return (properties, properties.markRunProperties)
+        let textRuns = anchor.runs.filter { !$0.text.isEmpty }
+        let adjacent = after ? textRuns.last : textRuns.first
+        return (properties, properties.markRunProperties ?? adjacent.map { cleaned($0.properties) })
     }
 
     private func updateParagraph(args: [String: Value]) async throws -> String {
@@ -12466,6 +12518,7 @@ actor WordMCPServer {
 
         let author = args["author"]?.stringValue ?? "Unknown"
         doc.enableTrackChanges(author: author)
+        trackChangesOptedIn[docId] = true
         try await storeDocument(doc, for: docId)
 
         return "Track changes enabled for '\(author)'"
@@ -12480,6 +12533,7 @@ actor WordMCPServer {
         }
 
         doc.disableTrackChanges()
+        trackChangesOptedIn[docId] = false
         try await storeDocument(doc, for: docId)
 
         return "Track changes disabled"
