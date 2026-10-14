@@ -36,6 +36,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `enable_track_changes` 的 session 作者也一樣；`author`／`date` 必須是字串——兩者只在追蹤時讀取與驗證，
   未追蹤時任何型別都忽略。
 
+- **`insert_text_as_revision` 把文字寫在指定位置，並真的追蹤**（#276）。過去從檔案讀進來的段落，新字會被寫到段尾、
+  沒有 `<w:ins>`，`get_revisions` 存檔前列得到、存檔後就不見；現在寫在指定偏移處、包在 `<w:ins>` 內，回傳的修訂 id
+  存檔重開後仍在。偏移量一律以讀取工具顯示的文字為準：已插入的字算、已刪除的字不算（同一 session 內刪除的字，讀取
+  工具也不再顯示），行內方程式算它的可見文字；`delete_text_as_revision`、`move_text_as_revision` 用同一規則。
+  不能安全完成的編輯在改動任何內容前拒絕：位置或範圍落在追蹤插入或搬移的內部（巢狀修訂見 #293）、刪除範圍內含欄位
+  字元、註腳參照、tab 等零長度內容（過去會被未追蹤地丟掉）、會切開含非文字內容的 run、空範圍，以及含有以 raw XML
+  保存之修訂的段落。插在欄位結果結尾時，新字放在欄位之後。`delete_text_as_revision` 的範圍檢查改用同一個可見長度
+  （ooxml-swift `Paragraph.textRevisionLength`）。`text`／`author` 含 XML 1.0 不能存的字元時拒絕。
+- **`replace_text`／`replace_text_batch` 在本 session 開啟修訂時拒絕**（#276）。過去一律直接改字、不留修訂，在別人的
+  `<w:ins>` 裡取代時新字會掛在對方名下。stage 1 曾改成修訂取代，驗證發現比對會跨過超連結、欄位與零長度 run，刪掉的
+  內容沒有被追蹤，所以這一階段先拒絕並指向 `delete_text_as_revision`／`insert_text_as_revision`；修訂取代另見 #292。
+  未開修訂時行為不變。
+
 ### Changed
 
 - **`insert_paragraph` 以 `after_text`／`before_text` 定位且未給 `style` 時，照 Word 按 Enter 的

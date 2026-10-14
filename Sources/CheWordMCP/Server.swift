@@ -1972,7 +1972,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "replace_text",
-                description: "搜尋並取代文字。v2.1+ cross-run 匹配自動生效；新增 scope / regex / match_case。BREAKING: all 參數已移除（現在恆為 replace-all）。（需先 open_document）\n\n【字元選擇】表單勾選請用 ■(U+25A0) 取代 □(U+25A1)，不要用 ☑(U+2611) 或 ☒(U+2612)。實測（本機當前版本）後兩者在 Times New Roman、Arial 與常見 CJK 字型中都沒有字形；缺字形時渲染器會改用別的字型——macOS 上通常是彩色 emoji 字型，其他平台可能是符號字型或 .notdef 方框——勾選框於是與表單其餘部分不一致。本工具不會改動 run 的字型宣告，但實際繪製的字型會變——所以逐格文字比對會全對、外觀卻是錯的。\n\n【跨 run 格式】match 到的文字若橫跨多個格式不同的 run（例如「符號 run＋標籤 run」的勾選列），find／replace 等長時會自動保留各段原本的格式；不等長、regex、或同一段落內有一個以上這種跨 run match 時無法安全拆分，回傳訊息會附上 WARNING 說明格式被合併，請自行檢查該處外觀（#190）。\n\n【空白字元】find 逐字比對找不到、且含空白字元時，會自動改用去除空白後的比對再試一次（解析後的文字模型偶爾會遺失純空白 run 的內容，見 #187）；命中時回傳訊息會附上 NOTE。replace 的內容一律照字面寫入，不受這個正規化影響——即使原文那段空白已經在解析時遺失，取代後新寫入的文字仍保留您在 replace 裡給的空白。\n\n【數學上下標】#151：find 逐字（且去空白備援）都找不到、match_options.math_script_insensitive 為 true、且非 regex 時，會再試一次把 find 正規化成 ASCII 後的比對（例如 find: \"H₀\" 正規化成 \"H0\" 去比對）；命中時回傳訊息附 NOTE。這是單方向正規化（只正規化 find，不正規化文件內容），涵蓋「find 打 Unicode 上下標、文件內容是 OMML 攤平出的 ASCII」這個常見案例，不涵蓋反方向（文件內容本身就是 Unicode 上下標、find 打 ASCII）。",
+                description: "搜尋並取代文字。v2.1+ cross-run 匹配自動生效；新增 scope / regex / match_case。BREAKING: all 參數已移除（現在恆為 replace-all）。（需先 open_document）\n\n【修訂模式】#276：本 session 開啟修訂（open_document / create_document 傳 track_changes: true，或 enable_track_changes）時本工具拒絕、不改任何內容——修訂取代尚未支援（#292）。請改用 delete_text_as_revision 加 insert_text_as_revision，或先 disable_track_changes 再取代（不留修訂）。只看文件本身的修訂設定不會觸發。\n\n【字元選擇】表單勾選請用 ■(U+25A0) 取代 □(U+25A1)，不要用 ☑(U+2611) 或 ☒(U+2612)。實測（本機當前版本）後兩者在 Times New Roman、Arial 與常見 CJK 字型中都沒有字形；缺字形時渲染器會改用別的字型——macOS 上通常是彩色 emoji 字型，其他平台可能是符號字型或 .notdef 方框——勾選框於是與表單其餘部分不一致。本工具不會改動 run 的字型宣告，但實際繪製的字型會變——所以逐格文字比對會全對、外觀卻是錯的。\n\n【跨 run 格式】match 到的文字若橫跨多個格式不同的 run（例如「符號 run＋標籤 run」的勾選列），find／replace 等長時會自動保留各段原本的格式；不等長、regex、或同一段落內有一個以上這種跨 run match 時無法安全拆分，回傳訊息會附上 WARNING 說明格式被合併，請自行檢查該處外觀（#190）。\n\n【空白字元】find 逐字比對找不到、且含空白字元時，會自動改用去除空白後的比對再試一次（解析後的文字模型偶爾會遺失純空白 run 的內容，見 #187）；命中時回傳訊息會附上 NOTE。replace 的內容一律照字面寫入，不受這個正規化影響——即使原文那段空白已經在解析時遺失，取代後新寫入的文字仍保留您在 replace 裡給的空白。\n\n【數學上下標】#151：find 逐字（且去空白備援）都找不到、match_options.math_script_insensitive 為 true、且非 regex 時，會再試一次把 find 正規化成 ASCII 後的比對（例如 find: \"H₀\" 正規化成 \"H0\" 去比對）；命中時回傳訊息附 NOTE。這是單方向正規化（只正規化 find，不正規化文件內容），涵蓋「find 打 Unicode 上下標、文件內容是 OMML 攤平出的 ASCII」這個常見案例，不涵蓋反方向（文件內容本身就是 Unicode 上下標、find 打 ASCII）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -2007,7 +2007,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "replace_text_batch",
-                description: "批次文字取代（減少 per-call round-trip，單次 save）。Replacements 依陣列順序套用（sequential），後者看到前者結果。per-item scope / regex / match_case 設定。dry_run 略過 disk save（但 in-memory doc 仍被 mutate；需 open_document 還原）。（需先 open_document）\n\n【字元選擇】同 replace_text：表單勾選用 ■(U+25A0)，勿用 ☑(U+2611) 或 ☒(U+2612)——實測（本機當前版本）在 Times New Roman、Arial 及常見 CJK 字型皆無字形，缺字形時會改用別的字型而與表單不一致。\n\n【跨 run 格式】同 replace_text：每個 item 各自判斷是否能安全保留跨 run 格式，無法保留時該行結果會附上 WARNING（#190）。\n\n【空白字元】同 replace_text：每個 item 的 find 逐字找不到、含空白時會各自嘗試去除空白後比對，命中時該行附 NOTE；replace 一律照字面寫入（#187）。",
+                description: "批次文字取代（減少 per-call round-trip，單次 save）。#276：本 session 開啟修訂時整批拒絕、不改任何內容（同 replace_text，修訂取代見 #292）。Replacements 依陣列順序套用（sequential），後者看到前者結果。per-item scope / regex / match_case 設定。dry_run 略過 disk save（但 in-memory doc 仍被 mutate；需 open_document 還原）。（需先 open_document）\n\n【字元選擇】同 replace_text：表單勾選用 ■(U+25A0)，勿用 ☑(U+2611) 或 ☒(U+2612)——實測（本機當前版本）在 Times New Roman、Arial 及常見 CJK 字型皆無字形，缺字形時會改用別的字型而與表單不一致。\n\n【跨 run 格式】同 replace_text：每個 item 各自判斷是否能安全保留跨 run 格式，無法保留時該行結果會附上 WARNING（#190）。\n\n【空白字元】同 replace_text：每個 item 的 find 逐字找不到、含空白時會各自嘗試去除空白後比對，命中時該行附 NOTE；replace 一律照字面寫入（#187）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -3504,7 +3504,7 @@ actor WordMCPServer {
             // 程式化產生 Track Changes 修訂標記 (#45)
             Tool(
                 name: "insert_text_as_revision",
-                description: "在指定段落位置插入文字並包覆 <w:ins> 修訂標記（需先 enable_track_changes）。位置為段落內字元偏移；超出範圍會 split 既有 run。",
+                description: "在指定段落位置插入文字並包覆 <w:ins> 修訂標記（需先 enable_track_changes）。位置為段落內字元偏移，與讀取工具顯示的文字一致：已插入的字算、已刪除的字不算，行內方程式算可見文字；落在 run 中間會 split 既有 run，落在已刪除文字的邊界時插在刪除之後，落在欄位結果結尾時插在欄位之後。#276：新字寫在指定位置（過去會被寫到段尾且沒有 <w:ins>）。拒絕、不改任何內容：位置落在追蹤插入或搬移的內部（巢狀修訂見 #293，邊界可以）、會切開含 tab／換行／欄位字元／圖／方程式的 run、段落含以 raw XML 保存的修訂或 run 之外的方程式、text 或 author 含 XML 不能存的字元。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -3520,7 +3520,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "delete_text_as_revision",
-                description: "刪除指定段落 [start, end) 範圍的文字並包覆 <w:del> 修訂標記（需先 enable_track_changes）。跨段落刪除不支援。",
+                description: "刪除指定段落 [start, end) 範圍的文字並包覆 <w:del> 修訂標記（需先 enable_track_changes）。跨段落刪除不支援。偏移規則同 insert_text_as_revision：已插入的字算、已刪除的字不算。#276：拒絕、不改任何內容：範圍與追蹤插入或搬移重疊（巢狀修訂見 #293，不會把別人插入的字搬出他的修訂）、範圍內含欄位字元／註腳參照／tab 等零長度內容或含非文字內容的 run、空範圍、段落含以 raw XML 保存的修訂。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -3536,7 +3536,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "move_text_as_revision",
-                description: "將文字從來源段落 [from_start, from_end) 移到目標段落 to_position，產生成對的 <w:moveFrom>/<w:moveTo> 修訂（需先 enable_track_changes）。同段落移動不支援。",
+                description: "將文字從來源段落 [from_start, from_end) 移到目標段落 to_position，產生成對的 <w:moveFrom>/<w:moveTo> 修訂（需先 enable_track_changes）。同段落移動不支援。#276：來源範圍依 delete_text_as_revision 的規則、目標位置依 insert_text_as_revision 的規則（偏移與拒絕條件相同），兩者都先檢查；搬過去的字保留原格式、寫在指定位置。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -9653,6 +9653,27 @@ actor WordMCPServer {
     ///   original `rPr` instead of collapsing to the first run's formatting;
     ///   an unrepairable cross-run merge is now disclosed in the return
     ///   string instead of staying silent.
+    /// #275 / #276: track changes was opted into in this session and the
+    /// document is in review mode — the condition for tools that track by
+    /// default.
+    private func isSessionTracking(_ docId: String, _ doc: WordDocument) -> Bool {
+        (trackChangesOptedIn[docId] ?? false) && doc.isTrackChangesEnabled()
+    }
+
+    /// #276 stage 1 (verify round 1): a tracked replacement was taken out of
+    /// stage 1 — matching runs across hyperlinks, fields and zero-length runs
+    /// deleted content untracked (#292). Under session tracking the replace
+    /// tools refuse instead of making an untracked edit.
+    private static func trackedReplacementRefusal(_ tool: String) -> ToolRefusal {
+        ToolRefusal("\(tool): track changes is on in this session, and a tracked replacement is not supported yet (#292). Use delete_text_as_revision and insert_text_as_revision, or disable_track_changes to replace without tracking.")
+    }
+
+    /// #276: XML 1.0 cannot store `value` (see `firstXMLIllegalScalar`).
+    private static func refuseXMLIllegal(_ value: String?, _ parameter: String, tool: String) throws {
+        guard let value, let bad = firstXMLIllegalScalar(in: value) else { return }
+        throw ToolRefusal("\(tool): \(parameter) contains U+\(String(bad.value, radix: 16, uppercase: true)), which XML 1.0 cannot store")
+    }
+
     private func replaceText(args: [String: Value]) async throws -> String {
         guard let docId = args["doc_id"]?.stringValue else {
             throw WordError.missingParameter("doc_id")
@@ -9679,6 +9700,8 @@ actor WordMCPServer {
         let matchCase = try optionalBool(args, "match_case") ?? true
         // #151: parsed unconditionally, same reasoning as elsewhere.
         let matchOptions = try Self.parseAnchorLookupOptions(args, tool: "replace_text")
+
+        if isSessionTracking(docId, doc) { throw Self.trackedReplacementRefusal("replace_text") }
 
         let options = ReplaceOptions(scope: scope, regex: regex, matchCase: matchCase)
         do {
@@ -9804,6 +9827,7 @@ actor WordMCPServer {
         var results: [[String: Any]] = []
         var succeeded = 0
         var failed = 0
+        if isSessionTracking(docId, doc) { throw Self.trackedReplacementRefusal("replace_text_batch") }
         // #255: dedup across items in the SAME batch call — two items that
         // both land the same unsafe (character, font) pair should not each
         // repeat an identical advisory block.
@@ -10117,6 +10141,8 @@ actor WordMCPServer {
         }
 
         let author = args["author"]?.stringValue
+        try Self.refuseXMLIllegal(text, "text", tool: "insert_text_as_revision")
+        try Self.refuseXMLIllegal(author, "author", tool: "insert_text_as_revision")
         let date = parseISODate(args["date"]?.stringValue)
         let revId = try doc.insertTextAsRevision(
             text: text, atParagraph: paragraphIndex, position: position,
@@ -10164,7 +10190,10 @@ actor WordMCPServer {
                 }
             }
             if let bodyChildIdx, case .paragraph(let paragraph) = doc.body.children[bodyChildIdx] {
-                let totalLength = paragraph.runs.reduce(0) { $0 + $1.text.count }
+                // #276: the length the generators use — what the read tools
+                // show (text deleted in the session no longer counts, an
+                // inline equation counts as its visible text).
+                let totalLength = paragraph.textRevisionLength
                 if start < 0 {
                     throw ToolRefusal("delete_text_as_revision: start must be >= 0, got start=\(start)")
                 }
@@ -10180,6 +10209,7 @@ actor WordMCPServer {
         }
 
         let author = args["author"]?.stringValue
+        try Self.refuseXMLIllegal(author, "author", tool: "delete_text_as_revision")
         let date = parseISODate(args["date"]?.stringValue)
         let revId = try doc.deleteTextAsRevision(
             atParagraph: paragraphIndex, start: start, end: end,
@@ -10213,6 +10243,7 @@ actor WordMCPServer {
         }
 
         let author = args["author"]?.stringValue
+        try Self.refuseXMLIllegal(author, "author", tool: "move_text_as_revision")
         let date = parseISODate(args["date"]?.stringValue)
         let result = try doc.moveTextAsRevision(
             fromParagraph: fromPara, fromStart: fromStart, fromEnd: fromEnd,
