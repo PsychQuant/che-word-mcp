@@ -167,6 +167,58 @@ actor WordMCPServer {
     /// (R3 logic N4: the typed enumeration kept cancelling new inspector coverage).
     private var documentImageRelationshipCountAtBaseline: [String: Int] = [:]
     private var documentTrackChangesEnforced: [String: Bool] = [:]
+    /// #275 round 2: track changes was opted into in this session
+    /// (`open_document` / `create_document` with `track_changes: true`, or
+    /// `enable_track_changes`). Tools that track by default follow this, not
+    /// the file's own review-mode setting, like every explicit tracked tool.
+    private var trackChangesOptedIn: [String: Bool] = [:]
+    /// #275 round 3: the session's revision author, so a document reloaded
+    /// from disk (revert / reload) can be put back into the session's mode.
+    private var trackChangesAuthor: [String: String] = [:]
+
+    /// #275 round 3: revert_to_disk / reload_from_disk read the file afresh;
+    /// an opted-in session keeps tracking with its author.
+    private func reapplySessionTracking(_ docId: String, to doc: inout WordDocument) {
+        guard trackChangesOptedIn[docId] == true else { return }
+        doc.enableTrackChanges(author: trackChangesAuthor[docId] ?? defaultRevisionAuthor)
+    }
+
+    /// #275 round 4: the first character XML 1.0 cannot store (C0 controls
+    /// other than tab / LF / CR, U+FFFE, U+FFFF), or nil. Such an author made
+    /// the saved file unreadable.
+    static func firstXMLIllegalScalar(in string: String) -> Unicode.Scalar? {
+        string.unicodeScalars.first { scalar in
+            (scalar.value < 0x20 && scalar != "\t" && scalar != "\n" && scalar != "\r")
+                || scalar.value == 0xFFFE || scalar.value == 0xFFFF
+        }
+    }
+
+    /// #275 round 4: accept / reject every revision one by one, keeping the
+    /// ones a call refuses and why — the library's bulk calls drop refusals
+    /// (`try?`), so the tools reported revisions rejected that were not.
+    static func resolveEachRevision(
+        _ doc: inout WordDocument, accept: Bool
+    ) -> (resolved: Int, kept: [(id: Int, reason: String)]) {
+        var resolved = 0
+        var kept: [(id: Int, reason: String)] = []
+        for revision in doc.revisions.revisions.reversed()
+        where doc.revisions.revisions.contains(where: { $0.id == revision.id }) {
+            do {
+                if accept { try doc.acceptRevision(revisionId: revision.id) } else { try doc.rejectRevision(revisionId: revision.id) }
+                resolved += 1
+            } catch {
+                kept.append((revision.id, "\(error)"))
+            }
+        }
+        return (resolved, kept.reversed())
+    }
+
+    /// The tool result for `resolveEachRevision`.
+    static func bulkRevisionSummary(_ verb: String, total: Int, resolved: Int, kept: [(id: Int, reason: String)]) -> String {
+        guard !kept.isEmpty else { return "\(verb) \(resolved) revision(s)" }
+        let lines = kept.map { "  [\($0.id)] \($0.reason)" }.joined(separator: "\n")
+        return "\(verb) \(resolved) of \(total) revision(s); \(kept.count) left pending:\n\(lines)"
+    }
     /// Disk-drift detection (3.0.0 — Refs #12 #13 #15)
     private var documentDiskHash: [String: Data] = [:]
     private var documentDiskMtime: [String: Date] = [:]
@@ -1180,6 +1232,8 @@ actor WordMCPServer {
         documentOriginalPaths.removeValue(forKey: docId)
         documentDirtyState.removeValue(forKey: docId)
         documentAutosave.removeValue(forKey: docId)
+        trackChangesOptedIn.removeValue(forKey: docId)
+        trackChangesAuthor.removeValue(forKey: docId)
         documentImageOrphanBaseline.removeValue(forKey: docId)
         documentUnsavedSidecars.removeValue(forKey: docId)   // files stay: they are the user's safety net
         documentImageRelationshipCountAtBaseline.removeValue(forKey: docId)
@@ -1819,7 +1873,7 @@ actor WordMCPServer {
             ),
             Tool(
                 name: "insert_paragraph",
-                description: "插入新段落（需先 open_document）。index 是 body.children 插入索引（top-level OOXML body child；計入 tables / block-level SDTs / bookmark markers / raw blocks）。v3.15.1+ 接受 after_text / before_text / text_instance / into_table_cell / after_image_id anchor（與 insert_image_from_path 對齊）；anchor 與 index 擇一，不傳則加到最後。v3.16.0+ 同時傳多個 anchor 會 return 「Error: insert_paragraph: received conflicting anchors: ...」（先前版本是 silent priority winner）。#90/#115：after_text / before_text 支援 match_options.math_script_insensitive。",
+                description: "插入新段落（需先 open_document）。index 是 body.children 插入索引（top-level OOXML body child；計入 tables / block-level SDTs / bookmark markers / raw blocks）。v3.15.1+ 接受 after_text / before_text / text_instance / into_table_cell / after_image_id anchor（與 insert_image_from_path 對齊）；anchor 與 index 擇一，不傳則加到最後。v3.16.0+ 同時傳多個 anchor 會 return 「Error: insert_paragraph: received conflicting anchors: ...」（先前版本是 silent priority winner）。#90/#115：after_text / before_text 支援 match_options.math_script_insensitive。#275：本 session 開啟修訂（open_document / create_document 傳 track_changes: true，或呼叫 enable_track_changes）時，新段落以追蹤修訂插入（run 外的 <w:ins> 與段落記號的 <w:ins/>），作者為 author 參數或 session 作者，結果訊息附修訂 id；只看文件本身的修訂設定不會觸發。以 after_text / before_text 定位時預設照 Word 按 Enter 的規則沿用 anchor 格式（見 inherit_format）。",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -1837,7 +1891,19 @@ actor WordMCPServer {
                         ]),
                         "style": .object([
                             "type": .string("string"),
-                            "description": .string("段落樣式（如 Heading1, Normal）")
+                            "description": .string("段落樣式（如 Heading1, Normal）。給定時只套用此樣式，不繼承 anchor 段落的格式")
+                        ]),
+                        "inherit_format": .object([
+                            "type": .string("boolean"),
+                            "description": .string("#275：以 after_text / before_text 定位且未給 style 時，是否照 Word 按 Enter 的規則沿用 anchor 格式。after_text：anchor 樣式有 w:next（如標題 → 內文）時改用該樣式、不帶 anchor 的直接格式；否則沿用段落屬性（編號、大綱層級延續）。before_text：沿用同一樣式與段落屬性（與 Word 在段首按 Enter 相同——指向標題時新段落也是標題、指向清單項目時也是清單項目；要插一段內文請改用前一段的 after_text，或傳 style）。新文字的 run 格式取段落記號的 rPr，沒有時取插入點旁的 run。分節符號、段落前分頁、隱藏文字、修訂標記一律不複製。預設 true；傳 false 得到不帶格式的段落")
+                        ]),
+                        "author": .object([
+                            "type": .string("string"),
+                            "description": .string("#275：追蹤插入的作者；省略時用 session 作者（enable_track_changes）。未開啟修訂時忽略")
+                        ]),
+                        "date": .object([
+                            "type": .string("string"),
+                            "description": .string("#275：追蹤插入的時間（ISO 8601，例如 2026-10-01T00:00:00Z）；省略時用現在。未開啟修訂時忽略")
                         ]),
                         "into_table_cell": .object([
                             "type": .string("object"),
@@ -8029,6 +8095,8 @@ actor WordMCPServer {
         // not here, so the two entry points disagreed for two major versions
         // while both reported a default.
         documentTrackChangesEnforced[docId] = trackChanges
+        trackChangesOptedIn[docId] = trackChanges
+        if trackChanges { trackChangesAuthor[docId] = doc.revisions.settings.author }
 
         if profile?.kind == .official {
             try await storeDocument(doc, for: docId)
@@ -8076,7 +8144,12 @@ actor WordMCPServer {
             doc.close()
             throw error
         }
-        if trackChanges && !doc.isTrackChangesEnabled() {
+        // #275 round 2: a file already in review mode carries no author
+        // (Word keeps it per user), so opting in on it left revisions by
+        // "Unknown".
+        if trackChanges && (!doc.isTrackChangesEnabled()
+                            || doc.revisions.settings.author.isEmpty
+                            || doc.revisions.settings.author == "Unknown") {
             doc.enableTrackChanges(author: defaultRevisionAuthor)
         }
         initializeSession(
@@ -8091,6 +8164,8 @@ actor WordMCPServer {
         recordImageBaseline(docId: docId, path: path)
         // Override trackChangesEnforced default (initializeSession sets true)
         documentTrackChangesEnforced[docId] = trackChanges
+        trackChangesOptedIn[docId] = trackChanges
+        if trackChanges { trackChangesAuthor[docId] = doc.revisions.settings.author }
 
         // Capture disk-hash + mtime from freshly opened file (3.0.0 — Refs #15)
         if let hash = try? SessionState.computeSHA256(path: path) {
@@ -8397,7 +8472,9 @@ actor WordMCPServer {
             """)
         }
 
-        let recoveredDoc = try DocxReader.read(from: URL(fileURLWithPath: autosavePath))
+        var recoveredDoc = try DocxReader.read(from: URL(fileURLWithPath: autosavePath))
+        // #275 round 4: same as revert_to_disk / reload_from_disk.
+        reapplySessionTracking(docId, to: &recoveredDoc)
         // R2 (#221 H1): mirrors `openDocument.archiveExtracted` — lets tests
         // pin the exact tempDir THIS read extracted, the same "one specific
         // path, not a namespace diff" technique #221's own tests use.
@@ -8488,7 +8565,8 @@ actor WordMCPServer {
         }
 
         let url = URL(fileURLWithPath: path)
-        let fresh = try DocxReader.read(from: url)
+        var fresh = try DocxReader.read(from: url)
+        reapplySessionTracking(docId, to: &fresh)
         // R2 (#221 H1): see `recoverFromAutosave`'s matching comment.
         logDebug(event: "revertToDisk.archiveExtracted", [
             ("doc_id", docId), ("archive_temp_dir", fresh.archiveTempDir?.path ?? "nil"),
@@ -8527,7 +8605,8 @@ actor WordMCPServer {
             throw ToolRefusal("document '\(docId)' has no known source path to reload from")
         }
         let url = URL(fileURLWithPath: path)
-        let fresh = try DocxReader.read(from: url)
+        var fresh = try DocxReader.read(from: url)
+        reapplySessionTracking(docId, to: &fresh)
         // R2 (#221 H1): see `recoverFromAutosave`'s matching comment.
         logDebug(event: "reloadFromDisk.archiveExtracted", [
             ("doc_id", docId), ("archive_temp_dir", fresh.archiveTempDir?.path ?? "nil"),
@@ -8896,6 +8975,8 @@ actor WordMCPServer {
         }
 
         let style = args["style"]?.stringValue
+        // #275: copy the anchor paragraph's formatting by default.
+        let inheritFormat = try optionalBool(args, "inherit_format") ?? true
 
         var para = Paragraph(text: text)
         if let style = style {
@@ -8930,6 +9011,52 @@ actor WordMCPServer {
         let matchOptions = try Self.parseAnchorLookupOptions(args, tool: "insert_paragraph")
         let resultMessage: String
 
+        // #275: a paragraph added next to existing text should look like it —
+        // Word's Enter copies the paragraph properties and applies the
+        // paragraph-mark run properties to the new text. Only for text
+        // anchors, and never over an explicit `style`.
+        if style == nil, inheritFormat,
+           let anchorText = args["after_text"]?.stringValue ?? args["before_text"]?.stringValue,
+           let anchorIdx = doc.findBodyChildContainingText(anchorText, nthInstance: textInstance, options: matchOptions),
+           case .paragraph(let anchor) = doc.body.children[anchorIdx] {
+            let inherited = Self.inheritableFormat(
+                from: anchor, after: args["after_text"] != nil, styles: doc.styles)
+            para.properties = inherited.paragraph
+            if let runProperties = inherited.run {
+                for i in para.runs.indices { para.runs[i].properties = runProperties }
+            }
+        }
+
+        // #275: with track changes opted into in this session, the paragraph
+        // is inserted as a tracked insertion (runs + paragraph mark); off →
+        // unchanged. Round 2: the session opt-in decides, not the file's own
+        // review-mode setting.
+        let tracked = (trackChangesOptedIn[docId] ?? false) && doc.isTrackChangesEnabled()
+        // Round 3: strict types; values only matter (and are only validated)
+        // when the insertion is tracked. Round 4: types too.
+        var revisionAuthor: String?
+        var revisionDate: Date?
+        if tracked {
+            revisionAuthor = try Self.optionalStrictString(args, "author")
+            let rawDate = try Self.optionalStrictString(args, "date")
+            if let revisionAuthor, let bad = Self.firstXMLIllegalScalar(in: revisionAuthor) {
+                throw ToolRefusal("insert_paragraph: author contains U+\(String(bad.value, radix: 16, uppercase: true)), which XML 1.0 cannot store")
+            }
+            revisionDate = parseISODate(rawDate)
+            if let rawDate, revisionDate == nil {
+                throw ToolRefusal("insert_paragraph: date '\(rawDate)' is not an ISO 8601 date-time")
+            }
+        }
+        var revisionId: Int?
+        func place(_ location: InsertLocation) throws {
+            if tracked {
+                revisionId = try doc.insertParagraphAsRevision(
+                    para, at: location, author: revisionAuthor, date: revisionDate)
+            } else {
+                try doc.insertParagraph(para, at: location)
+            }
+        }
+
         if let cellDict = args["into_table_cell"]?.objectValue {
             // F5 (v3.15.1): malformed partial dict returns structured error instead of silent fallthrough.
             // #232 R4: each field parsed independently (not chained in one
@@ -8944,7 +9071,7 @@ actor WordMCPServer {
                 throw ToolRefusal("insert_paragraph: into_table_cell requires all three fields (table_index, row, col); got partial dict")
             }
             do {
-                try doc.insertParagraph(para, at: .intoTableCell(tableIndex: tableIdx, row: row, col: col))
+                try place(.intoTableCell(tableIndex: tableIdx, row: row, col: col))
                 resultMessage = "Inserted paragraph into table[\(tableIdx)] cell (row: \(row), col: \(col))"
             } catch let InsertLocationError.tableIndexOutOfRange(i) {
                 throw ToolRefusal("insert_paragraph: table index \(i) out of range")
@@ -8954,14 +9081,14 @@ actor WordMCPServer {
         } else if let afterImageId = args["after_image_id"]?.stringValue {
             // F1 (v3.15.1): after_image_id anchor.
             do {
-                try doc.insertParagraph(para, at: .afterImageId(afterImageId))
+                try place(.afterImageId(afterImageId))
                 resultMessage = "Inserted paragraph after image '\(afterImageId)'"
             } catch let InsertLocationError.imageIdNotFound(rId) {
                 throw ToolRefusal("insert_paragraph: image rId '\(rId)' not found")
             }
         } else if let afterText = args["after_text"]?.stringValue {
             do {
-                try doc.insertParagraph(para, at: .afterText(afterText, instance: textInstance, options: matchOptions))
+                try place(.afterText(afterText, instance: textInstance, options: matchOptions))
                 resultMessage = "Inserted paragraph after text '\(afterText)' (instance \(textInstance))"
             } catch let InsertLocationError.textNotFound(searchText, instance) {
                 throw WordMCPServer.anchorNotFoundRefusal(
@@ -8970,7 +9097,7 @@ actor WordMCPServer {
             }
         } else if let beforeText = args["before_text"]?.stringValue {
             do {
-                try doc.insertParagraph(para, at: .beforeText(beforeText, instance: textInstance, options: matchOptions))
+                try place(.beforeText(beforeText, instance: textInstance, options: matchOptions))
                 resultMessage = "Inserted paragraph before text '\(beforeText)' (instance \(textInstance))"
             } catch let InsertLocationError.textNotFound(searchText, instance) {
                 throw WordMCPServer.anchorNotFoundRefusal(
@@ -8978,10 +9105,19 @@ actor WordMCPServer {
                 )
             }
         } else if let index = indexArg {
-            doc.insertParagraph(para, at: index)
+            if tracked {
+                // Same clamping as the untracked Int overload.
+                try place(.paragraphIndex(min(max(0, index), doc.body.children.count)))
+            } else {
+                doc.insertParagraph(para, at: index)
+            }
             resultMessage = "Inserted paragraph at index \(index)"
         } else {
-            doc.appendParagraph(para)
+            if tracked {
+                try place(.paragraphIndex(doc.body.children.count))
+            } else {
+                doc.appendParagraph(para)
+            }
             // #69: report body.children index (matches Document.insertParagraph(_:at:Int)
             // semantics — Document.swift:266-270). getParagraphs() skips tables/SDTs so
             // its count - 1 mis-reports the index in docs with non-paragraph body children.
@@ -8990,7 +9126,53 @@ actor WordMCPServer {
 
         try await storeDocument(doc, for: docId)
 
+        if let revisionId {
+            return resultMessage + " as a tracked insertion (revision id \(revisionId))"
+        }
         return resultMessage
+    }
+
+    /// #275: the formatting a paragraph inserted next to `anchor` takes —
+    /// Word's Enter. `after` (Enter at the end of the anchor): a style with
+    /// `w:next` starts that style (Heading 1 → Normal) and nothing else of
+    /// the anchor carries. Otherwise the anchor's paragraph properties carry
+    /// (numbering and outline level continue). Run formatting: the
+    /// paragraph-mark rPr, else the run at the insertion point (the last run
+    /// when after, the first when before). Never copied: the section break,
+    /// page break before, revision markers (copying them would hand the new
+    /// paragraph someone else's revision ids) and hidden-text marks.
+    static func inheritableFormat(
+        from anchor: Paragraph, after: Bool, styles: [Style]
+    ) -> (paragraph: ParagraphProperties, run: RunProperties?) {
+        let revisionMarkers: Set<String> = ["ins", "del", "moveFrom", "moveTo", "rPrChange", "pPrChange"]
+        let hiddenMarks: Set<String> = ["vanish", "specVanish", "webHidden"]
+        func cleaned(_ properties: RunProperties) -> RunProperties {
+            var properties = properties
+            if let raw = properties.rawChildren {
+                let kept = raw.filter { !revisionMarkers.contains($0.name) && !hiddenMarks.contains($0.name) }
+                properties.rawChildren = kept.isEmpty ? nil : kept
+            }
+            return properties
+        }
+        if after, let styleId = anchor.properties.style,
+           let next = styles.first(where: { $0.id == styleId })?.nextStyle, next != styleId {
+            var properties = ParagraphProperties()
+            properties.style = next
+            return (properties, nil)
+        }
+        var properties = anchor.properties
+        properties.sectionBreak = nil
+        properties.pageBreakBefore = false
+        properties.rawChildren.removeAll { revisionMarkers.contains($0.name) || $0.name == "sectPr" }
+        if let mark = properties.markRunProperties {
+            properties.markRunProperties = cleaned(mark)
+        }
+        // A mark rPr that held only revision / hidden markers carries no
+        // formatting (round 3): fall back to the run at the insertion point.
+        let markFormatting = properties.markRunProperties.flatMap { $0.hasDirectFormatting ? $0 : nil }
+        let textRuns = anchor.runs.filter { !$0.text.isEmpty }
+        let adjacent = after ? textRuns.last : textRuns.first
+        return (properties, markFormatting ?? adjacent.map { cleaned($0.properties) })
     }
 
     private func updateParagraph(args: [String: Value]) async throws -> String {
@@ -12402,7 +12584,13 @@ actor WordMCPServer {
         }
 
         let author = args["author"]?.stringValue ?? "Unknown"
+        // #275 round 4: insert_paragraph writes the session author by default.
+        if let bad = Self.firstXMLIllegalScalar(in: author) {
+            throw ToolRefusal("enable_track_changes: author contains U+\(String(bad.value, radix: 16, uppercase: true)), which XML 1.0 cannot store")
+        }
         doc.enableTrackChanges(author: author)
+        trackChangesOptedIn[docId] = true
+        trackChangesAuthor[docId] = author
         try await storeDocument(doc, for: docId)
 
         return "Track changes enabled for '\(author)'"
@@ -12417,6 +12605,7 @@ actor WordMCPServer {
         }
 
         doc.disableTrackChanges()
+        trackChangesOptedIn[docId] = false
         try await storeDocument(doc, for: docId)
 
         return "Track changes disabled"
@@ -12436,9 +12625,10 @@ actor WordMCPServer {
         let revisionIdIfPresent = try optionalInt(args, "revision_id")
 
         if acceptAll {
-            doc.acceptAllRevisions()
+            let total = doc.revisions.revisions.count
+            let (resolved, kept) = Self.resolveEachRevision(&doc, accept: true)
             try await storeDocument(doc, for: docId)
-            return "Accepted all revisions"
+            return Self.bulkRevisionSummary("Accepted", total: total, resolved: resolved, kept: kept)
         } else {
             guard let revisionId = revisionIdIfPresent else {
                 throw WordError.missingParameter("revision_id")
@@ -12463,9 +12653,10 @@ actor WordMCPServer {
         let revisionIdIfPresent = try optionalInt(args, "revision_id")
 
         if rejectAll {
-            doc.rejectAllRevisions()
+            let total = doc.revisions.revisions.count
+            let (resolved, kept) = Self.resolveEachRevision(&doc, accept: false)
             try await storeDocument(doc, for: docId)
-            return "Rejected all revisions"
+            return Self.bulkRevisionSummary("Rejected", total: total, resolved: resolved, kept: kept)
         } else {
             guard let revisionId = revisionIdIfPresent else {
                 throw WordError.missingParameter("revision_id")
@@ -15717,11 +15908,11 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let count = doc.getRevisions().count
-        doc.acceptAllRevisions()
+        let total = doc.revisions.revisions.count
+        let (resolved, kept) = Self.resolveEachRevision(&doc, accept: true)
         try await storeDocument(doc, for: docId)
 
-        return "Accepted \(count) revision(s)"
+        return Self.bulkRevisionSummary("Accepted", total: total, resolved: resolved, kept: kept)
     }
 
     // 9.10 reject_all_revisions - 拒絕所有修訂
@@ -15733,11 +15924,11 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let count = doc.getRevisions().count
-        doc.rejectAllRevisions()
+        let total = doc.revisions.revisions.count
+        let (resolved, kept) = Self.resolveEachRevision(&doc, accept: false)
         try await storeDocument(doc, for: docId)
 
-        return "Rejected \(count) revision(s)"
+        return Self.bulkRevisionSummary("Rejected", total: total, resolved: resolved, kept: kept)
     }
 
     // 9.11 set_document_properties - 設定文件屬性

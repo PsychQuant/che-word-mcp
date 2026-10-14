@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`insert_paragraph` 在本 session 開啟修訂時改為追蹤修訂插入**（#275）。過去即使
+  `open_document(track_changes: true)` 並呼叫 `enable_track_changes(author:)`，新段落仍以原文寫入——
+  沒有 `<w:ins>`、沒有作者，在 Word 裡看起來就是原作者寫的。現在新段落的 run 包在 `<w:ins>` 內，
+  段落記號標上 `<w:pPr><w:rPr><w:ins …/></w:rPr></w:pPr>`，兩者共用一個修訂 id；作者為新參數
+  `author`，省略時用 session 作者（`date` 參數可指定時間）；結果訊息附上修訂 id。在 Word 裡
+  接受會保留段落，拒絕會整段移除，存檔後在另一個 session 重新開啟也一樣（ooxml-swift 讀回段落
+  記號修訂）。觸發條件是**本 session 的明確開啟**（`open_document`／`create_document` 傳
+  `track_changes: true`，或呼叫 `enable_track_changes`），與其他修訂工具一致；只看文件本身的
+  修訂設定不會觸發，避免 session 回報「修訂關閉」卻寫出作者為 "Unknown" 的修訂。附加到最後時
+  不會讓整份文件重新序列化。需要 ooxml-swift 的 `insertParagraphAsRevision`（PsychQuant/ooxml-swift#224）。
+- **`accept_revision`／`reject_revision` 在插入或刪除段落後找錯段落**（#280，與 #275 一起修）。
+  依修訂 id 與型別找目標，不再依記錄下來的段落索引與文字比對；連續兩次 `insert_paragraph` 後拒絕
+  第一段、或段落被 `delete_paragraph` 刪掉後再接受／拒絕它的修訂，都不會再刪到其他段落的文字
+  （ooxml-swift#224）。拒絕一個段落仍含書籤、註解、超連結等內容的插入段落，或段落記號後面沒有
+  可併入的段落（接著表格、或是最後一段）而段落還留有文字時，會明確失敗，而不是悄悄保留段落。
+  讀檔時不同種類的修訂共用同一個 id 會被重新編號（ooxml-swift），一次 accept／reject 不再同時作用
+  在兩筆修訂上。
+- **`reject_all_revisions`／`accept_all_revisions` 與 `reject_revision`／`accept_revision` 的 `all: true`
+  列出沒有處理成功的修訂**（#275）。過去這幾條路徑忽略個別修訂的拒絕，一律回報全部完成；現在逐筆處理，
+  結果寫成「Rejected N of M revision(s); K left pending」並列出每筆留下的修訂 id 與原因。
+- **`open_document(track_changes: true)` 開啟本身已在修訂模式的文件時，作者不再是 "Unknown"**
+  （#275）：檔案不帶作者（Word 依使用者記錄），過去因為文件已啟用就略過設定作者；現在補上預設作者。
+  `revert_to_disk`／`reload_from_disk`／`recover_from_autosave` 之後 session 的修訂狀態（與作者）照舊。
+  `author` 含 XML 1.0 不能存的字元（tab／換行以外的控制字元、U+FFFE、U+FFFF）時拒絕，
+  `enable_track_changes` 的 session 作者也一樣；`author`／`date` 必須是字串——兩者只在追蹤時讀取與驗證，
+  未追蹤時任何型別都忽略。
+
+### Changed
+
+- **`insert_paragraph` 以 `after_text`／`before_text` 定位且未給 `style` 時，照 Word 按 Enter 的
+  規則沿用 anchor 格式**（#275）。`after_text`（在段尾按 Enter）：anchor 樣式有 `w:next`（例如
+  標題 1 → 內文）時改用該樣式，不帶 anchor 的直接格式；否則沿用段落屬性（編號、大綱層級延續）。
+  `before_text`（在段首按 Enter）：沿用同一樣式與段落屬性。新文字的 run 格式取段落記號的 rPr，
+  沒有時取插入點旁的 run（after 取最後一個、before 取第一個）。分節符號、段落前分頁、隱藏文字
+  （`vanish`／`specVanish`／`webHidden`）與修訂標記一律不複製。過去新段落不帶任何格式，插在
+  內文中間時缺首行縮排等。給了 `style` 時只套用該樣式；`inherit_format: false` 取回舊行為；
+  `index`／`into_table_cell`／`after_image_id`／附加到最後的定位方式不受影響。此預設也適用於
+  未開修訂的呼叫。縮排參數另見 #278。
+
 ## [4.9.0] - 2026-09-28
 
 > **安全修正：`remove_watermark`／`insert_watermark`／`insert_image_watermark` 在 4.7.0–4.8.0 可被惡意 .docx 誘導刪除封裝外的本機檔案或整個目錄（見 Security）。** header／footer／chart 的圖片可以列出與匯出，並對這些位置的圖片關係做封裝內含檢查；anchor／搜尋／取代新增 `match_options.math_script_insensitive`；`replace_text` 對缺字形的字元發 advisory；`set_page_borders` 改為真的寫入；一批字串參數改為嚴格驗證；相依升到 ooxml-swift 3.19.0（見文末「升級注意」）。依本專案先例 bump minor。
