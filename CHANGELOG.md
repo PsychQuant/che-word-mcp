@@ -22,12 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`accept_revision`／`reject_revision` 在插入或刪除段落後找錯段落**（#280，與 #275 一起修）。
   依修訂 id 與型別找目標，不再依記錄下來的段落索引與文字比對；連續兩次 `insert_paragraph` 後拒絕
   第一段、或段落被 `delete_paragraph` 刪掉後再接受／拒絕它的修訂，都不會再刪到其他段落的文字
-  （ooxml-swift#224）。拒絕一個段落仍含書籤、註解、超連結等內容的插入段落時會明確失敗，而不是
-  悄悄保留段落。
+  （ooxml-swift#224）。拒絕一個段落仍含書籤、註解、超連結等內容的插入段落，或段落記號後面沒有
+  可併入的段落（接著表格、或是最後一段）而段落還留有文字時，會明確失敗，而不是悄悄保留段落。
+  讀檔時不同種類的修訂共用同一個 id 會被重新編號（ooxml-swift），一次 accept／reject 不再同時作用
+  在兩筆修訂上。
+- **`reject_all_revisions`／`accept_all_revisions` 與 `reject_revision`／`accept_revision` 的 `all: true`
+  列出沒有處理成功的修訂**（#275）。過去這幾條路徑忽略個別修訂的拒絕，一律回報全部完成；現在逐筆處理，
+  結果寫成「Rejected N of M revision(s); K left pending」並列出每筆留下的修訂 id 與原因。
 - **`open_document(track_changes: true)` 開啟本身已在修訂模式的文件時，作者不再是 "Unknown"**
   （#275）：檔案不帶作者（Word 依使用者記錄），過去因為文件已啟用就略過設定作者；現在補上預設作者。
-  `revert_to_disk`／`reload_from_disk` 之後 session 的修訂狀態（與作者）照舊。`author` 含 XML 不能
-  存的控制字元時拒絕；`author`／`date` 必須是字串，且只在追蹤時驗證。
+  `revert_to_disk`／`reload_from_disk`／`recover_from_autosave` 之後 session 的修訂狀態（與作者）照舊。
+  `author` 含 XML 1.0 不能存的字元（tab／換行以外的控制字元、U+FFFE、U+FFFF）時拒絕，
+  `enable_track_changes` 的 session 作者也一樣；`author`／`date` 必須是字串——兩者只在追蹤時讀取與驗證，
+  未追蹤時任何型別都忽略。
 
 ### Changed
 

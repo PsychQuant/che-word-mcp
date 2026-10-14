@@ -391,4 +391,70 @@ final class Issue275InsertParagraphTrackChangesTests: XCTestCase {
         let p = try XCTUnwrap(paragraph(containing: "New paragraph.", in: try unzipDocumentXML(at: path)))
         XCTAssertTrue(p.contains("<w:ins") && p.contains("w:author=\"Editor B\""), "got: \(p)")
     }
+
+
+    // MARK: - Verify round 3 (round 4 of #275)
+
+    /// author / date are documented as ignored unless the insertion is
+    /// tracked — their types too.
+    func testAuthorAndDateOfAnyTypeAreIgnoredWhenUntracked() async throws {
+        let path = try makeFixture()
+        let server = await session(path, trackChanges: false)
+        let r = await call(server, "insert_paragraph", [
+            "after_text": .string("Alpha paragraph."), "text": .string("X."), "author": .int(42), "date": .int(5),
+        ])
+        XCTAssertNotEqual(r.isError, true, text(r))
+    }
+
+    /// XML 1.0 has no U+FFFE / U+FFFF either.
+    func testAuthorWithANoncharacterIsRefused() async throws {
+        let path = try makeFixture()
+        let server = await session(path, trackChanges: true, enableAuthor: "Editor B")
+        let r = await call(server, "insert_paragraph", [
+            "after_text": .string("Alpha paragraph."), "text": .string("X."), "author": .string("Bad\u{FFFF}Name"),
+        ])
+        XCTAssertEqual(r.isError, true, text(r))
+    }
+
+    /// The session author is what insert_paragraph uses by default.
+    func testEnableTrackChangesRefusesAnAuthorXMLCannotStore() async throws {
+        let path = try makeFixture()
+        let server = await session(path, trackChanges: false)
+        let r = await call(server, "enable_track_changes", ["author": .string("Bad\u{01}Name")])
+        XCTAssertEqual(r.isError, true, text(r))
+    }
+
+    private static let wordParagraphWithACommentRange = """
+        <w:p><w:r><w:t>Alpha paragraph.</w:t></w:r></w:p>\
+        <w:p><w:pPr><w:rPr><w:ins w:id="5" w:author="Reviewer A" w:date="2026-10-01T00:00:00Z"/></w:rPr></w:pPr>\
+        <w:commentRangeStart w:id="9"/><w:ins w:id="6" w:author="Reviewer A" w:date="2026-10-01T00:00:00Z"><w:r><w:t>Word paragraph.</w:t></w:r></w:ins><w:commentRangeEnd w:id="9"/></w:p>\
+        <w:p><w:r><w:t>Beta paragraph.</w:t></w:r></w:p>
+        """
+
+    /// Bulk reject used to drop the per-revision refusal and report every
+    /// revision rejected.
+    func testRejectAllNamesTheRevisionsItCouldNotReject() async throws {
+        for (tool, args) in [("reject_all_revisions", [String: Value]()), ("reject_revision", ["all": Value.bool(true)])] {
+            let path = try makeFixture(body: Self.wordParagraphWithACommentRange)
+            let server = await session(path, trackChanges: true, enableAuthor: "Editor B")
+            let r = text(await call(server, tool, args))
+            XCTAssertTrue(r.contains("Rejected 1 of 2"), "\(tool): got: \(r)")
+            XCTAssertTrue(r.contains("[5]"), "\(tool) must name the revision it kept — got: \(r)")
+            let left = text(await call(server, "get_revisions", [:]))
+            XCTAssertTrue(left.contains("[5]"), "got: \(left)")
+        }
+    }
+
+    func testSessionOptInSurvivesRecoverFromAutosave() async throws {
+        let path = try makeFixture()
+        try FileManager.default.copyItem(atPath: path, toPath: path + ".autosave.docx")
+        let server = await session(path, trackChanges: false, enableAuthor: "Editor B")
+        let recovered = await call(server, "recover_from_autosave", ["discard_changes": .bool(true)])
+        XCTAssertNotEqual(recovered.isError, true, text(recovered))
+        let r = await call(server, "insert_paragraph", ["after_text": .string("Alpha paragraph."), "text": .string("After recover.")])
+        XCTAssertTrue(text(r).contains("revision id"), "got: \(text(r))")
+        _ = await call(server, "save_document", [:])
+        let p = try XCTUnwrap(paragraph(containing: "After recover.", in: try unzipDocumentXML(at: path)))
+        XCTAssertTrue(p.contains("w:author=\"Editor B\""), "got: \(p)")
+    }
 }

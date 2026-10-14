@@ -182,6 +182,43 @@ actor WordMCPServer {
         guard trackChangesOptedIn[docId] == true else { return }
         doc.enableTrackChanges(author: trackChangesAuthor[docId] ?? defaultRevisionAuthor)
     }
+
+    /// #275 round 4: the first character XML 1.0 cannot store (C0 controls
+    /// other than tab / LF / CR, U+FFFE, U+FFFF), or nil. Such an author made
+    /// the saved file unreadable.
+    static func firstXMLIllegalScalar(in string: String) -> Unicode.Scalar? {
+        string.unicodeScalars.first { scalar in
+            (scalar.value < 0x20 && scalar != "\t" && scalar != "\n" && scalar != "\r")
+                || scalar.value == 0xFFFE || scalar.value == 0xFFFF
+        }
+    }
+
+    /// #275 round 4: accept / reject every revision one by one, keeping the
+    /// ones a call refuses and why — the library's bulk calls drop refusals
+    /// (`try?`), so the tools reported revisions rejected that were not.
+    static func resolveEachRevision(
+        _ doc: inout WordDocument, accept: Bool
+    ) -> (resolved: Int, kept: [(id: Int, reason: String)]) {
+        var resolved = 0
+        var kept: [(id: Int, reason: String)] = []
+        for revision in doc.revisions.revisions.reversed()
+        where doc.revisions.revisions.contains(where: { $0.id == revision.id }) {
+            do {
+                if accept { try doc.acceptRevision(revisionId: revision.id) } else { try doc.rejectRevision(revisionId: revision.id) }
+                resolved += 1
+            } catch {
+                kept.append((revision.id, "\(error)"))
+            }
+        }
+        return (resolved, kept.reversed())
+    }
+
+    /// The tool result for `resolveEachRevision`.
+    static func bulkRevisionSummary(_ verb: String, total: Int, resolved: Int, kept: [(id: Int, reason: String)]) -> String {
+        guard !kept.isEmpty else { return "\(verb) \(resolved) revision(s)" }
+        let lines = kept.map { "  [\($0.id)] \($0.reason)" }.joined(separator: "\n")
+        return "\(verb) \(resolved) of \(total) revision(s); \(kept.count) left pending:\n\(lines)"
+    }
     /// Disk-drift detection (3.0.0 — Refs #12 #13 #15)
     private var documentDiskHash: [String: Data] = [:]
     private var documentDiskMtime: [String: Date] = [:]
@@ -8435,7 +8472,9 @@ actor WordMCPServer {
             """)
         }
 
-        let recoveredDoc = try DocxReader.read(from: URL(fileURLWithPath: autosavePath))
+        var recoveredDoc = try DocxReader.read(from: URL(fileURLWithPath: autosavePath))
+        // #275 round 4: same as revert_to_disk / reload_from_disk.
+        reapplySessionTracking(docId, to: &recoveredDoc)
         // R2 (#221 H1): mirrors `openDocument.archiveExtracted` — lets tests
         // pin the exact tempDir THIS read extracted, the same "one specific
         // path, not a namespace diff" technique #221's own tests use.
@@ -8994,15 +9033,14 @@ actor WordMCPServer {
         // review-mode setting.
         let tracked = (trackChangesOptedIn[docId] ?? false) && doc.isTrackChangesEnabled()
         // Round 3: strict types; values only matter (and are only validated)
-        // when the insertion is tracked.
-        let revisionAuthor = try Self.optionalStrictString(args, "author")
-        let rawDate = try Self.optionalStrictString(args, "date")
+        // when the insertion is tracked. Round 4: types too.
+        var revisionAuthor: String?
         var revisionDate: Date?
         if tracked {
-            if let revisionAuthor, revisionAuthor.unicodeScalars.contains(where: {
-                $0.value < 0x20 && $0 != "\t" && $0 != "\n" && $0 != "\r"
-            }) {
-                throw ToolRefusal("insert_paragraph: author contains control characters, which XML 1.0 cannot store")
+            revisionAuthor = try Self.optionalStrictString(args, "author")
+            let rawDate = try Self.optionalStrictString(args, "date")
+            if let revisionAuthor, let bad = Self.firstXMLIllegalScalar(in: revisionAuthor) {
+                throw ToolRefusal("insert_paragraph: author contains U+\(String(bad.value, radix: 16, uppercase: true)), which XML 1.0 cannot store")
             }
             revisionDate = parseISODate(rawDate)
             if let rawDate, revisionDate == nil {
@@ -12546,6 +12584,10 @@ actor WordMCPServer {
         }
 
         let author = args["author"]?.stringValue ?? "Unknown"
+        // #275 round 4: insert_paragraph writes the session author by default.
+        if let bad = Self.firstXMLIllegalScalar(in: author) {
+            throw ToolRefusal("enable_track_changes: author contains U+\(String(bad.value, radix: 16, uppercase: true)), which XML 1.0 cannot store")
+        }
         doc.enableTrackChanges(author: author)
         trackChangesOptedIn[docId] = true
         trackChangesAuthor[docId] = author
@@ -12583,9 +12625,10 @@ actor WordMCPServer {
         let revisionIdIfPresent = try optionalInt(args, "revision_id")
 
         if acceptAll {
-            doc.acceptAllRevisions()
+            let total = doc.revisions.revisions.count
+            let (resolved, kept) = Self.resolveEachRevision(&doc, accept: true)
             try await storeDocument(doc, for: docId)
-            return "Accepted all revisions"
+            return Self.bulkRevisionSummary("Accepted", total: total, resolved: resolved, kept: kept)
         } else {
             guard let revisionId = revisionIdIfPresent else {
                 throw WordError.missingParameter("revision_id")
@@ -12610,9 +12653,10 @@ actor WordMCPServer {
         let revisionIdIfPresent = try optionalInt(args, "revision_id")
 
         if rejectAll {
-            doc.rejectAllRevisions()
+            let total = doc.revisions.revisions.count
+            let (resolved, kept) = Self.resolveEachRevision(&doc, accept: false)
             try await storeDocument(doc, for: docId)
-            return "Rejected all revisions"
+            return Self.bulkRevisionSummary("Rejected", total: total, resolved: resolved, kept: kept)
         } else {
             guard let revisionId = revisionIdIfPresent else {
                 throw WordError.missingParameter("revision_id")
@@ -15864,11 +15908,11 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let count = doc.getRevisions().count
-        doc.acceptAllRevisions()
+        let total = doc.revisions.revisions.count
+        let (resolved, kept) = Self.resolveEachRevision(&doc, accept: true)
         try await storeDocument(doc, for: docId)
 
-        return "Accepted \(count) revision(s)"
+        return Self.bulkRevisionSummary("Accepted", total: total, resolved: resolved, kept: kept)
     }
 
     // 9.10 reject_all_revisions - 拒絕所有修訂
@@ -15880,11 +15924,11 @@ actor WordMCPServer {
             throw WordError.documentNotFound(docId)
         }
 
-        let count = doc.getRevisions().count
-        doc.rejectAllRevisions()
+        let total = doc.revisions.revisions.count
+        let (resolved, kept) = Self.resolveEachRevision(&doc, accept: false)
         try await storeDocument(doc, for: docId)
 
-        return "Rejected \(count) revision(s)"
+        return Self.bulkRevisionSummary("Rejected", total: total, resolved: resolved, kept: kept)
     }
 
     // 9.11 set_document_properties - 設定文件屬性
