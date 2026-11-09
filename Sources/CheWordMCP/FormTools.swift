@@ -47,6 +47,12 @@ extension WordMCPServer {
             var skipped = 0
             var unreadableTables: Set<Int> = []
             for paragraph in paragraphs {
+                // The table is unreadable whatever its paragraphs' ids are, so
+                // it is recorded before the id check (verify R1; the CLI checks
+                // the id first and misses a table whose ids are all skipped).
+                if includeGrid, case .unreadableTable(let table)? = paragraph.cell {
+                    unreadableTables.insert(table)
+                }
                 // Same rule as the CLI: a w14:paraId is eight hexadecimal
                 // digits; any other value comes from a damaged or crafted file.
                 guard Self.isFormParaId(paragraph.paraId) else { skipped += 1; continue }
@@ -60,7 +66,6 @@ extension WordMCPServer {
                                        "columns": [columnRange.lowerBound, columnRange.upperBound]]
                     case .unreadableTable(let table):
                         row["cell"] = ["table": table, "unreadable": true]
-                        unreadableTables.insert(table)
                     }
                 }
                 rows.append(row)
@@ -145,18 +150,35 @@ extension WordMCPServer {
 
     // MARK: - Errors
 
-    /// DocxForm's errors become refusals carrying the library's message
-    /// verbatim; an XML scan error is wrapped the way the CLI wraps it.
+    /// DocxForm's errors become refusals carrying the library's message; an
+    /// XML scan error is wrapped the way the CLI wraps it. The messages quote
+    /// caller- and file-supplied text (paraIds, entry names), so control and
+    /// bidirectional formatting characters are replaced, as the CLI does.
     private static func mappingFormErrors<T>(_ body: () throws -> T) throws -> T {
         do {
             return try body()
         } catch let error as FormError {
-            throw ToolRefusal(error.description)
+            throw ToolRefusal(sanitizedFormMessage(error.description))
         } catch let error as DocxPackageError {
-            throw ToolRefusal(error.description)
+            throw ToolRefusal(sanitizedFormMessage(error.description))
         } catch let error as XMLScanError {
-            throw ToolRefusal(FormError.malformedPart(error.description).description)
+            throw ToolRefusal(sanitizedFormMessage(FormError.malformedPart(error.description).description))
         }
+    }
+
+    /// The same set macdoc's `TerminalText` replaces (macdoc#249): every
+    /// control character, the line and paragraph separators and the
+    /// bidirectional formatting characters become a space.
+    static func sanitizedFormMessage(_ text: String) -> String {
+        let bidi: Set<Unicode.Scalar> = ["\u{061C}", "\u{200E}", "\u{200F}", "\u{202A}", "\u{202B}", "\u{202C}",
+                                         "\u{202D}", "\u{202E}", "\u{2066}", "\u{2067}", "\u{2068}", "\u{2069}"]
+        let scalars = text.unicodeScalars.map { scalar -> Unicode.Scalar in
+            switch scalar.properties.generalCategory {
+            case .control, .lineSeparator, .paragraphSeparator: return " "
+            default: return bidi.contains(scalar) ? " " : scalar
+            }
+        }
+        return String(String.UnicodeScalarView(scalars))
     }
 
     // MARK: - Argument parsing (strict: present but mistyped is an error, #134)
@@ -235,9 +257,13 @@ extension WordMCPServer {
             }
             return to == from ? .single(from) : .range(from, to)
         }
-        // GridSelection checks the values (non-empty, n ≥ 1, from ≤ to) and
-        // throws FormError, which the caller maps to a refusal.
-        return try GridSelection(items: items)
+        // GridSelection checks the values (non-empty, n ≥ 1, from ≤ to); its
+        // message is kept and prefixed with the parameter and axis it came from.
+        do {
+            return try GridSelection(items: items)
+        } catch let error as FormError {
+            throw WordError.invalidParameter("table_defaults", "\(key)：\(error.description)")
+        }
     }
 
     private static func gridNumber(_ value: Value?) -> Int? {

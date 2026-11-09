@@ -37,11 +37,49 @@ final class FormToolsTests: XCTestCase {
 
     // MARK: - helpers
 
-    private func makeDocx(_ document: [UInt8] = FormToolsTests.form, name: String = "in.docx") throws -> String {
+    private func makeDocx(_ document: [UInt8] = FormToolsTests.form, name: String = "in.docx",
+                          extra: [DocxPackage.Entry] = []) throws -> String {
         let url = dir.appendingPathComponent(name)
         try DocxPackage.write([DocxPackage.Entry(path: DocxPackage.documentPart, data: Data(document)),
-                               DocxPackage.Entry(path: "word/styles.xml", data: Self.styles)], to: url)
+                               DocxPackage.Entry(path: "word/styles.xml", data: Self.styles)] + extra, to: url)
         return url.path
+    }
+
+    /// One paragraph per remaining operation, between two tables so that
+    /// removing the second table never leaves the tables adjacent:
+    /// table 1 (A001, A002) · A003 box line · A004 own numbering · A005 to
+    /// remove · A007 kept · table 2 (A006) · A008 truncate point.
+    private static let ops: [UInt8] = Array((
+        #"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#
+        + "<w:document \(namespaces)><w:body>"
+        + #"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2000"/><w:gridCol w:w="4000"/></w:tblGrid><w:tr>"#
+        + #"<w:tc><w:p w14:paraId="0000A001"><w:r><w:t>Name</w:t></w:r></w:p></w:tc>"#
+        + #"<w:tc><w:p w14:paraId="0000A002"><w:r><w:t>Applicant</w:t></w:r></w:p></w:tc>"#
+        + "</w:tr></w:tbl>"
+        + "<w:p w14:paraId=\"0000A003\"><w:r><w:t>\u{25A1} Agree</w:t></w:r></w:p>"
+        + #"<w:p w14:paraId="0000A004"><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>Option</w:t></w:r></w:p>"#
+        + #"<w:p w14:paraId="0000A005"><w:r><w:t>Remove me</w:t></w:r></w:p>"#
+        + #"<w:p w14:paraId="0000A007"><w:r><w:t>Keep me</w:t></w:r></w:p>"#
+        + #"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="6000"/></w:tblGrid><w:tr>"#
+        + #"<w:tc><w:p w14:paraId="0000A006"><w:r><w:t>Old table</w:t></w:r></w:p></w:tc>"#
+        + "</w:tr></w:tbl>"
+        + #"<w:p w14:paraId="0000A008"><w:r><w:t>Tail</w:t></w:r></w:p>"#
+        + #"<w:sectPr><w:pgSz w:w="11906" w:h="16838"/></w:sectPr>"#
+        + "</w:body></w:document>").utf8)
+
+    /// numId 1 → level 0 whose bullet text is a box glyph (list-checkbox).
+    private static let boxNumbering = DocxPackage.Entry(path: DocxPackage.numberingPart, data: Data((
+        "<w:numbering \(namespaces)>"
+        + "<w:abstractNum w:abstractNumId=\"0\"><w:lvl w:ilvl=\"0\"><w:numFmt w:val=\"bullet\"/><w:lvlText w:val=\"\u{25A1}\"/></w:lvl></w:abstractNum>"
+        + #"<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>"#
+        + "</w:numbering>").utf8))
+
+    private func apply(_ args: [String: Value], source: String? = nil) async throws -> (CallTool.Result, String) {
+        let output = dir.appendingPathComponent("out-\(UUID().uuidString).docx").path
+        var all = args
+        all["source_path"] = .string(try source ?? makeDocx(Self.ops, name: "ops-\(UUID().uuidString).docx"))
+        all["output_path"] = .string(output)
+        return (try await call("apply_form", all), output)
     }
 
     private func call(_ name: String, _ args: [String: Value]) async throws -> CallTool.Result {
@@ -195,7 +233,15 @@ final class FormToolsTests: XCTestCase {
                 "columns": .array([.object(["from": .int(3), "to": .int(2)])]),
             ])]),
         ])
-        XCTAssertEqual(r.isError, true, text(r))
+        // The refusal names the parameter and the axis, then carries the
+        // library's own message (verify R1: before, it carried only the latter).
+        var expected = ""
+        do { _ = try GridSelection(items: [.range(3, 2)]) }
+        catch let error as FormError { expected = error.description }
+        XCTAssertFalse(expected.isEmpty)
+        assertRefused(r, containing: "table_defaults")
+        assertRefused(r, containing: "columns")
+        assertRefused(r, containing: expected)
         XCTAssertFalse(FileManager.default.fileExists(atPath: output))
     }
 
@@ -278,5 +324,150 @@ final class FormToolsTests: XCTestCase {
             XCTAssertTrue(text(r).contains(key), "\(key): \(text(r))")
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: output))
+    }
+
+    // MARK: - verify R1: behaviour changes
+
+    /// The table number is reported even when every paragraph in the table
+    /// has an id the tool skips (Codex R1): the table is still unreadable.
+    func testUnreadableTableIsReportedEvenWhenItsParaIdsAreSkipped() async throws {
+        let merged: [UInt8] = Array((
+            "<w:document \(Self.namespaces)><w:body><w:tbl><w:tblPr/><w:tblGrid/><w:tr>"
+            + #"<w:tc><w:tcPr><w:hMerge w:val="restart"/></w:tcPr><w:p w14:paraId="NOT-HEX!"/></w:tc>"#
+            + "</w:tr></w:tbl></w:body></w:document>").utf8)
+        let source = try makeDocx(merged)
+        let result = try json(await call("classify_form", ["source_path": .string(source), "include_grid": .bool(true)]))
+        XCTAssertEqual((result["paragraphs"] as? [Any])?.count, 0)
+        XCTAssertEqual(result["skipped_invalid_para_ids"] as? Int, 1)
+        XCTAssertEqual(result["unreadable_tables"] as? [Int], [1])
+    }
+
+    /// Text from the caller or the file that reaches a refusal has its
+    /// control and bidirectional formatting characters replaced, as the CLI does.
+    func testRefusalTextHasNoControlOrBidiCharacters() async throws {
+        let (r, output) = try await apply(["fields": .array([.string("A\u{1B}[31m\u{202E}B")])])
+        XCTAssertEqual(r.isError, true, text(r))
+        XCTAssertFalse(text(r).unicodeScalars.contains { $0 == "\u{1B}" || $0 == "\u{202E}" }, text(r))
+        XCTAssertTrue(text(r).contains("A [31m B"), text(r))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: output))
+    }
+
+    // MARK: - verify R1: coverage of the wrapper's own mapping
+
+    func testEachRemainingOperationReachesItsPlanField() async throws {
+        let (font, fontOut) = try await apply(["checkbox_font": .string("MS Gothic")])
+        XCTAssertTrue(try documentXML(at: fontOut).contains("MS Gothic"), text(font))
+
+        let (tick, tickOut) = try await apply(["tick_list": .array([.string("0000A004")])])
+        let ticked = try documentXML(at: tickOut)
+        XCTAssertNotEqual(tick.isError, true, text(tick))
+        XCTAssertFalse(ticked.contains("<w:numId"), "numbering should be gone")
+        XCTAssertTrue(ticked.contains("\u{25A0}"))
+
+        let (remove, removeOut) = try await apply(["removals": .array([.string("0000A005")])])
+        XCTAssertNotEqual(remove.isError, true, text(remove))
+        let removed = try documentXML(at: removeOut)
+        XCTAssertFalse(removed.contains("0000A005"))
+        XCTAssertTrue(removed.contains("0000A006"), "removals must not touch tables")
+
+        let (table, tableOut) = try await apply(["removed_tables": .array([.string("0000A006")])])
+        XCTAssertNotEqual(table.isError, true, text(table))
+        let withoutTable = try documentXML(at: tableOut)
+        XCTAssertFalse(withoutTable.contains("0000A006"))
+        XCTAssertTrue(withoutTable.contains("0000A005"), "removed_tables must not touch paragraphs")
+
+        let (truncate, truncateOut) = try await apply(["truncate_from": .string("0000A008")])
+        XCTAssertNotEqual(truncate.isError, true, text(truncate))
+        let truncated = try documentXML(at: truncateOut)
+        XCTAssertFalse(truncated.contains("0000A008"))
+        XCTAssertTrue(truncated.contains("0000A007"))
+    }
+
+    func testTableDefaultsRangeShapesMapToTheLibrarySelection() async throws {
+        // {from, to} with to == from is a single column; a whole-valued
+        // double is accepted like an integer; rows work like columns.
+        for range in [Value.object(["from": .int(2), "to": .int(2)]), .object(["from": .double(2.0)])] {
+            let (r, _) = try await apply(["field_size": .int(12), "table_defaults": .array([.object([
+                "anchor": .string("0000A001"), "columns": .array([range]),
+            ])])])
+            let reports = try XCTUnwrap(try json(r)["table_defaults"] as? [[String: Any]])
+            XCTAssertEqual(reports.first?["fill_cells"] as? Int, 1)
+        }
+        let (rows, _) = try await apply(["field_size": .int(12), "table_defaults": .array([.object([
+            "anchor": .string("0000A001"), "rows": .array([.object(["from": .int(1)])]),
+        ])])])
+        let reports = try XCTUnwrap(try json(rows)["table_defaults"] as? [[String: Any]])
+        XCTAssertEqual(reports.first?["fill_cells"] as? Int, 2)
+    }
+
+    func testTableDefaultsMalformedEntriesAreRefusedByName() async throws {
+        let bad: [(String, Value)] = [
+            ("zero", .object(["anchor": .string("0000A001"), "columns": .array([.object(["from": .int(0)])])])),
+            ("negative", .object(["anchor": .string("0000A001"), "columns": .array([.object(["from": .int(-1)])])])),
+            ("fraction", .object(["anchor": .string("0000A001"), "columns": .array([.object(["from": .double(2.5)])])])),
+            ("string", .object(["anchor": .string("0000A001"), "columns": .array([.object(["from": .string("2")])])])),
+            ("missing from", .object(["anchor": .string("0000A001"), "columns": .array([.object(["to": .int(2)])])])),
+            ("empty list", .object(["anchor": .string("0000A001"), "columns": .array([])])),
+            ("no axis", .object(["anchor": .string("0000A001")])),
+            ("object axis", .object(["anchor": .string("0000A001"), "columns": .object(["from": .int(2)])])),
+            ("bare numbers", .object(["anchor": .string("0000A001"), "columns": .array([.int(2), .int(3)])])),
+            ("empty anchor", .object(["anchor": .string(""), "columns": .array([.object(["from": .int(2)])])])),
+        ]
+        for (label, entry) in bad {
+            let (r, output) = try await apply(["field_size": .int(12), "table_defaults": .array([entry])])
+            XCTAssertEqual(r.isError, true, "\(label): \(text(r))")
+            XCTAssertTrue(text(r).contains("table_defaults"), "\(label): \(text(r))")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: output), label)
+        }
+    }
+
+    func testFieldSizeValuesTheLibraryRefuses() async throws {
+        let library = { (raw: String) -> String in
+            do { _ = try FieldSize.parse(points: raw); return "" } catch { return "\(error)" }
+        }
+        for (value, spelled) in [(Value.double(1e20), "1e+20"), (.double(0.1 + 0.2), String(0.1 + 0.2)),
+                                 (.double(10.25), "10.25"), (.int(-12), "-12"), (.double(1e-7), "1e-07")] {
+            let (r, output) = try await apply(["fields": .array([.string("0000A002")]), "field_size": value])
+            XCTAssertEqual(r.isError, true, "\(spelled): \(text(r))")
+            XCTAssertFalse(library(spelled).isEmpty, "the library must refuse \(spelled) too")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: output), spelled)
+        }
+    }
+
+    func testFieldSizeIsDerivedFromTheFieldsWhenOmitted() async throws {
+        let sized = String(decoding: Self.ops, as: UTF8.self).replacingOccurrences(
+            of: #"<w:p w14:paraId="0000A002"><w:r><w:t>"#,
+            with: #"<w:p w14:paraId="0000A002"><w:r><w:rPr><w:sz w:val="22"/></w:rPr><w:t>"#)
+        let source = try makeDocx(Array(sized.utf8), name: "sized.docx")
+        let (r, _) = try await apply(["fields": .array([.string("0000A002")])], source: source)
+        let result = try json(r)
+        XCTAssertEqual(result["field_size"] as? String, "11 pt")
+        XCTAssertEqual(result["field_size_derived"] as? Bool, true)
+    }
+
+    func testNumberingReadabilityAndListCheckboxKind() async throws {
+        let absent = try json(await call("classify_form", ["source_path": .string(try makeDocx(Self.ops, name: "a.docx"))]))
+        XCTAssertEqual(absent["numbering_readable"] as? Bool, true)
+
+        let garbage = DocxPackage.Entry(path: DocxPackage.numberingPart, data: Data("<w:numbering><broken".utf8))
+        let unreadable = try json(await call("classify_form", [
+            "source_path": .string(try makeDocx(Self.ops, name: "b.docx", extra: [garbage])),
+        ]))
+        XCTAssertEqual(unreadable["numbering_readable"] as? Bool, false)
+
+        let readable = try json(await call("classify_form", [
+            "source_path": .string(try makeDocx(Self.ops, name: "c.docx", extra: [Self.boxNumbering])),
+        ]))
+        XCTAssertEqual(readable["numbering_readable"] as? Bool, true)
+        let kinds = Dictionary(uniqueKeysWithValues: try XCTUnwrap(readable["paragraphs"] as? [[String: Any]])
+            .compactMap { p in (p["para_id"] as? String).map { ($0, p["kind"] as? String) } })
+        XCTAssertEqual(kinds["0000A004"], "list-checkbox")
+        XCTAssertEqual(kinds["0000A005"], "body")
+    }
+
+    func testExplicitNullCountsAsAbsent() async throws {
+        let (r, _) = try await apply(["checkbox_font": .string("MS Gothic"), "fields": .null,
+                                      "overwrite": .null, "table_defaults": .null, "field_size": .null])
+        XCTAssertNotEqual(r.isError, true, text(r))
     }
 }
