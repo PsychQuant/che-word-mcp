@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`classify_form`／`apply_form`：表單整理工具**（#300）。macdoc `word form classify|apply` 背後的函式庫 DocxForm 在 ooxml-swift 3.21.0 成為 library product（PsychQuant/ooxml-swift#238），這兩個工具是它的 MCP 介面，行為與 CLI 相同。兩者都直接以檔案路徑操作，不經過 `open_document` 的 session：DocxForm 只以字串修改 `word/document.xml` 裡被指定的元素，其他 part 逐位元組照抄，表單不經過 typed model 重新序列化。
+  - `classify_form`（`source_path`、`include_grid`）回傳 JSON：每個段落的 `para_id`、`kind`（`list-checkbox`／`checkbox-line`／`table-field`／`body`）與全文；`include_grid` 為 true 時，表格內段落另附 `position`（例 `t1:r2c3`）與 `cell`（`table`、`rows`、`columns`），格線讀不出來的表格列在 `unreadable_tables`。paraId 不是 8 位十六進位的段落略過不列，數量記在 `skipped_invalid_para_ids`；`numbering_readable` 為 false 時表示 numbering part 無法解析、清單勾選框沒有判定（CLI 對應的是 note 行）。
+  - `apply_form` 依 paraId 清空欄位（`fields`）、以表格為單位批次指定欄位（`table_defaults`）、改勾選框字型（`checkbox_font`）、打勾（`tick_list`）、插入（`insertions`）、刪除段落（`removals`）或整張表格（`removed_tables`）、截斷（`truncate_from`），寫到 `output_path`；原檔不動，輸出已存在時要帶 `overwrite`。任何一項不成立就整份拒絕，不寫出檔案。成功時回傳 JSON（`written`、`field_size`、`table_defaults` 每個錨點的 `fill_cells`／`partial_cells`／`skipped_cells`、`skipped_cleanups`、`skipped_checkbox_runs`、`added_final_paragraph`）。
+  - 參數名稱跟著函式庫 `FormPlan` 的欄位，不沿用 CLI 旗標；`table_defaults` 是 `{anchor, columns: [{from, to}], rows: [{from, to}]}` 物件陣列，不是 CLI 的字串語法。`field_size` 是 JSON 數值（12、10.5），布林與數值參數走 #232 的嚴格讀取，型別錯一律具名拒絕。
+  - **已知限制**：拒絕訊息照錄函式庫 `FormError`／`DocxPackageError` 的原文，其中有些仍寫著 macdoc CLI 的旗標名稱，例如輸出檔已存在時寫「使用 --force 覆寫」（這裡對應 `overwrite`）、推不出統一字級時寫「請用 --field-size 指定」（對應 `field_size`），另有 `--remove-table`、`--table-defaults` 等。訊息由函式庫產生，要改得在 ooxml-swift 讓訊息不綁定單一呼叫端的介面（見 #300）。
+
+### Changed
+
+- **相依升到 ooxml-swift 3.21.0**（#300，為了 `DocxForm` product）。中間的 3.20.0 也一起帶進來，對 che-word-mcp 可觀察的影響：
+  - 任何編輯後存檔，`<w:color>` 的 `w:themeColor`／`w:themeTint`／`w:themeShade` 與 `<w:rFonts>` 的 theme 字型不再從整份文件消失（函式庫端修正，追蹤於 #274）。連帶影響：編輯過的 Word 文件保留這些屬性之後，`export_script`／`get_script_coverage` 對這類段落改走 raw channel，覆蓋率數字會比過去低（回到與未編輯原檔一致）。
+  - `accept_revision`／`reject_revision` 依修訂 id 找目標，不再依記錄下來的段落索引與文字比對（函式庫端修正，追蹤於 #280）；讀檔時不同種類的修訂共用同一個 id 會被重新編號；拒絕段落記號插入時遇到還不支援的情況改為丟錯，不再悄悄刪除內容或變成接受。
+  - 這次只升相依、補 #300 的工具；#274、#280 的 MCP 端回歸測試與結案在各自的 issue。
+
 ## [4.9.0] - 2026-09-28
 
 > **安全修正：`remove_watermark`／`insert_watermark`／`insert_image_watermark` 在 4.7.0–4.8.0 可被惡意 .docx 誘導刪除封裝外的本機檔案或整個目錄（見 Security）。** header／footer／chart 的圖片可以列出與匯出，並對這些位置的圖片關係做封裝內含檢查；anchor／搜尋／取代新增 `match_options.math_script_insensitive`；`replace_text` 對缺字形的字元發 advisory；`set_page_borders` 改為真的寫入；一批字串參數改為嚴格驗證；相依升到 ooxml-swift 3.19.0（見文末「升級注意」）。依本專案先例 bump minor。

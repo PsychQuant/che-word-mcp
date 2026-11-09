@@ -7308,8 +7308,144 @@ actor WordMCPServer {
                     ]),
                     "required": .array([.string("script_path"), .string("output_path")])
                 ])
+            ),
+
+            // #300: form tools — the MCP face of ooxml-swift's DocxForm
+            // (the library behind `macdoc word form classify|apply`).
+            Tool(
+                name: "classify_form",
+                description: "列出 .docx 表單每個段落的 w14:paraId、類型與全文，供 apply_form 指定要整理的段落。直接讀檔（source_path），不需要 open_document。類型只有四種，值同 macdoc word form classify：list-checkbox（段落編號本身是勾選框）、checkbox-line（文字含勾選框字元）、table-field（在表格儲存格內）、body（其餘）。include_grid 為 true 時，表格內段落另附 position（例 t1:r2c3）與 cell（table、rows、columns，從 1 起算）；格線讀不出來的表格列在 unreadable_tables，該表段落的 position 為 t1:?。paraId 不是 8 位十六進位的段落略過不列，數量記在 skipped_invalid_para_ids。回傳 JSON。",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string(".docx 檔案路徑")
+                        ]),
+                        "include_grid": .object([
+                            "type": .string("boolean"),
+                            "description": .string("附上表格內段落的格線位置（給 apply_form 的 table_defaults 用）。預設 false")
+                        ])
+                    ]),
+                    "required": .array([.string("source_path")])
+                ])
+            ),
+
+            Tool(
+                name: "apply_form",
+                description: "依 classify_form 列出的 paraId 整理 .docx 表單，寫成新檔（output_path）；原檔不動。只改 word/document.xml 裡被指定的元素，其餘 part 逐位元組照抄，所以不經過 open_document 的 session。至少要有一項操作：fields（清空成待填欄位）、table_defaults（以表格錨點段落加欄列範圍批次指定欄位）、checkbox_font、tick_list（打勾）、insertions、removals、removed_tables、truncate_from。field_size 只能搭配 fields 或 table_defaults。任何一項指定不成立（paraId 找不到、範圍錯誤、會切開欄位或註解）就整份拒絕，不寫出檔案。成功回傳 JSON：written、field_size、table_defaults（每個錨點的 fill_cells／partial_cells／skipped_cells）、skipped_cleanups、skipped_checkbox_runs、added_final_paragraph。",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "source_path": .object([
+                            "type": .string("string"),
+                            "description": .string("要整理的 .docx 路徑（不會被修改）")
+                        ]),
+                        "output_path": .object([
+                            "type": .string("string"),
+                            "description": .string("輸出 .docx 路徑（已存在時預設拒絕，需帶 overwrite）")
+                        ]),
+                        "overwrite": .object([
+                            "type": .string("boolean"),
+                            "description": .string("允許覆寫已存在的 output_path。預設 false")
+                        ]),
+                        "fields": .object([
+                            "type": .string("array"),
+                            "items": .object(["type": .string("string")]),
+                            "description": .string("要清空成待填欄位的段落 paraId")
+                        ]),
+                        "field_size": .object([
+                            "type": .string("number"),
+                            "description": .string("待填欄位的字級（pt，0.5 為單位，1 到 1638，例如 12 或 10.5）。省略時從指定的欄位推得；推不出統一字級時拒絕")
+                        ]),
+                        "table_defaults": .object([
+                            "type": .string("array"),
+                            "items": .object([
+                                "type": .string("object"),
+                                "properties": .object([
+                                    "anchor": .object([
+                                        "type": .string("string"),
+                                        "description": .string("表格內任一段落的 paraId，用來指定是哪一張表")
+                                    ]),
+                                    "columns": .object([
+                                        "type": .string("array"),
+                                        "items": Self.formGridRangeSchema,
+                                        "description": .string("要當成欄位的格線欄範圍")
+                                    ]),
+                                    "rows": .object([
+                                        "type": .string("array"),
+                                        "items": Self.formGridRangeSchema,
+                                        "description": .string("要當成欄位的格線列範圍")
+                                    ])
+                                ]),
+                                "required": .array([.string("anchor")])
+                            ]),
+                            "description": .string("以表格為單位批次指定欄位：完全落在所選欄或列內的儲存格成為待填欄位。columns 與 rows 至少給一個")
+                        ]),
+                        "checkbox_font": .object([
+                            "type": .string("string"),
+                            "description": .string("勾選框字元改用的字型名稱")
+                        ]),
+                        "tick_list": .object([
+                            "type": .string("array"),
+                            "items": .object(["type": .string("string")]),
+                            "description": .string("要把勾選框打勾的段落 paraId")
+                        ]),
+                        "insertions": .object([
+                            "type": .string("array"),
+                            "items": .object([
+                                "type": .string("object"),
+                                "properties": .object([
+                                    "anchor": .object([
+                                        "type": .string("string"),
+                                        "description": .string("插在哪個段落之後（paraId）")
+                                    ]),
+                                    "text": .object([
+                                        "type": .string("string"),
+                                        "description": .string("新段落的文字")
+                                    ])
+                                ]),
+                                "required": .array([.string("anchor"), .string("text")])
+                            ]),
+                            "description": .string("在指定段落之後插入新段落")
+                        ]),
+                        "removals": .object([
+                            "type": .string("array"),
+                            "items": .object(["type": .string("string")]),
+                            "description": .string("要刪除的段落 paraId")
+                        ]),
+                        "removed_tables": .object([
+                            "type": .string("array"),
+                            "items": .object(["type": .string("string")]),
+                            "description": .string("要整張刪除的表格：給表格內任一段落的 paraId")
+                        ]),
+                        "truncate_from": .object([
+                            "type": .string("string"),
+                            "description": .string("從這個段落（paraId）起刪到文件結尾")
+                        ])
+                    ]),
+                    "required": .array([.string("source_path"), .string("output_path")])
+                ])
             )
         ]
+    }
+
+    /// `{from, to}` grid range for `apply_form`'s `table_defaults` (#300).
+    static var formGridRangeSchema: Value {
+        .object([
+            "type": .string("object"),
+            "properties": .object([
+                "from": .object([
+                    "type": .string("integer"),
+                    "description": .string("起始欄或列（從 1 起算）")
+                ]),
+                "to": .object([
+                    "type": .string("integer"),
+                    "description": .string("結束欄或列（含）；省略表示到最後一欄或列")
+                ])
+            ]),
+            "required": .array([.string("from")])
+        ])
     }
 
     // MARK: - Tool Handler
@@ -7925,6 +8061,12 @@ actor WordMCPServer {
             return try await getScriptCoverageTool(args: args)
         case "execute_script":
             return try await executeScriptTool(args: args)
+
+        // Form tools (#300, ooxml-swift DocxForm)
+        case "classify_form":
+            return try await classifyFormTool(args: args)
+        case "apply_form":
+            return try await applyFormTool(args: args)
 
         default:
             throw WordError.unknownTool(name)

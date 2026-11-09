@@ -6,7 +6,9 @@ let package = Package(
     platforms: [.macOS(.v13)],
     dependencies: [
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.0"),
-        .package(url: "https://github.com/PsychQuant/ooxml-swift.git", from: "3.19.0"),
+        // 3.21.0 (#300): the DocxForm product behind classify_form / apply_form
+        // (string-level form normalization, ooxml-swift#238).
+        .package(url: "https://github.com/PsychQuant/ooxml-swift.git", from: "3.21.0"),
         .package(url: "https://github.com/PsychQuant/markdown-swift.git", from: "0.2.0"),
         .package(url: "https://github.com/PsychQuant/word-to-md-swift.git", from: "1.0.0"),
         .package(url: "https://github.com/PsychQuant/latex-math-swift.git", from: "0.2.0"),
@@ -24,6 +26,7 @@ let package = Package(
             dependencies: [
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "OOXMLSwift", package: "ooxml-swift"),
+                .product(name: "DocxForm", package: "ooxml-swift"),
                 .product(name: "MarkdownSwift", package: "markdown-swift"),
                 .product(name: "WordToMD", package: "word-to-md-swift"),
                 .product(name: "LaTeXMathSwift", package: "latex-math-swift"),
@@ -36,6 +39,7 @@ let package = Package(
                 "CheWordMCP",
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "OOXMLSwift", package: "ooxml-swift"),
+                .product(name: "DocxForm", package: "ooxml-swift"),
                 .product(name: "MarkdownSwift", package: "markdown-swift"),
                 .product(name: "LaTeXMathSwift", package: "latex-math-swift"),
                 .product(name: "Logging", package: "swift-log"),
