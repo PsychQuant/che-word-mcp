@@ -8,7 +8,7 @@ let package = Package(
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.0"),
         // 3.21.0 (#300): the DocxForm product behind classify_form / apply_form
         // (string-level form normalization, ooxml-swift#238).
-        .package(url: "https://github.com/PsychQuant/ooxml-swift.git", from: "3.21.0"),
+        .package(url: "https://github.com/PsychQuant/ooxml-swift.git", from: "3.22.0"),
         .package(url: "https://github.com/PsychQuant/markdown-swift.git", from: "0.2.0"),
         .package(url: "https://github.com/PsychQuant/word-to-md-swift.git", from: "1.0.0"),
         .package(url: "https://github.com/PsychQuant/latex-math-swift.git", from: "0.2.0"),

@@ -20,6 +20,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **相依升到 ooxml-swift 3.22.0**（#305）。沒有新增或修改工具；以下是既有工具可觀察到的變化（che-word-mcp 用的是預設讀法）：
+  - **編輯後存檔，只有被編輯的 body 區塊會重寫**（PsychQuant/ooxml-swift#133）。過去任何一次編輯（`insert_paragraph`、`update_paragraph`、`delete_paragraph`、`insert_table`、`replace_text`、頁面設定等）都讓整份 `word/document.xml` 由 typed model 重寫，typed model 沒建模的內容會從沒人碰過的段落與表格消失。現在沒被編輯的段落、表格與 body 以外的內容沿用原檔的 bytes。
+    - 沒被編輯的區塊因此保留：文字方塊與公式（`m:oMath`）裡的文字、純空白的 `w:t`、段落層的分節符（`w:pPr/w:sectPr`）、`w:gridCol`、核取方塊內容控制項的狀態等。
+    - **用 `replace_text`／`replace_text_batch` 遮蔽內容時要注意**：取代範圍仍然只有 typed model 看得到的文字。文字方塊與公式裡的同一段文字，過去會隨整份重寫一起消失，現在會原樣留在存檔裡。
+    - 開啟後沒有任何編輯就存檔，`word/document.xml` 與來源逐位元組相同。
+    - 沒被編輯的區塊不再被正規化，例如 `<w:i w:val="false"/>` 不會改寫成 `w:val="0"`。來源沒有 body 層 `sectPr`、也沒改過頁面設定時，不再自動補上預設的 `sectPr`。
+    - 不同種類的修訂共用同一個 id 的文件：沒被編輯的段落存檔時保留來源的 id，重新開啟後會再被分開編號，兩筆修訂都仍可用 `revision_id` 指定。
+  - **表格儲存格裡段落與巢狀表格的順序，重寫時維持來源順序**（PsychQuant/ooxml-swift#248）。過去編輯表格的任何一格，同一張表格裡含巢狀表格的其他儲存格會被改成「全部段落、再全部巢狀表格、結尾補一個空段」。
+    - **行為改變**：對以巢狀表格開頭的儲存格用 `update_cell`，文字現在留在表格後面的段落；過去會被搬到表格前面，並另補一個空段。
+    - 儲存格裡有讀不進 typed model 的內容控制項時，它之後整份文件的保留空白不再對錯位置。過去讀檔當下就會錯位，純空白的 `w:t` 可能變成空字串。
+  - 函式庫端仍開著的限制：
+    - 被編輯的那個區塊仍由 typed model 整塊重寫，單位是 body 層的區塊：改表格裡的一格，整張表格都會重寫，表格內 typed model 沒建模的內容仍會遺失（PsychQuant/ooxml-swift#249）。
+    - 對某個儲存格加減段落或巢狀表格之後，那一格退回舊的輸出形狀，內容仍會重排（PsychQuant/ooxml-swift#252）。
+    - 同一個 session 裡，先在文件尾端附加段落（不帶位置的 `insert_paragraph` 等），之後再做的編輯會退回整份重寫，上面的損失會再出現（PsychQuant/ooxml-swift#241）。
+    - `delete_header` 沒有清掉分節屬性裡的 `w:headerReference`（#303）。沒被編輯的段落層 `sectPr` 現在沿用原 bytes，所以這種懸空的參照會留在存檔裡；過去段落層的 `sectPr` 在整份重寫時不會寫回。
+
 - **相依升到 ooxml-swift 3.21.0**（#300，為了 `DocxForm` product）。中間的 3.20.0 也一起帶進來，對既有工具可觀察的影響：
   - 任何編輯後存檔，`<w:color>` 的 `w:themeColor`／`w:themeTint`／`w:themeShade` 與 `<w:rFonts>` 的 theme 字型不再從整份文件消失（函式庫端修正，追蹤於 #274）。連帶影響：編輯過的 Word 文件保留這些屬性之後，`export_script`／`get_script_coverage` 對這類段落改走 raw channel，覆蓋率數字會比過去低（回到與未編輯原檔一致）。只有 theme 顏色、沒有明確 `w:val` 的 run，存檔一次後讀回的 `color` 是 `"auto"`。
   - `accept_revision`／`reject_revision` 依修訂 id 找目標，不再依記錄下來的段落索引與文字比對（函式庫端修正，追蹤於 #280）。讀檔時不同種類的修訂共用同一個 id 會被重新編號；已沒有任何段落帶著的孤兒修訂，接受或拒絕時只移除記錄、不動文字。
