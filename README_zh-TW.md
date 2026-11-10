@@ -160,6 +160,16 @@ swift build -c release
 cp .build/release/CheWordMCP ~/bin/
 ```
 
+## 表單整理工具（`source_path` → `output_path`）
+
+`classify_form` 與 `apply_form`（#300）用 ooxml-swift 的 DocxForm 整理已填寫的表單，也就是 `macdoc word form classify|apply` 背後的函式庫。兩者只收檔案路徑，不用 `doc_id`：DocxForm 以字串修改 `word/document.xml` 裡被點名的元素，其餘 part 逐位元組照抄，文件不會經過 session 持有的 typed model。它們讀的是磁碟上的檔案，所以呼叫前要先把 session 裡的編輯存檔。
+
+```
+classify_form: { "source_path": "/path/to/form.docx", "include_grid": true }
+apply_form: { "source_path": "/path/to/form.docx", "output_path": "/path/to/tidy.docx",
+              "fields": ["1A2B3C4D"], "table_defaults": [{ "anchor": "1A2B3C4E", "columns": [{ "from": 2 }] }] }
+```
+
 ## AI Agent 使用方式
 
 ### 直接告訴 Agent
