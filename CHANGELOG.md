@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.10.0] - 2026-11-11
+
+> 新增表單整理工具 `classify_form`／`apply_form`。相依升到 ooxml-swift 3.22.0：編輯後存檔只重寫被編輯的 body 區塊，沒被編輯的段落與表格沿用原檔的 bytes；表格儲存格維持段落與巢狀表格的來源順序。用 `replace_text` 遮蔽內容的人請看 Changed 的說明。
+
 ### Added
 
 - **`classify_form`／`apply_form`：表單整理工具**（#300）。macdoc `word form classify|apply` 背後的函式庫 DocxForm 在 ooxml-swift 3.21.0 成為 library product（PsychQuant/ooxml-swift#238），這兩個工具是它的 MCP 介面，行為與 CLI 相同。兩者都直接以檔案路徑操作，不用 `doc_id`：DocxForm 只以字串修改 `word/document.xml` 裡被點名的元素，其他 part 逐位元組照抄，表單不經過 typed model 重新序列化。它們讀的是磁碟上的檔案，session 裡還沒存檔的編輯看不到。
