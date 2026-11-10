@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [4.10.0] - 2026-11-11
 
-> 新增表單整理工具 `classify_form`／`apply_form`。相依升到 ooxml-swift 3.22.0：編輯後存檔只重寫被編輯的 body 區塊，沒被編輯的段落與表格沿用原檔的 bytes；表格儲存格維持段落與巢狀表格的來源順序。用 `replace_text` 遮蔽內容的人請看 Changed 的說明。
+> 新增表單整理工具 `classify_form`／`apply_form`。相依升到 ooxml-swift 3.22.0：開啟既有文件後若只做定點編輯，存檔時只重寫被編輯的 body 區塊（同一個 session 做過「加在文件尾端」的操作就不適用，見 Changed）；表格儲存格維持段落與巢狀表格的來源順序。用 `replace_text` 遮蔽內容的人請看 Changed 的說明。
 
 ### Added
 
@@ -24,21 +24,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **相依升到 ooxml-swift 3.22.0**（#305）。沒有新增或修改工具；以下是既有工具可觀察到的變化（che-word-mcp 用的是預設讀法）：
-  - **編輯後存檔，只有被編輯的 body 區塊會重寫**（PsychQuant/ooxml-swift#133）。過去任何一次編輯（`insert_paragraph`、`update_paragraph`、`delete_paragraph`、`insert_table`、`replace_text`、頁面設定等）都讓整份 `word/document.xml` 由 typed model 重寫，typed model 沒建模的內容會從沒人碰過的段落與表格消失。現在沒被編輯的段落、表格與 body 以外的內容沿用原檔的 bytes。
-    - 沒被編輯的區塊因此保留：文字方塊與公式（`m:oMath`）裡的文字、純空白的 `w:t`、段落層的分節符（`w:pPr/w:sectPr`）、`w:gridCol`、核取方塊內容控制項的狀態等。
-    - **用 `replace_text`／`replace_text_batch` 遮蔽內容時要注意**：取代範圍仍然只有 typed model 看得到的文字。文字方塊與公式裡的同一段文字，過去會隨整份重寫一起消失，現在會原樣留在存檔裡。
-    - 開啟後沒有任何編輯就存檔，`word/document.xml` 與來源逐位元組相同。
+- **相依升到 ooxml-swift 3.22.0**（#305）。這次升級本身沒有新增或修改工具；以下是既有工具可觀察到的變化。che-word-mcp 不使用函式庫的 tree-backed 讀法，函式庫發布說明裡 tree-backed 的部分不適用。
+  - **只做定點編輯時，存檔只重寫被編輯的 body 區塊**（PsychQuant/ooxml-swift#133）。過去任何會讓 `word/document.xml` 標成已修改的編輯（`update_paragraph`、`delete_paragraph`、帶位置的 `insert_paragraph`、`insert_table`、`replace_text`、頁面設定等）都讓整份 `word/document.xml` 由 typed model 重寫，typed model 讀不進來的內容會從沒人碰過的段落與表格消失。現在沒被編輯的段落與表格，以及 `word/document.xml` 裡 `<w:body>` 以外的部分（XML 宣告、根元素、`w:background` 等），沿用原檔的 bytes。
+    - **這只在同一個 session 沒有做過「加在文件尾端」的操作時成立**，條件與做法見下方「函式庫端仍開著的限制」第一條。存檔時不會提示走的是哪一條路。
+    - 沒被編輯的區塊因此保留 typed model 讀不進來的形態，例如 DrawingML 文字方塊（含文字方塊 run 裡的公式）、段落層的分節符（`w:pPr/w:sectPr`）、`w:gridCol`、核取方塊內容控制項的狀態，以及特定位置（巢狀表格儲存格內等）的純空白 `w:t`。
+    - **用 `replace_text`／`replace_text_batch` 遮蔽內容時要注意**：取代不會進入文字方塊與公式（`m:oMath`），`scope: "all"` 也一樣，這兩處的原文可能留在存檔裡。沒被取代命中的段落現在沿用原 bytes，所以其中文字方塊與公式的原文會原樣保留。被命中的那一段仍整段重寫，段內的 DrawingML 文字方塊仍會被丟掉，裡面的公式會被移到段落本身。同一個 session 若先做過加在文件尾端的操作，存檔會退回整份重寫。遮蔽後請另外檢查存檔裡的 `word/document.xml`，不要只看工具回報的取代筆數。
     - 沒被編輯的區塊不再被正規化，例如 `<w:i w:val="false"/>` 不會改寫成 `w:val="0"`。來源沒有 body 層 `sectPr`、也沒改過頁面設定時，不再自動補上預設的 `sectPr`。
     - 不同種類的修訂共用同一個 id 的文件：沒被編輯的段落存檔時保留來源的 id，重新開啟後會再被分開編號，兩筆修訂都仍可用 `revision_id` 指定。
+    - 不變的部分：開啟後沒有任何編輯就存檔，`word/document.xml` 本來就逐位元組保留。
   - **表格儲存格裡段落與巢狀表格的順序，重寫時維持來源順序**（PsychQuant/ooxml-swift#248）。過去編輯表格的任何一格，同一張表格裡含巢狀表格的其他儲存格會被改成「全部段落、再全部巢狀表格、結尾補一個空段」。
     - **行為改變**：對以巢狀表格開頭的儲存格用 `update_cell`，文字現在留在表格後面的段落；過去會被搬到表格前面，並另補一個空段。
-    - 儲存格裡有讀不進 typed model 的內容控制項時，它之後整份文件的保留空白不再對錯位置。過去讀檔當下就會錯位，純空白的 `w:t` 可能變成空字串。
+    - 儲存格內部有讀不進 typed model 的區塊層內容控制項時，它之後整份文件的保留空白不再對錯位置。過去讀檔當下就會錯位，讀取與存檔的結果都受影響，純空白的 `w:t` 可能變成空字串。包住整列或整格的內容控制項仍會造成錯位（PsychQuant/ooxml-swift#249）。
   - 函式庫端仍開著的限制：
-    - 被編輯的那個區塊仍由 typed model 整塊重寫，單位是 body 層的區塊：改表格裡的一格，整張表格都會重寫，表格內 typed model 沒建模的內容仍會遺失（PsychQuant/ooxml-swift#249）。
-    - 對某個儲存格加減段落或巢狀表格之後，那一格退回舊的輸出形狀，內容仍會重排（PsychQuant/ooxml-swift#252）。
-    - 同一個 session 裡，先在文件尾端附加段落（不帶位置的 `insert_paragraph` 等），之後再做的編輯會退回整份重寫，上面的損失會再出現（PsychQuant/ooxml-swift#241）。
-    - `delete_header` 沒有清掉分節屬性裡的 `w:headerReference`（#303）。沒被編輯的段落層 `sectPr` 現在沿用原 bytes，所以這種懸空的參照會留在存檔裡；過去段落層的 `sectPr` 在整份重寫時不會寫回。
+    - **同一個 session 裡，只要做過一次「加在文件尾端」的操作，之後的任何編輯都會退回整份重寫**，上面的損失會再出現（PsychQuant/ooxml-swift#241）。會加在尾端的操作：不帶位置參數的 `insert_paragraph`、`insert_bullet_list`、`insert_page_break`、`insert_hyperlink`（以上四個實測過），以及依函式庫呼叫點推得的 `insert_numbered_list`、`insert_section_break`、`insert_image`、`insert_image_from_path`、`insert_internal_link`。`open_document` 帶 `profile: "official"` 時，依程式碼整個 session 都是整份重寫。要保留沒被編輯的內容，先做完所有定點編輯、最後才在尾端加內容，或給插入工具明確的位置（`index`、`after_text` 等）。只在尾端加內容、之後不再編輯就存檔，內容會保留。
+    - 被編輯的那個區塊仍由 typed model 整塊重寫，單位是 body 層的區塊：改表格裡的一格，整張表格都會重寫，表格內 typed model 讀不進來的內容仍會遺失（PsychQuant/ooxml-swift#249）。
+    - 對某個儲存格加減段落或巢狀表格之後，那一格退回舊的輸出形狀，內容仍會重排（PsychQuant/ooxml-swift#252）。把同一個 block 移除再放回去也算；這個操作序列在上一版會保留原 bytes，這一版會重排。
+    - 區塊被移動（刪掉後在別處插入同一個值），或同一個區塊有兩個沒改過的複本時，這些區塊改由 typed model 重寫；相鄰兩段對調時，被重寫的可能是沒被移動的那一段。其他退回整份重寫的條件見函式庫 3.22.0 的發布說明。
+    - `delete_header` 沒有清掉分節屬性裡的 `w:headerReference`（#303），存檔後會留下懸空的參照。過去若同一個 session 還有其他正文編輯，整份重寫會順帶丟掉段落層的 `sectPr`（連同分節符本身），懸空的參照也跟著消失；現在沒被編輯的段落層 `sectPr` 原樣保留，參照也會留下。
 
 - **相依升到 ooxml-swift 3.21.0**（#300，為了 `DocxForm` product）。中間的 3.20.0 也一起帶進來，對既有工具可觀察的影響：
   - 任何編輯後存檔，`<w:color>` 的 `w:themeColor`／`w:themeTint`／`w:themeShade` 與 `<w:rFonts>` 的 theme 字型不再從整份文件消失（函式庫端修正，追蹤於 #274）。連帶影響：編輯過的 Word 文件保留這些屬性之後，`export_script`／`get_script_coverage` 對這類段落改走 raw channel，覆蓋率數字會比過去低（回到與未編輯原檔一致）。只有 theme 顏色、沒有明確 `w:val` 的 run，存檔一次後讀回的 `color` 是 `"auto"`。
