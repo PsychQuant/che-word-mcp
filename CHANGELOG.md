@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`classify_form`／`apply_form`：表單整理工具**（#300）。macdoc `word form classify|apply` 背後的函式庫 DocxForm 在 ooxml-swift 3.21.0 成為 library product（PsychQuant/ooxml-swift#238），這兩個工具是它的 MCP 介面，行為與 CLI 相同。兩者都直接以檔案路徑操作，不用 `doc_id`：DocxForm 只以字串修改 `word/document.xml` 裡被點名的元素，其他 part 逐位元組照抄，表單不經過 typed model 重新序列化。它們讀的是磁碟上的檔案，session 裡還沒存檔的編輯看不到。
+  - `classify_form`（`source_path`、`include_grid`）回傳 JSON：帶 `w14:paraId` 的段落的 `para_id`、`kind`、全文。`kind` 依序判定、先符合者為準：`list-checkbox`（段落自己的清單編號是方框）、`checkbox-line`（文字含方框字元）、`table-field`（在儲存格內）、`body`。沒有 `w14:paraId` 的段落不列出也不計數；paraId 不是 8 位十六進位的段落略過，數量記在 `skipped_invalid_para_ids`。`numbering_readable` 為 false 時表示 numbering part 無法解析、`list-checkbox` 沒有判定（CLI 對應的是 note 行；沒有這個 part 時為 true）。`include_grid` 為 true 時，表格內段落另附 `position`（例 `t1:r2c3`）與 `cell`，格線無法判讀的表格列在 `unreadable_tables`；表號在檢查 paraId 之前就記下，所以整張表都是無效 paraId 時也會列出（macdoc CLI 的 classify 會漏掉這種表）。
+  - `apply_form` 整理已填寫的表單，寫到 `output_path`：`fields` 統一儲存格裡填寫欄的格式（字級、靠左、所在儲存格垂直置中，去掉段落樣式、縮排與同格空段落；文字不變），`table_defaults` 以表格為單位點名填寫欄，`checkbox_font` 把本文所有方框字元改用同一字型（不限 paraId），`tick_list` 拿掉段落自己的清單編號並加上 ■，`insertions` 在錨點後插入沿用錨點格式的段落，`removals` 刪除段落，`removed_tables` 刪除整張表，`truncate_from` 從一段刪到本文結尾。任何一項不成立就整份拒絕、不寫出檔案；輸出已存在時要帶 `overwrite`。成功時回傳 JSON（`written`、只在有填寫欄時出現的 `field_size`、`field_size_derived`、`table_defaults` 每個錨點的 `fill_cells`／`partial_cells`／`skipped_cells`、`skipped_cleanups`、`skipped_checkbox_runs`、`added_final_paragraph`）。
+  - 參數名稱跟著函式庫 `FormPlan` 的欄位，不沿用 CLI 旗標；`table_defaults` 是 `{anchor, columns: [{from, to}], rows: [{from, to}]}` 物件陣列，不是 CLI 的字串語法，欄列範圍錯誤時拒絕訊息會寫出 `table_defaults` 與 `columns`／`rows`。`field_size` 是 JSON 數值（12、10.5）；省略時取指定欄位明確字級的眾數、同票取大，指定的欄位都沒有明確字級時才拒絕。布林與數值參數走 #232 的嚴格讀取，型別錯一律具名拒絕。拒絕訊息裡來自呼叫端或檔案的文字，控制字元與雙向排版字元換成空白（與 CLI 相同）。
+  - **已知限制**：
+    - 拒絕訊息照錄函式庫 `FormError`／`DocxPackageError` 的原文，其中有些寫著 macdoc CLI 的旗標名稱，例如輸出檔已存在時寫「使用 --force 覆寫」（這裡對應 `overwrite`）、無法推得字級時寫「請用 --field-size 指定」（對應 `field_size`），另有 `--remove-table`、`--table-defaults`、`classify --grid` 等；旗標與參數的對照寫在 `apply_form` 的工具描述裡。訊息由函式庫產生，要改得在 ooxml-swift 讓訊息不綁定單一呼叫端的介面。
+    - `apply_form` 在輸出檔旁建立名為 `.macdoc-form-<UUID>` 的暫存目錄（寫完即刪，寫入中途被中止時會留下）；讀取上限是解壓後 512 MB，`apply_form` 無法調低。`classify_form` 也用同一個上限，回傳的全文沒有長度上限。
+    - `output_path` 與 `source_path` 是同一個檔案且帶 `overwrite` 時，原檔會被取代（與 CLI `--force` 相同）。
+
+### Changed
+
+- **相依升到 ooxml-swift 3.21.0**（#300，為了 `DocxForm` product）。中間的 3.20.0 也一起帶進來，對既有工具可觀察的影響：
+  - 任何編輯後存檔，`<w:color>` 的 `w:themeColor`／`w:themeTint`／`w:themeShade` 與 `<w:rFonts>` 的 theme 字型不再從整份文件消失（函式庫端修正，追蹤於 #274）。連帶影響：編輯過的 Word 文件保留這些屬性之後，`export_script`／`get_script_coverage` 對這類段落改走 raw channel，覆蓋率數字會比過去低（回到與未編輯原檔一致）。只有 theme 顏色、沒有明確 `w:val` 的 run，存檔一次後讀回的 `color` 是 `"auto"`。
+  - `accept_revision`／`reject_revision` 依修訂 id 找目標，不再依記錄下來的段落索引與文字比對（函式庫端修正，追蹤於 #280）。讀檔時不同種類的修訂共用同一個 id 會被重新編號；已沒有任何段落帶著的孤兒修訂，接受或拒絕時只移除記錄、不動文字。
+  - 帶 `revision_id` 的 `reject_revision` 遇到還不支援的段落記號插入（段落裡有超連結、書籤、註解範圍、欄位、內容控制項或註腳參照，或沒有下一段可以併入）時改為回錯誤，不再悄悄刪除內容或變成接受（PsychQuant/ooxml-swift#230 追蹤實作 Word 的合併行為）。**`reject_revision(all: true)` 與 `reject_all_revisions` 不是這樣**：它們呼叫的批次拒絕會吞掉這個錯誤，修訂留在文件裡、工具仍回報全部拒絕。這是既有缺陷，尚未合併的 PR #281（#275）改成逐筆處理並列出留下的修訂。
+  - `insert_text_as_revision`／`delete_text_as_revision` 拒絕在另一筆追蹤插入的內部編輯（巢狀修訂見 #293）。
+  - 3.20.0 帶進、仍開著的函式庫缺陷：Word 寫的段落記號插入從 model 重新輸出時遺失屬性與日期，並多列一筆沒有文字的修訂（PsychQuant/ooxml-swift#231）；accept-all／reject-all 改依 id 解析後慢 3 到 8 倍，處理期間會擋住其他工具呼叫（PsychQuant/ooxml-swift#233）。
+  - 這次只升相依、補 #300 的工具；#274、#280 的 MCP 端回歸測試與結案在各自的 issue。
+
 ## [4.9.0] - 2026-09-28
 
 > **安全修正：`remove_watermark`／`insert_watermark`／`insert_image_watermark` 在 4.7.0–4.8.0 可被惡意 .docx 誘導刪除封裝外的本機檔案或整個目錄（見 Security）。** header／footer／chart 的圖片可以列出與匯出，並對這些位置的圖片關係做封裝內含檢查；anchor／搜尋／取代新增 `match_options.math_script_insensitive`；`replace_text` 對缺字形的字元發 advisory；`set_page_borders` 改為真的寫入；一批字串參數改為嚴格驗證；相依升到 ooxml-swift 3.19.0（見文末「升級注意」）。依本專案先例 bump minor。

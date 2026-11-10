@@ -259,6 +259,16 @@ close_document: { "doc_id": "mydoc" }
 
 > **Dual-mode tools** accept both `source_path` and `doc_id`. If you already have a document open, use `doc_id` to avoid re-reading from disk.
 
+### File-to-file form tools (`source_path` → `output_path`)
+
+`classify_form` and `apply_form` (#300) tidy a filled-in form with ooxml-swift's DocxForm, the library behind `macdoc word form classify|apply`. They take paths only, never `doc_id`: DocxForm edits the named elements of `word/document.xml` as strings and copies every other part byte for byte, so the document never goes through the typed model a session holds. They read the file on disk, so save a session's edits before calling them.
+
+```
+classify_form: { "source_path": "/path/to/form.docx", "include_grid": true }
+apply_form: { "source_path": "/path/to/form.docx", "output_path": "/path/to/tidy.docx",
+              "fields": ["1A2B3C4D"], "table_defaults": [{ "anchor": "1A2B3C4E", "columns": [{ "from": 2 }] }] }
+```
+
 ## Usage with AI Agents
 
 ### Just ask the agent
