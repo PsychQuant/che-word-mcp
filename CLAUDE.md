@@ -1,3 +1,34 @@
+<!-- SPECTRA:START v1.3.0 -->
+
+# Spectra Instructions
+
+This project uses Spectra for Spec-Driven Development(SDD). Specs live in `docs/spectra/specs/`, change proposals in `docs/spectra/changes/`.
+
+## Skills
+
+Each `/spectra-*` skill carries its own trigger description; these are the groups:
+
+- Shape and plan → `/spectra-discuss`, `/spectra-propose`
+- Continue tasks for an identified change → `/spectra-apply`
+- Update requirements or plans for an identified change → `/spectra-ingest`
+- Quality gate → `/spectra-verify`, `/spectra-review`, `/spectra-analyze`, `/spectra-audit`, `/spectra-drift`, `/spectra-debug`
+- Finish → `/spectra-archive`, `/spectra-commit`
+
+Explicit skill invocation takes precedence. Apply existing authorization within its unchanged scope.
+
+## Workflow
+
+discuss? → propose → apply ⇄ ingest → verify / review → archive
+
+- `discuss` is optional — skip if requirements are clear
+- Requirements change mid-work? Plan mode → `ingest` → resume `apply`
+
+## Parked Changes
+
+Changes can be parked（暫存）— temporarily moved out of `docs/spectra/changes/`. Parked changes won't appear in `spectra list` but can be found with `spectra list --parked`. To restore: `spectra unpark <name>`. The `/spectra-apply` and `/spectra-ingest` skills disclose parking and restore when the named operation is already explicitly requested; respect a known refusal, otherwise ask for missing authorization.
+
+<!-- SPECTRA:END -->
+
 # che-word-mcp 開發指引
 
 ## 專案結構
@@ -93,4 +124,10 @@ gh release upload v1.x.0 mcpb/che-word-mcp.mcpb
 
 - **ooxml-swift**: https://github.com/PsychQuant/ooxml-swift（核心 OOXML 庫）
 - **macdoc**: /Users/che/Developer/macdoc（Word→MD 轉換 CLI，export_markdown 委託目標）
+
+## 規格放在哪裡
+
+本 repo 工具的行為規格在 `docs/spectra/specs/`（2026-11-17 從 macdoc 的 `openspec/specs/` 搬來 14 份）。
+橫跨幾個 repo 的約定留在 macdoc 的 `openspec/specs/`，例如 `che-word-mcp-script-pipeline-tools`（CLI 與 MCP 共用
+同一條腳本管線）；改到這類規格時，在 macdoc 開 change。
 - **che-claude-plugins**: 包含此專案的 plugin 定義

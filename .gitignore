@@ -47,3 +47,6 @@ mcpb/server/*
 
 # IDD session-local state (attachments cache / tree-lock / unattended flag) — per-machine, not tracked
 .claude/.idd/
+
+# Spectra app data
+.spectra/
