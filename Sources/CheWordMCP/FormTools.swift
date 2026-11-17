@@ -48,8 +48,8 @@ extension WordMCPServer {
             var unreadableTables: Set<Int> = []
             for paragraph in paragraphs {
                 // The table is unreadable whatever its paragraphs' ids are, so
-                // it is recorded before the id check (verify R1; the CLI checks
-                // the id first and misses a table whose ids are all skipped).
+                // it is recorded before the id check (verify R1; the CLI uses
+                // the same order since PsychQuant/macdoc#277).
                 if includeGrid, case .unreadableTable(let table)? = paragraph.cell {
                     unreadableTables.insert(table)
                 }
