@@ -161,11 +161,34 @@ final class Issue306ToolCountDocsTests: XCTestCase {
         assertCountsAgree(section, totalOpener: "（共 ", registered: registered, file: "README_zh-TW.md")
     }
 
+    // MARK: - Requirement: README totals outside the tool section match the server
+
+    // spec-example: che-word-mcp-tool-count-docs / README feature line and comparison table state the registered total
+    func testReadmeFeatureLineAndComparisonTableStateTheRegisteredTotal() async throws {
+        let count = await registeredToolNames().count
+        for (file, phrase, rowLabel) in [
+            ("README.md", "MCP Tools", "Tools Count"), ("README_zh-TW.md", "MCP 工具", "工具數量"),
+        ] {
+            let text = try read(file)
+            let featureTotals = Self.statedTotals(in: text, nouns: [phrase])
+            XCTAssertFalse(featureTotals.isEmpty, "\(file) has no `N \(phrase)` line to check")
+            XCTAssertEqual(featureTotals.filter { $0 != count }, [], "\(file) states `N \(phrase)` other than \(count)")
+
+            let rows = text.components(separatedBy: "\n").filter {
+                $0.hasPrefix("|") && $0.split(separator: "|").first?.trimmingCharacters(in: .whitespaces) == rowLabel
+            }
+            XCTAssertEqual(rows.count, 1, "\(file) should have exactly one `\(rowLabel)` comparison row")
+            let lastCell = rows.first?.split(separator: "|").last.map(String.init) ?? ""
+            let digits = lastCell.filter(\.isNumber)
+            XCTAssertEqual(Int(digits), count, "\(file): the `\(rowLabel)` row ends with \(lastCell.trimmingCharacters(in: .whitespaces))")
+        }
+    }
+
     // MARK: - Requirement: Version history is kept only in the changelog
 
     // spec-example: che-word-mcp-tool-count-docs / Version history points to CHANGELOG
     func testVersionHistoryPointsToChangelog() throws {
-        let versionRow = try NSRegularExpression(pattern: "^\\|\\s*(\\*\\*)?v\\d+\\.\\d+", options: .anchorsMatchLines)
+        let versionRow = try NSRegularExpression(pattern: "^\\|\\s*(\\*\\*)?v?\\d+\\.\\d+", options: .anchorsMatchLines)
         for file in ["README.md", "README_zh-TW.md"] {
             let text = try read(file)
             let rows = versionRow.numberOfMatches(in: text, range: NSRange(location: 0, length: (text as NSString).length))
@@ -209,5 +232,16 @@ final class Issue306ToolCountDocsTests: XCTestCase {
                 .filter { $0 != count }
             XCTAssertEqual(stale, [], "\(file) states tool totals other than \(count)")
         }
+    }
+
+    // spec-example: che-word-mcp-tool-count-docs / server.json description states no stale tool total
+    func testServerJsonDescriptionStatesNoStaleToolTotal() async throws {
+        let count = await registeredToolNames().count
+        let data = try Data(contentsOf: Self.repoRoot.appendingPathComponent("server.json"))
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let description = try XCTUnwrap(json["description"] as? String)
+        XCTAssertEqual(
+            Self.statedTotals(in: description, nouns: ["tools"]).filter { $0 != count }, [],
+            "server.json description states a tool total other than \(count): \(description)")
     }
 }

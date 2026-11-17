@@ -51,13 +51,28 @@ In each README, every level-3 heading inside the tool section that states a coun
 - **WHEN** each category heading such as `### 文件管理 (6 個)` is compared with the rows under it
 - **THEN** every stated count equals its row count and the total equals 248
 
+### Requirement: README totals outside the tool section match the server
+
+Outside the tool section, each README SHALL state the total number of tools only as the number of tools in `allTools`. This covers the feature line written as `**N MCP Tools**` in `README.md` and `**N MCP 工具**` in `README_zh-TW.md`, and the comparison-table row labelled `Tools Count` in `README.md` and `工具數量` in `README_zh-TW.md`, whose last cell is the che-word-mcp total.
+
+#### Scenario: The feature line keeps an old total
+
+- **WHEN** the feature line of `README.md` reads `**234 MCP Tools**` and `allTools` registers 248 tools
+- **THEN** the documentation test fails and names the README and the stale number
+
+##### Example: README feature line and comparison table state the registered total
+
+- **GIVEN** `README.md`, `README_zh-TW.md` and the tools registered by `allTools`
+- **WHEN** every `N MCP Tools` or `N MCP 工具` phrase and the last cell of the `Tools Count` or `工具數量` row are read
+- **THEN** each number equals the number of tools in `allTools`
+
 ### Requirement: Version history is kept only in the changelog
 
 `README.md` and `README_zh-TW.md` SHALL NOT keep a version history table. Each SHALL point to `CHANGELOG.md` for the history of releases.
 
 #### Scenario: A README keeps its own version table
 
-- **WHEN** a README contains a table row that starts with a version such as `| v4.0.0 |` or `| **v4.0.0** |`
+- **WHEN** a README contains a table row that starts with a version such as `| v4.0.0 |`, `| **v4.0.0** |` or `| 4.10.0 |`
 - **THEN** the documentation test fails
 
 ##### Example: Version history points to CHANGELOG
@@ -83,7 +98,7 @@ The `description` field of `mcpb/manifest.json` SHALL NOT contain a version numb
 
 ### Requirement: No stale tool total in instructions, skill or developer notes
 
-The server instructions returned at MCP `initialize` (`WordMCPServer.serverInstructions`), `skills/che-word-mcp/SKILL.md` and `CLAUDE.md` SHALL NOT state a total number of tools other than the number of tools in `allTools`. A phrase of a number followed by `tools` (or `個工具`) counts as a stated total.
+The server instructions returned at MCP `initialize` (`WordMCPServer.serverInstructions`), `skills/che-word-mcp/SKILL.md`, `CLAUDE.md` and the `description` of `server.json` SHALL NOT state a total number of tools other than the number of tools in `allTools`. A phrase of a number followed by `tools` (or `個工具`) counts as a stated total.
 
 #### Scenario: The instructions state an old total
 
@@ -100,4 +115,10 @@ The server instructions returned at MCP `initialize` (`WordMCPServer.serverInstr
 
 - **GIVEN** `skills/che-word-mcp/SKILL.md`, `CLAUDE.md` and the tools registered by `allTools`
 - **WHEN** every number followed by `tools` or `個工具` in those files is collected
+- **THEN** each collected number equals the number of tools in `allTools`
+
+##### Example: server.json description states no stale tool total
+
+- **GIVEN** the `description` of `server.json` and the tools registered by `allTools`
+- **WHEN** every number followed by `tools` in it is collected
 - **THEN** each collected number equals the number of tools in `allTools`
