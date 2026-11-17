@@ -1046,17 +1046,19 @@ actor WordMCPServer {
 
     // MARK: - Server Instructions
 
-    private static let serverInstructions = """
+    /// Internal rather than private so `Issue306ToolCountDocsTests` reads the text the
+    /// server actually sends at `initialize` (#306); it is module-wide like `allTools`.
+    static let serverInstructions = """
     # che-word-mcp — Word Document MCP Server
 
-    Swift-native OOXML server for .docx manipulation. 148 tools.
+    Swift-native OOXML server for .docx manipulation.
 
     ## Two Modes of Operation
 
     | Mode | Parameter | Use When | Tools |
     |------|-----------|----------|-------|
-    | **Direct Mode** | `source_path` | Quick read-only access, no state needed | 18 tools |
-    | **Session Mode** | `doc_id` | Full read/write with open→edit→save lifecycle | All 146 tools |
+    | **Direct Mode** | `source_path` | Quick read-only access, no state needed | The tools listed below |
+    | **Session Mode** | `doc_id` | Full read/write with open→edit→save lifecycle | All tools |
 
     ### Direct Mode (source_path)
     Pass `source_path` with the .docx file path. No need to call `open_document` first.

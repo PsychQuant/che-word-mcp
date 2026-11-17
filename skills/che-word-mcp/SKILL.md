@@ -1,6 +1,6 @@
 # che-word-mcp
 
-A Swift-native MCP server for Microsoft Word (.docx) document manipulation. Provides 83 tools for reading, writing, and modifying Word documents without requiring Microsoft Word installation.
+A Swift-native MCP server for Microsoft Word (.docx) document manipulation. Provides tools for reading, writing, and modifying Word documents without requiring Microsoft Word installation.
 
 ## When to Use
 
