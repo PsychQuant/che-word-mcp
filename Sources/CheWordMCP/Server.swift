@@ -1057,8 +1057,8 @@ actor WordMCPServer {
 
     | Mode | Parameter | Use When | Tools |
     |------|-----------|----------|-------|
-    | **Direct Mode** | `source_path` | Quick read-only access, no state needed | The tools listed below |
-    | **Session Mode** | `doc_id` | Full read/write with open→edit→save lifecycle | All tools |
+    | **Direct Mode** | `source_path` | Quick read-only access, no state needed | Tools that take `source_path` |
+    | **Session Mode** | `doc_id` | Full read/write with open→edit→save lifecycle | Tools that take `doc_id` |
 
     ### Direct Mode (source_path)
     Pass `source_path` with the .docx file path. No need to call `open_document` first.

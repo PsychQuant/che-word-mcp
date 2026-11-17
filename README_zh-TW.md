@@ -180,10 +180,10 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | 工具 | 說明 |
 |------|------|
 | `create_document` | 建立新的 Word 文件 |
-| `open_document` | 開啟現有的 .docx 檔案（v3.0.0 起 track_changes 預設為 `false`） |
+| `open_document` | 開啟現有的 .docx 檔案（v3.0.0 起 track_changes 預設為 `false`）|
 | `save_document` | 儲存文件為 .docx |
-| `close_document` | 關閉文件（dirty 時需 `discard_changes: true` 才能丟棄變更） |
-| `finalize_document` | 儲存並關閉（一步到位） |
+| `close_document` | 關閉文件（dirty 時需 `discard_changes: true` 才能丟棄變更）|
+| `finalize_document` | 儲存並關閉（一步到位）|
 | `list_open_documents` | 列出所有已開啟的文件 |
 
 ### 文件資訊與屬性 (4 個)
@@ -195,13 +195,13 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `set_document_properties` | 設定文件屬性（標題、作者、主旨、關鍵字等） |
 | `get_word_count_by_section` | 按區段統計字數，可自訂分隔標記（如 References）並排除特定區段（支援 Direct Mode） |
 
-### Session State API (7 個)
+### Session State API (7 個，v3.0.0+)
 
 | 工具 | 說明 |
 |------|------|
 | `get_session_state` | 回傳 `{ source_path, disk_hash_hex, disk_mtime_iso8601, is_dirty, track_changes_enabled }` |
-| `get_document_session_state` | 舊版 session 快照（保留以維持向下相容） |
-| `revert_to_disk` | 重新讀取來源檔案，丟棄記憶體中的編輯（destructive by design） |
+| `get_document_session_state` | 舊版 session 快照（保留以維持向下相容）|
+| `revert_to_disk` | 重新讀取來源檔案，丟棄記憶體中的編輯（destructive by design）|
 | `reload_from_disk` | 協作式重載；dirty 文件需帶 `force: true` |
 | `check_disk_drift` | 僅回報狀態：`{ drifted, disk_mtime, stored_mtime, disk_hash_matches }` |
 | `checkpoint` | 把目前的 session 寫到 `<source>.autosave.docx`（或指定的 `path`），不清除 dirty 狀態 |
@@ -212,7 +212,7 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | 工具 | 說明 |
 |------|------|
 | `get_text` | 取得純文字內容 |
-| `get_paragraphs` | 取得所有段落（含格式資訊） |
+| `get_paragraphs` | 取得所有段落（含格式資訊）|
 | `get_document_text` | 取得 .docx 檔案的完整純文字內容（get_text 的別名，Direct Mode, Tier 1） |
 | `get_paragraph_runs` | 取得指定段落的所有 runs（文字片段）及其格式資訊，包含顏色、粗體、斜體等 |
 | `get_text_with_formatting` | 取得文件文字，格式以 Markdown 記號標出（粗體、斜體、`{{color:red}}`） |
@@ -238,10 +238,10 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 
 | 工具 | 說明 |
 |------|------|
-| `format_text` | 設定文字格式（粗體、斜體、顏色、字型） |
-| `set_paragraph_format` | 設定段落格式（對齊、間距） |
+| `format_text` | 設定文字格式（粗體、斜體、顏色、字型）|
+| `set_paragraph_format` | 設定段落格式（對齊、間距）|
 | `apply_style` | 套用內建或自訂樣式 |
-| `set_language` | 設定文字的校訂語言（用於拼字檢查） |
+| `set_language` | 設定文字的校訂語言（用於拼字檢查）——尚未實作：回報成功但不寫入 |
 
 ### 段落版面 (6 個)
 
@@ -254,53 +254,72 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `insert_tab_stop` | 在段落中設定定位點 |
 | `clear_tab_stops` | 清除段落的所有定位點 |
 
-### 表格 (21 個)
+### 表格 (21 個，**v3.11.0+ 擴充** [#49](https://github.com/PsychQuant/che-word-mcp/issues/49))
 
+基本 (6)：
 | 工具 | 說明 |
 |------|------|
-| `insert_table` | 插入表格（可含資料） |
+| `insert_table` | 插入表格（可含資料）|
 | `get_tables` | 取得所有表格資訊 |
 | `update_cell` | 更新儲存格內容 |
 | `delete_table` | 刪除表格 |
-| `merge_cells` | 合併儲存格（水平或垂直） |
+| `merge_cells` | 合併儲存格（水平或垂直）|
 | `set_table_style` | 設定表格邊框和底色 |
+
+列、欄與儲存格 (10)：
+| 工具 | 說明 |
+|------|------|
 | `add_row_to_table` | 在表格中新增一列 |
 | `delete_row_from_table` | 從表格中刪除一列 |
 | `add_column_to_table` | 在表格中新增一欄 |
 | `delete_column_from_table` | 從表格中刪除一欄 |
 | `set_cell_width` | 設定表格儲存格寬度 |
-| `set_cell_vertical_alignment` | 設定表格儲存格的垂直對齊方式 |
+| `set_cell_vertical_alignment` | 設定表格儲存格的垂直對齊方式——尚未實作：回報成功但不寫入 |
 | `set_row_height` | 設定表格列高 |
-| `set_table_alignment` | 設定表格在頁面上的對齊方式 |
+| `set_table_alignment` | 設定表格在頁面上的對齊方式——尚未實作：回報成功但不寫入 |
 | `get_cell_paragraphs` | 列出表格儲存格內的段落與 `paragraph_index`（支援 Direct Mode），供 `update_cell_paragraph` 定址 |
 | `update_cell_paragraph` | 只改寫儲存格內第 `paragraph_index` 個段落的文字，同格其他段落不動 |
+
+進階 (5，**v3.11.0**)：
+| 工具 | 說明 |
+|------|------|
 | `set_table_conditional_style` | 套用條件式格式（firstRow / lastRow / bandedRows 等 10 種區域）到表格的 tblStylePr |
 | `insert_nested_table` | 在指定 cell 內插入新表格（深度上限 5 層，超過會 throw nested_too_deep） |
 | `set_table_layout` | 切換表格版面配置（fixed = 固定欄寬 / autofit = 自動） |
 | `set_header_row` | 標記表格標題列（emit `<w:tblHeader/>`），跨頁分割時自動重複 |
 | `set_table_indent` | 設定表格左縮排（twips 單位，emit `<w:tblInd>`） |
 
-### 樣式管理 (8 個)
+### 樣式管理 (8 個 + 6 個擴充參數，**v3.10.0+** [#48](https://github.com/PsychQuant/che-word-mcp/issues/48))
 
+基本 (4)：
 | 工具 | 說明 |
 |------|------|
 | `list_styles` | 列出所有可用樣式 |
 | `create_style` | 建立自訂樣式 |
 | `update_style` | 更新樣式定義 |
 | `delete_style` | 刪除自訂樣式 |
+
+繼承與連結 (4，**v3.10.0**)：
+| 工具 | 說明 |
+|------|------|
 | `get_style_inheritance_chain` | 回傳樣式繼承鏈（從查詢樣式向上沿 basedOn 至根） |
 | `link_styles` | 雙向連結 paragraph 與 character 樣式（emit `<w:link>`） |
 | `set_latent_styles` | 設定 `<w:latentStyles>` block — 控制 Quick Style Gallery 中內建樣式的可見性 |
 | `add_style_name_alias` | 為樣式加入本地化名稱別名（同 lang 已存在則替換） |
 
-### 編號與清單 (12 個)
+### 編號與清單 (12 個，**v3.10.0+ 定義生命週期** [#46](https://github.com/PsychQuant/che-word-mcp/issues/46))
 
+建立清單 (4)：
 | 工具 | 說明 |
 |------|------|
 | `insert_bullet_list` | 插入項目符號清單 |
 | `insert_numbered_list` | 插入編號清單 |
 | `set_list_level` | 設定清單縮排層級 |
 | `set_outline_level` | 設定段落的大綱層級（用於生成目錄和導覽） |
+
+編號定義 CRUD (8，**v3.10.0**)：
+| 工具 | 說明 |
+|------|------|
 | `list_numbering_definitions` | 列出 numbering.xml 所有 abstractNum + num 定義 |
 | `get_numbering_definition` | 依 numId 取得單一 numbering 定義（含 abstractNumId 與 levels） |
 | `create_numbering_definition` | 建立新的 abstractNum + 配對 num（最多 9 層），回傳新 numId |
@@ -310,11 +329,12 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `start_new_list` | 從既有 abstractNum 建立新 num 並指派到段落，回傳新 numId |
 | `gc_orphan_numbering` | 刪除無段落引用的 num 定義（abstractNum 不會刪除），回傳被刪 num_id 陣列 |
 
-### 分節與頁面設定 (19 個)
+### 分節與頁面設定 (19 個，**v3.10.0+ 擴充** [#47](https://github.com/PsychQuant/che-word-mcp/issues/47))
 
+基本頁面設定 (12)：
 | 工具 | 說明 |
 |------|------|
-| `set_page_size` | 設定頁面大小（A4、Letter 等） |
+| `set_page_size` | 設定頁面大小（A4、Letter 等）|
 | `set_page_margins` | 設定頁邊距 |
 | `set_page_orientation` | 設定直向或橫向 |
 | `insert_page_break` | 插入分頁符號 |
@@ -322,10 +342,14 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `get_section_properties` | 取得文件的節屬性（頁面設定等）（支援 Direct Mode） |
 | `insert_continuous_section_break` | 插入連續分節符（不換頁的分節） |
 | `insert_column_break` | 在指定段落插入分欄符號 |
-| `set_columns` | 設定文件多欄排版（預設整份文件，或指定段落後插入分節符） |
-| `set_line_numbers` | 設定文件行號顯示 |
+| `set_columns` | 設定文件最後一節的欄數（1–4）與欄距；`separator` 會接受但不會寫入 |
+| `set_line_numbers` | 設定文件行號顯示——尚未實作：回報成功但不寫入（請用 `set_line_numbers_for_section`） |
 | `set_page_borders` | 設定頁面邊框（四邊可獨立顯示/隱藏，樣式/顏色/粗細/起算位置四邊共用） |
-| `set_text_direction` | 設定段落或文件的文字方向（支援直書） |
+| `set_text_direction` | 設定段落或文件的文字方向（直書）——尚未實作：回報成功但不寫入 |
+
+分節屬性 (7，**v3.10.0**)：
+| 工具 | 說明 |
+|------|------|
 | `get_all_sections` | 回傳每個 section 的完整屬性摘要（page_size / margins / orientation / line_numbers / vertical_alignment / page_number_format / break_type / titlePg / header+footer refs） |
 | `set_section_break_type` | 切換分節符類型（emit `<w:type>`） |
 | `set_section_vertical_alignment` | 設定 section 內容垂直對齊（emit `<w:vAlign>`） |
@@ -334,47 +358,56 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `set_title_page_distinct` | 切換首頁獨立頁首頁尾（emit/移除 `<w:titlePg/>`） |
 | `set_section_header_footer_references` | 為 section 指派 default/first/even 類型的 header/footer rId |
 
-### 頁首、頁尾與浮水印 (20 個)
+### 頁首、頁尾與浮水印 (20 個，**v3.11.0+ 奇偶頁與分節對應** [#51](https://github.com/PsychQuant/che-word-mcp/issues/51))
 
+寫入工具 (8)：
 | 工具 | 說明 |
 |------|------|
-| `add_header` | 新增頁首內容（v3.3.0+ 用 `RelationshipIdAllocator` — overlay mode 不會 rId 衝突） |
-| `update_header` | 更新頁首內容（保留檔名 + rId；in-place 覆寫 archiveTempDir） |
+| `add_header` | 新增頁首內容（v3.3.0+ 用 `RelationshipIdAllocator` — overlay mode 不會 rId 衝突）|
+| `update_header` | 更新頁首內容（保留檔名 + rId；in-place 覆寫 archiveTempDir）|
 | `add_footer` | 新增頁尾內容 |
 | `update_footer` | 更新頁尾內容 |
 | `insert_page_number` | 插入頁碼欄位 |
 | `insert_watermark` | 插入斜向文字浮水印，寫進每個 header part（沒有 header 時自動建立） |
-| `insert_image_watermark` | 插入置中的圖片浮水印（png、jpg、jpeg、gif），寫進每個 header part |
+| `insert_image_watermark` | 插入置中的圖片浮水印（png、jpg、jpeg、gif、bmp、tif、tiff，上限 10MB），寫進每個 header part；新建的文件要先存檔一次 |
 | `remove_watermark` | 移除每個 header part 的文字與圖片浮水印（沒有浮水印時也回成功） |
+
+讀取與刪除工具 (8，**v3.3.0+**，closes #26 #27)：
+| 工具 | 說明 |
+|------|------|
 | `list_headers` | 列舉所有 header parts，含 type（default/first/even）+ section_id + has_watermark |
 | `get_header` | 讀取文字 + 完整 XML + watermark 結構 |
 | `delete_header` | 移除 typed model entry + tempDir 檔案 + Relationship + Content_Types Override |
-| `list_watermarks` | 掃描所有 header 中的 VML `PowerPlusWaterMarkObject` shapes（text 或 image） |
-| `get_watermark` | 單一 header 的 watermark 詳細資訊（無 watermark 回 `null`） |
+| `list_watermarks` | 掃描所有 header 中的 VML `PowerPlusWaterMarkObject` shapes（text 或 image）|
+| `get_watermark` | 單一 header 的 watermark 詳細資訊（無 watermark 回 `null`）|
 | `list_footers` | 列舉所有 footer parts，含 type + section_id + has_page_number |
-| `get_footer` | 讀取文字 + XML + 解析後的 fields（PAGE / NUMPAGES / REF / STYLEREF） |
+| `get_footer` | 讀取文字 + XML + 解析後的 fields（PAGE / NUMPAGES / REF / STYLEREF）|
 | `delete_footer` | 與 delete_header 對稱 |
+
+奇偶頁與分節連結 (4，**v3.11.0**)：
+| 工具 | 說明 |
+|------|------|
 | `enable_even_odd_headers` | 切換文件級 `<w:evenAndOddHeaders/>` flag（settings.xml） |
 | `link_section_header_to_previous` | 讓 section 共用前一 section 的 header XML part（共用 rId） |
 | `unlink_section_header_from_previous` | 為 section 建立獨立 header XML part（複製當前共用的 part） |
 | `get_section_header_map` | 回傳每個 section 的 header / footer 檔案對應（哪個 section 用哪個 headerN.xml） |
 
-### Theme 編輯 (4 個)
+### Theme 編輯 (4 個，**v3.3.0+**，closes #28)
 
 | 工具 | 說明 |
 |------|------|
-| `get_theme` | 讀取 `word/theme/theme1.xml` 的 major/minor 字體 slot（latin/ea/cs）+ 色盤（accent1-6, hyperlink, followedHyperlink） |
+| `get_theme` | 讀取 `word/theme/theme1.xml` 的 major/minor 字體 slot（latin/ea/cs）+ 色盤（accent1-6, hyperlink, followedHyperlink）|
 | `update_theme_fonts` | 部分更新字體 slot — 例：`{ minor: { ea: "DFKai-SB" } }` 修復 document中文字體 |
-| `update_theme_color` | 按 slot 名稱 hex color 更新（拒絕無效 slot + 非 6 字元 hex） |
-| `set_theme` | 低階 escape hatch — 完整覆寫 theme1.xml（驗證 `<a:theme>` 根 + well-formed XML） |
+| `update_theme_color` | 按 slot 名稱 hex color 更新（拒絕無效 slot + 非 6 字元 hex）|
+| `set_theme` | 低階 escape hatch — 完整覆寫 theme1.xml（驗證 `<a:theme>` 根 + well-formed XML）|
 
 ### 圖片 (9 個)
 
 | 工具 | 說明 |
 |------|------|
-| `insert_image` | 插入內嵌圖片（PNG、JPEG） |
+| `insert_image` | 插入內嵌圖片（PNG、JPEG）|
 | `insert_image_from_path` | **v2.0.0+** — width/height 可省略（`ImageDimensions.detect` 自動長寬比），支援 `into_table_cell` + `after_text` / `before_text` anchor |
-| `insert_floating_image` | 插入浮動圖片（文繞圖） |
+| `insert_floating_image` | 插入浮動圖片（文繞圖）|
 | `update_image` | 更新圖片屬性 |
 | `delete_image` | 刪除圖片 |
 | `list_images` | 列出所有圖片 |
@@ -388,7 +421,7 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 |------|------|
 | `insert_caption` | **v2.0.0+** — 輸出真正的 OOXML SEQ 欄位（原本是寫死的字串）。支援中英標籤（`Figure`/`Table`/`Equation`/`圖`/`表`/`公式`）、5 種 anchor（`paragraph_index` / `after_image_id` / `after_table_index` / `after_text` / `before_text`）、可選 `STYLEREF` 章節編號前綴 |
 | `list_captions` | **v3.1.0** — 列出所有 caption 段落，含 label / sequence_number / caption_text / paragraph_index |
-| `get_caption` | **v3.1.0** — 單一 caption 詳細資訊（含 STYLEREF 抽出的 `chapter_number`） |
+| `get_caption` | **v3.1.0** — 單一 caption 詳細資訊（含 STYLEREF 抽出的 `chapter_number`）|
 | `update_caption` | **v3.1.0** — 修改 caption 文字或 label，不破壞 SEQ 欄位結構 |
 | `delete_caption` | **v3.1.0** — 移除 caption 段落 |
 | `wrap_caption_seq` | 把內文中符合 `pattern` 的圖表標號數字包成 SEQ 欄位 |
@@ -397,7 +430,7 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 
 | 工具 | 說明 |
 |------|------|
-| `insert_equation` | **v2.0.0+** — 透過 `MathComponent` AST（9 種型別）輸出結構正確的 OMML。主要路徑：`components:` tree；備援：`latex:` 子集（`\frac`、`\sqrt`、`x^{y}`、希臘字母、∑/∫/∏） |
+| `insert_equation` | **v2.0.0+** — 透過 `MathComponent` AST（9 種型別）輸出結構正確的 OMML。主要路徑：`components:` tree；備援：`latex:` 子集（`\frac`、`\sqrt`、`x^{y}`、希臘字母、∑/∫/∏）|
 | `list_equations` | **v3.1.0** — 列出所有 `<m:oMath>` run，含 display_mode 旗標 |
 | `get_equation` | **v3.1.0** — 單一公式詳細資訊，含 component 概要 |
 | `update_equation` | **v3.1.0** — 置換指定公式的 components tree |
@@ -411,8 +444,8 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | 工具 | 說明 |
 |------|------|
 | `export_text` | 匯出為純文字 |
-| `export_markdown` | 匯出為 Markdown（內嵌 `word-to-md-swift`） |
-| `export_revision_summary_markdown` | **v1.19.0** — 單一文件的修訂時間軸（論文審閱） |
+| `export_markdown` | 匯出為 Markdown（內嵌 `word-to-md-swift`）|
+| `export_revision_summary_markdown` | **v1.19.0** — 單一文件的修訂時間軸（論文審閱）|
 | `compare_documents_markdown` | **v1.19.0** — 多文件累積修訂時間軸 |
 | `compare_documents` | 比對兩個 Word 文件的差異（段落層級），只回傳差異部分 |
 | `export_comment_threads_markdown` | **v1.19.0** — 註解對話串，含 author 別名正規化 |
@@ -423,27 +456,33 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 |------|------|
 | `export_script` | docx → full-fidelity .mdocx.swift 重建腳本（與 macdoc word reverse 同一條 transcoder code path：raw byte-equal floor + typed DSL 升級） |
 | `get_script_coverage` | docx 的 dual-track 覆蓋率報告（與 macdoc word reverse --coverage 同數字）：每個 XML part 的 DSL/raw channel、位元組數、DSL ratio，加 aggregate |
-| `execute_script` | .mdocx.swift 重建腳本 → docx（ScriptImporter 同一條 code path） |
+| `execute_script` | `.mdocx.swift` 重建腳本 → docx；`output_path` 已存在時預設拒絕，要帶 `overwrite: true`；可選擇對照參考檔做 byte-equal 驗證 |
 
-### 超連結與書籤 (12 個)
+### 超連結與書籤 (12 個，**v3.11.0+ 分型變體** [#50](https://github.com/PsychQuant/che-word-mcp/issues/50))
 
+一般與書籤 (9)：
 | 工具 | 說明 |
 |------|------|
 | `insert_hyperlink` | 插入外部超連結 |
 | `insert_internal_link` | 插入連結至書籤 |
-| `insert_cross_reference` | 插入交互參照（連結到書籤、標題、圖表標號等） |
+| `insert_cross_reference` | 插入交互參照——尚未實作：回報成功但不寫入 |
 | `update_hyperlink` | 更新超連結 |
 | `delete_hyperlink` | 刪除超連結 |
 | `list_hyperlinks` | 列出文件中所有的超連結（支援 Direct Mode） |
 | `insert_bookmark` | 插入書籤 |
 | `delete_bookmark` | 刪除書籤 |
 | `list_bookmarks` | 列出文件中所有的書籤（支援 Direct Mode） |
+
+分型超連結 (3，**v3.11.0**，自動建立 Hyperlink 字元樣式)：
+| 工具 | 說明 |
+|------|------|
 | `insert_url_hyperlink` | 插入外部 URL 連結（自動建立 Hyperlink character style 若不存在） |
 | `insert_bookmark_hyperlink` | 插入內部書籤連結（emit w:anchor，無 r:id） |
 | `insert_email_hyperlink` | 插入 mailto: 連結（自動 URL-encode subject） |
 
 ### 註解與修訂 (22 個)
 
+註解寫入與讀取 (10)：
 | 工具 | 說明 |
 |------|------|
 | `insert_comment` | 插入註解 |
@@ -455,9 +494,17 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `add_comment_reply` | 回覆 thread root 註解，可用 template/vars，並可在同一次呼叫標記 resolved |
 | `bulk_resolve_comments` | 批次標記多個註解為 resolved |
 | `find_unresolved_comments` | 列出尚未 resolved 的頂層註解（支援 Direct Mode，可包含 anchor context） |
-| `list_comment_threads` | **v3.4.0** — 列舉 thread 結構（root_comment_id + replies + resolved + durable_id），用 typed `Comment.parentId`（從 `commentsExtended.xml` 解析） |
+| `list_comment_threads` | **v3.4.0** — 列舉 thread 結構（root_comment_id + replies + resolved + durable_id），用 typed `Comment.parentId`（從 `commentsExtended.xml` 解析）|
+
+註解 thread 工具 (2，**v3.4.0+**，closes #29)：
+| 工具 | 說明 |
+|------|------|
 | `get_comment_thread` | 讀取 root + 走遍 children 建構完整 reply tree |
 | `sync_extended_comments` | 回報 typed comment count，用於 triplet sync 規劃 |
+
+修訂追蹤——接受與拒絕 (7)：
+| 工具 | 說明 |
+|------|------|
 | `enable_track_changes` | 啟用追蹤修訂 |
 | `disable_track_changes` | 停用追蹤修訂 |
 | `get_revisions` | 取得文件中所有的修訂追蹤記錄 |
@@ -465,35 +512,44 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `reject_revision` | 拒絕修訂 |
 | `accept_all_revisions` | 接受文件中所有的修訂 |
 | `reject_all_revisions` | 拒絕文件中所有的修訂 |
+
+修訂追蹤——以程式寫入 (3，**v3.12.0** [#45](https://github.com/PsychQuant/che-word-mcp/issues/45))：
+| 工具 | 說明 |
+|------|------|
 | `insert_text_as_revision` | 在指定段落位置插入文字並包覆 `<w:ins>` 修訂標記（需先 enable_track_changes） |
 | `delete_text_as_revision` | 刪除指定段落 [start, end) 範圍的文字並包覆 `<w:del>` 修訂標記（需先 enable_track_changes） |
 | `move_text_as_revision` | 將文字從來源段落 [from_start, from_end) 移到目標段落 to_position，產生成對的 `<w:moveFrom>`/`<w:moveTo>` 修訂（需先 enable_track_changes） |
 
-### People — 註解作者 (4 個)
+### People — 註解作者 (4 個，**v3.4.0+**，closes #30)
 
 | 工具 | 說明 |
 |------|------|
 | `list_people` | 解析 `word/people.xml` 的 `<w15:person>` 紀錄 |
 | `add_person` | 新增 entry；不存在則 auto-create `people.xml` part；重名加 `_2` 後綴 |
-| `update_person` | 更新 display_name（author 屬性 swap） |
+| `update_person` | 更新 display_name（author 屬性 swap）|
 | `delete_person` | 移除 entry；回報 `comments_orphaned` 數 |
 
 ### 腳註與尾註 (10 個)
 
+寫入與刪除 (4)：
 | 工具 | 說明 |
 |------|------|
 | `insert_footnote` | 插入腳註 |
 | `delete_footnote` | 刪除腳註 |
 | `insert_endnote` | 插入尾註 |
 | `delete_endnote` | 刪除尾註 |
+
+列舉、讀取與更新 (6，**v3.4.0+**，closes #24 #25)：
+| 工具 | 說明 |
+|------|------|
 | `list_footnotes` | 支援 Direct Mode |
 | `list_endnotes` | 支援 Direct Mode |
 | `get_footnote` | 按整數 ID 讀取文字 + runs |
-| `update_footnote` | In-place 替換文字，保留 footnote_id（cross-references 仍有效） |
+| `update_footnote` | In-place 替換文字，保留 footnote_id（cross-references 仍有效）|
 | `get_endnote` | 按整數 ID 讀取文字 + runs |
 | `update_endnote` | In-place 替換文字，保留 endnote_id |
 
-### Web Settings (2 個)
+### Web Settings (2 個，**v3.4.0+**，closes #31)
 
 | 工具 | 說明 |
 |------|------|
@@ -505,26 +561,35 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | 工具 | 說明 |
 |------|------|
 | `insert_if_field` | 插入 IF 條件欄位 |
-| `insert_calculation_field` | 插入計算欄位（SUM、AVERAGE 等） |
+| `insert_calculation_field` | 插入計算欄位（SUM、AVERAGE 等）|
 | `insert_date_field` | 插入日期時間欄位 |
 | `insert_page_field` | 插入頁碼欄位 |
 | `insert_merge_field` | 插入合併列印欄位 |
 | `insert_sequence_field` | 插入自動編號序列 |
 | `update_all_fields` | **v3.1.0** — F9 等效的 SEQ 重編號，涵蓋 body + headers + footers + footnotes + endnotes。當 `pStyle=="Heading N"` 匹配 SEQ `resetLevel` 時支援章節重置 |
 
-### 內容控制項（SDT） (13 個)
+### 內容控制項（SDT） (13 個，**v3.9.0+ 完整讀寫** [#44](https://github.com/PsychQuant/che-word-mcp/issues/44))
 
+插入與表單輔助 (5)：
 | 工具 | 說明 |
 |------|------|
 | `insert_content_control` | 插入 SDT 內容控制項 |
-| `insert_repeating_section` | 插入重複區段（Word 2012+） |
+| `insert_repeating_section` | 插入重複區段（Word 2012+）|
 | `insert_checkbox` | 插入表單核取方塊 |
 | `insert_dropdown` | 插入表單下拉選單 |
 | `insert_text_field` | 插入表單文字欄位 |
+
+讀取工具 (4)：
+| 工具 | 說明 |
+|------|------|
 | `list_content_controls` | 列出文件中所有的內容控制項（SDT），支援巢狀展開 |
 | `get_content_control` | 依 id / tag / alias 取得單一內容控制項，含完整 metadata 與內容 XML |
 | `list_repeating_section_items` | 列出指定重複區段 SDT 內所有項目（順序、id、文字內容） |
 | `list_custom_xml_parts` | 列出文件的 CustomXml parts——尚未實作，目前一律回傳空陣列 |
+
+修改工具 (4)：
+| 工具 | 說明 |
+|------|------|
 | `update_content_control_text` | 修改純文字 SDT 的文字內容（保留 sdtPr） |
 | `replace_content_control_content` | 替換 SDT 的完整 sdtContent XML（白名單：禁止 w:sdt / w:body / w:sectPr / XML 宣告） |
 | `delete_content_control` | 刪除指定 SDT，可選擇是否保留內容 |
@@ -541,7 +606,7 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 
 | 工具 | 說明 |
 |------|------|
-| `restrict_editing_region` | 在 `[start_paragraph, end_paragraph]` 前後寫入 `<w:permStart>`／`<w:permEnd>`，標出可編輯區域（`start_paragraph` 須 ≥ 1） |
+| `restrict_editing_region` | 在 `[start_paragraph, end_paragraph]` 前後寫入 `<w:permStart>`／`<w:permEnd>`，標出可編輯區域（`start_paragraph` 須 ≥ 1）；文件本身沒有受保護時不會限制任何編輯（`protect_document` 尚未實作，#172） |
 | `protect_document` | 設定文件保護（限制編輯、唯讀）——尚未實作，呼叫會回 isError（#172） |
 | `unprotect_document` | 移除文件保護——尚未實作，呼叫會回 isError（#172） |
 | `set_document_password` | 設定文件開啟密碼——尚未實作，呼叫會回 isError（開啟密碼是容器層級的加密，不在 OOXML 範圍內，#172） |
@@ -554,7 +619,7 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `insert_toc` | 插入目錄 |
 | `insert_table_of_figures` | 插入圖表目錄 |
 | `insert_index` | 插入索引（根據已標記的索引項目） |
-| `insert_index_entry` | 標記文字為索引項目（用於生成索引） |
+| `insert_index_entry` | 標記文字為索引項目——尚未實作：回報成功但不寫入 |
 | `set_paragraph_border` | 設定段落邊框 |
 | `set_paragraph_shading` | 設定段落背景色 |
 | `set_character_spacing` | 設定字元間距 |

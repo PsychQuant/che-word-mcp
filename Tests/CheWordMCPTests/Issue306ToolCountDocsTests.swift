@@ -50,9 +50,11 @@ final class Issue306ToolCountDocsTests: XCTestCase {
 
     /// The tool section starts at the line beginning with `sectionPrefix` and ends at the
     /// next level-2 heading. A tool is a backticked identifier in the first cell of a table
-    /// row; the stated count of a category heading is the number after `countOpener`.
+    /// row; the stated count of a category heading is the number in `(N <countNoun>` (the
+    /// spec's `(N tools` / `(N 個`), so a heading whose first parenthesis is something else,
+    /// such as `(SDT)`, is still checked.
     private func toolSection(
-        of markdown: String, sectionPrefix: String, countOpener: String
+        of markdown: String, sectionPrefix: String, countNoun: String
     ) throws -> ToolSection {
         let lines = markdown.components(separatedBy: "\n")
         let start = try XCTUnwrap(
@@ -66,7 +68,7 @@ final class Issue306ToolCountDocsTests: XCTestCase {
             if line.hasPrefix("### ") {
                 categories.append(current)
                 current = Category(
-                    heading: line, statedCount: Self.number(after: countOpener, in: line), tools: [])
+                    heading: line, statedCount: Self.statedCount(noun: countNoun, in: line), tools: [])
             } else if line.hasPrefix("|") {
                 let cells = line.components(separatedBy: "|")
                 guard cells.count > 2 else { continue }
@@ -82,6 +84,14 @@ final class Issue306ToolCountDocsTests: XCTestCase {
         let ns = text as NSString
         return regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
             .map { ns.substring(with: $0.range(at: 1)) }
+    }
+
+    /// The number in the first `(N <noun>` of `line`, or nil when the heading states no count.
+    private static func statedCount(noun: String, in line: String) -> Int? {
+        let regex = try! NSRegularExpression(pattern: "\\((\\d+) " + NSRegularExpression.escapedPattern(for: noun))
+        let ns = line as NSString
+        guard let match = regex.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        return Int(ns.substring(with: match.range(at: 1)))
     }
 
     /// The first integer that directly follows `opener` in `line`, or nil.
@@ -131,7 +141,7 @@ final class Issue306ToolCountDocsTests: XCTestCase {
     func testReadmeListsEachRegisteredToolOnce() async throws {
         let registered = await registeredToolNames()
         let section = try toolSection(
-            of: read("README.md"), sectionPrefix: "## Available Tools", countOpener: "(")
+            of: read("README.md"), sectionPrefix: "## Available Tools", countNoun: "tools")
         assertListsEachToolOnce(section, registered: registered, file: "README.md")
     }
 
@@ -139,7 +149,7 @@ final class Issue306ToolCountDocsTests: XCTestCase {
     func testZhTWReadmeListsEachRegisteredToolOnce() async throws {
         let registered = await registeredToolNames()
         let section = try toolSection(
-            of: read("README_zh-TW.md"), sectionPrefix: "## 可用工具", countOpener: "(")
+            of: read("README_zh-TW.md"), sectionPrefix: "## 可用工具", countNoun: "個")
         assertListsEachToolOnce(section, registered: registered, file: "README_zh-TW.md")
     }
 
@@ -149,7 +159,7 @@ final class Issue306ToolCountDocsTests: XCTestCase {
     func testReadmeHeadingsAgreeWithTheirTables() async throws {
         let registered = await registeredToolNames()
         let section = try toolSection(
-            of: read("README.md"), sectionPrefix: "## Available Tools", countOpener: "(")
+            of: read("README.md"), sectionPrefix: "## Available Tools", countNoun: "tools")
         assertCountsAgree(section, totalOpener: "(", registered: registered, file: "README.md")
     }
 
@@ -157,7 +167,7 @@ final class Issue306ToolCountDocsTests: XCTestCase {
     func testZhTWReadmeHeadingsAgreeWithTheirTables() async throws {
         let registered = await registeredToolNames()
         let section = try toolSection(
-            of: read("README_zh-TW.md"), sectionPrefix: "## 可用工具", countOpener: "(")
+            of: read("README_zh-TW.md"), sectionPrefix: "## 可用工具", countNoun: "個")
         assertCountsAgree(section, totalOpener: "（共 ", registered: registered, file: "README_zh-TW.md")
     }
 

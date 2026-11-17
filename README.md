@@ -333,7 +333,7 @@ for the per-tool inventory before reusing an index across tools.
 | `format_text` | Apply text formatting (bold, italic, color, font) |
 | `set_paragraph_format` | Set paragraph formatting (alignment, spacing) |
 | `apply_style` | Apply built-in or custom styles |
-| `set_language` | Set the proofing language of text (spell check) |
+| `set_language` | Set the proofing language of text (spell check) — not implemented: reports success but writes nothing |
 
 ### Paragraph Layout (6 tools)
 
@@ -366,9 +366,9 @@ Row / column / cell (10):
 | `add_column_to_table` | Add a column |
 | `delete_column_from_table` | Delete a column |
 | `set_cell_width` | Set cell width |
-| `set_cell_vertical_alignment` | Set cell vertical alignment |
+| `set_cell_vertical_alignment` | Set cell vertical alignment — not implemented: reports success but writes nothing |
 | `set_row_height` | Set row height |
-| `set_table_alignment` | Set table alignment |
+| `set_table_alignment` | Set table alignment — not implemented: reports success but writes nothing |
 | `get_cell_paragraphs` | Paragraphs inside a table cell with their `paragraph_index` (Direct Mode), for addressing `update_cell_paragraph` |
 | `update_cell_paragraph` | Rewrite the text of one paragraph inside a cell; the cell's other paragraphs stay as they are |
 
@@ -434,10 +434,10 @@ Basic page setup (12):
 | `get_section_properties` | Read section properties such as page setup (Direct Mode) |
 | `insert_continuous_section_break` | Insert a continuous section break (no page break) |
 | `insert_column_break` | Insert a column break at a paragraph |
-| `set_columns` | Multi-column layout for the whole document, or after a given paragraph through a section break |
-| `set_line_numbers` | Show line numbers for the document |
+| `set_columns` | Number of columns (1–4) and column spacing of the document's last section; `separator` is accepted but not written |
+| `set_line_numbers` | Show line numbers for the document — not implemented: reports success but writes nothing (use `set_line_numbers_for_section`) |
 | `set_page_borders` | Page borders: each side on or off; style, colour, width and measure-from shared by all sides |
-| `set_text_direction` | Text direction of a paragraph or the document (vertical text supported) |
+| `set_text_direction` | Text direction of a paragraph or the document (vertical text) — not implemented: reports success but writes nothing |
 
 Section properties (7, **v3.10.0**):
 | Tool | Description |
@@ -461,7 +461,7 @@ Write tools (8):
 | `update_footer` | Update footer content |
 | `insert_page_number` | Insert page number field |
 | `insert_watermark` | Insert a diagonal text watermark into every header part (creates a default header when there is none) |
-| `insert_image_watermark` | Insert a centred picture watermark (png, jpg, jpeg, gif) into every header part |
+| `insert_image_watermark` | Insert a centred picture watermark (png, jpg, jpeg, gif, bmp, tif, tiff; up to 10 MB) into every header part; a new document must be saved once first |
 | `remove_watermark` | Remove text and picture watermarks from every header part (succeeds when there is none) |
 
 Read + delete tools (8, **v3.3.0+**, closes #26 #27):
@@ -548,7 +548,7 @@ Even/odd + section linkage (4, **v3.11.0**):
 |------|-------------|
 | `export_script` | docx → full-fidelity `.mdocx.swift` rebuild script (same transcoder as `macdoc word reverse`); optional named slots |
 | `get_script_coverage` | Per-part DSL/raw coverage report of a docx (same numbers as `macdoc word reverse --coverage`) |
-| `execute_script` | `.mdocx.swift` script → docx; optional byte-equal verification against a reference file |
+| `execute_script` | `.mdocx.swift` script → docx; refuses to overwrite an existing `output_path` unless `overwrite: true`; optional byte-equal verification against a reference file |
 
 ### Hyperlinks & Bookmarks (12 tools, **v3.11.0+ typed variants** [#50](https://github.com/PsychQuant/che-word-mcp/issues/50))
 
@@ -557,7 +557,7 @@ Generic + bookmarks (9):
 |------|-------------|
 | `insert_hyperlink` | Insert external hyperlink |
 | `insert_internal_link` | Insert link to bookmark |
-| `insert_cross_reference` | Insert cross-reference |
+| `insert_cross_reference` | Insert cross-reference — not implemented: reports success but writes nothing |
 | `update_hyperlink` | Update hyperlink |
 | `delete_hyperlink` | Delete hyperlink |
 | `list_hyperlinks` | List all hyperlinks (Direct Mode) |
@@ -706,7 +706,7 @@ SDT id allocation uses deterministic max+1 (was random in pre-v3.9.0). `list_cus
 
 | Tool | Description |
 |------|-------------|
-| `restrict_editing_region` | Mark paragraphs `[start_paragraph, end_paragraph]` as an editable region with `<w:permStart>`/`<w:permEnd>` (`start_paragraph` ≥ 1) |
+| `restrict_editing_region` | Mark paragraphs `[start_paragraph, end_paragraph]` as an editable region with `<w:permStart>`/`<w:permEnd>` (`start_paragraph` ≥ 1); restricts nothing unless the document is already protected (`protect_document` is not implemented, #172) |
 | `protect_document` | Restrict editing or make read-only — not implemented: returns isError naming the missing OOXML (#172) |
 | `unprotect_document` | Remove document protection — not implemented: returns isError (#172) |
 | `set_document_password` | Set an open password — not implemented: returns isError (the password is container encryption outside OOXML, #172) |
@@ -719,7 +719,7 @@ SDT id allocation uses deterministic max+1 (was random in pre-v3.9.0). `list_cus
 | `insert_toc` | Insert table of contents |
 | `insert_table_of_figures` | Insert table of figures |
 | `insert_index` | Insert an index |
-| `insert_index_entry` | Mark an index entry |
+| `insert_index_entry` | Mark an index entry — not implemented: reports success but writes nothing |
 | `set_paragraph_border` | Set paragraph border |
 | `set_paragraph_shading` | Set paragraph background color |
 | `set_character_spacing` | Set character spacing |
