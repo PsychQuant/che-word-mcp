@@ -37,7 +37,7 @@ Changes can be parked（暫存）— temporarily moved out of `docs/spectra/chan
 che-word-mcp/
 ├── Sources/
 │   └── CheWordMCP/
-│       └── Server.swift          # MCP Server 主程式（146 tools）
+│       └── Server.swift          # MCP Server 主程式（工具清單在 allTools）
 ├── mcpb/                         # MCPB 打包目錄
 │   ├── manifest.json             # MCPB 設定檔
 │   ├── server/
@@ -83,7 +83,9 @@ cd mcpb && zip -r che-word-mcp.mcpb .
 更新版本時需要修改：
 1. `mcpb/manifest.json` - version 欄位
 2. `CHANGELOG.md` - 新增版本條目
-3. `README.md` - 工具數量等資訊（如有變動）
+3. `README.md` 與 `README_zh-TW.md` - 新增或移除工具時，把它加進（或移出）工具表、更新該分類標題的數字與總數；
+   `Issue306ToolCountDocsTests`（`swift test`）會比對兩份 README 的工具表、各分類數字與總數是否和 `allTools` 一致，
+   也會擋 server instructions、`skills/che-word-mcp/SKILL.md`、本檔與 `mcpb/manifest.json` 裡過期的工具總數（#306）
 4. **新增／移除某工具的「目前未實作」註記時，同步更新 `README.md` 與
    `README_zh-TW.md` 裡對該工具（或該工具所屬能力分類，如 Watermark CRUD）
    的敘述**——工具數量不變時上面第 3 項不會觸發，但過度宣稱能力（description

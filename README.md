@@ -21,7 +21,7 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 - **Pure Swift Implementation**: No Node.js, Python, or external runtime required
 - **Direct OOXML Manipulation**: Works directly with XML, no Microsoft Word installation needed
 - **Single Binary**: Just one executable file
-- **234 MCP Tools**: Comprehensive document manipulation across documents, tables, hyperlinks, headers, sections, styles, numbering, content controls, comments, footnotes, equations, fields, and Track Changes
+- **248 MCP Tools**: Comprehensive document manipulation across documents, tables, hyperlinks, headers, sections, styles, numbering, content controls, comments, footnotes, equations, fields, and Track Changes
 - **Office.js OOXML Roadmap P0 = 100%**: All eight P0 sub-issues closed (umbrella [#43](https://github.com/PsychQuant/che-word-mcp/issues/43)). Surface coverage is now competitive with Office.js for the read/write side of every P0 capability.
 - **Round-trip silent corruption closed (v3.13.5, [#56](https://github.com/PsychQuant/che-word-mcp/issues/56))**: 5 sub-stack-completion rounds (R5 / R5-CONT / R5-CONT-2 / R5-CONT-3 / R5-CONT-4) closed 30 findings (16 P0 + 21 P1) across rounds 4-8 of 6-AI cross-verification. Bumps `ooxml-swift` to v0.19.5 (v0.19.4 held back per verify-gate). **No MCP source changes** — fix architecture lives entirely in `ooxml-swift`. Round 4 walker symmetry across headers/footers/footnotes/endnotes (`accept_revision` / `reject_revision` / `get_hyperlinks` / `replace_text` reach all parts). Round 5 per-container relationships round-trip (`update_hyperlink` URL sync targets owning part rels). Round 6 `delete_hyperlink` mirror + container `<w:tbl>` capture preserved. Round 7 `reject_revision` typed clearMarker (file/API state convergence). Round 8 `accept_revision` typed clearMarker (mirror) + matrix-pin asymmetry-guard removal + `Document.repairContainerFileNames` marks `document.xml.rels` + `[Content_Types].xml` dirty. Convergence: Devil's Advocate wrote 5 adversarial tests targeting the convergence-cycle pattern; all PASSED. See [closing summary](https://github.com/PsychQuant/che-word-mcp/issues/56#issuecomment-4322638865) and [v3.13.5 release notes](https://github.com/PsychQuant/che-word-mcp/releases/tag/v3.13.5).
 - **Programmatic Track Changes (v3.12.0+, [#45](https://github.com/PsychQuant/che-word-mcp/issues/45))**: Generate Word-native reviewable redlines via `insert_text_as_revision` / `delete_text_as_revision` / `move_text_as_revision`, plus `as_revision: true` flag on `format_text` / `set_paragraph_format`. Emits `<w:ins>` / `<w:del>` / `<w:moveFrom>` / `<w:moveTo>` / `<w:rPrChange>` / `<w:pPrChange>` markup. Side-effect contract: `as_revision: true` requires track changes enabled; throws `track_changes_not_enabled` otherwise (no silent auto-enable). Author resolution: explicit arg → `revisions.settings.author` → `"Unknown"`.
@@ -42,60 +42,7 @@ A Swift-native MCP (Model Context Protocol) server for Microsoft Word document (
 
 ## Version History
 
-| Version | Date | Changes |
-|---------|------|---------|
-| **v4.0.0** | 2026-08-19 | **`execute_script` 契約修正（breaking）** — 驗證失敗改為 tool error（[#180](https://github.com/PsychQuant/che-word-mcp/issues/180)）；新增 `overwrite` 參數且**預設拒絕**覆寫既有 `output_path`（[#181](https://github.com/PsychQuant/che-word-mcp/issues/181)）。覆寫閘移進 ooxml-swift 的共用入口 `scriptPipelineExecute`，兩面由結構取得保護；重建結果改為寫同目錄暫存路徑、驗過才搬進位，所以驗證失敗不再破壞輸出路徑。需 ooxml-swift 3.0.1。5-lens verify（Codex leg 因配額未執行，已記錄）。 |
-| **v3.22.0** | 2026-07-18 | **Self-produced docx upgrades to typed DSL** (closes-via-idd [#173](https://github.com/PsychQuant/che-word-mcp/issues/173), PR [#174](https://github.com/PsychQuant/che-word-mcp/pull/174)). Bumps ooxml-swift 1.4.0 → 1.5.0 (upstream [ooxml-swift#85](https://github.com/PsychQuant/ooxml-swift/issues/85): transcoder-canonical authoring — stamped `w14:paraId`, no inter-element whitespace, full Word-canonical root cloud). `export_script` on MCP-authored pure-paragraph docs now reports `document.xml` on the `dsl` channel (ratio 1.0); `slots` anchor on stamped paraIds. Part-level boundary documented in tool descriptions: rich tables / legacy paraId-less content demote the whole part to raw pending [ooxml-swift#86](https://github.com/PsychQuant/ooxml-swift/issues/86). Consumer regression `Issue173SelfProducedDSLUpgradeTests` (RED on 1.4.0 / GREEN on 1.5.0). 6-AI verify PASS. |
-| **v3.13.5** | 2026-04-27 | **R5 stack-completion** (closes [#56](https://github.com/PsychQuant/che-word-mcp/issues/56) silent corruption). Bumps ooxml-swift v0.19.3 → v0.19.5 (v0.19.4 held back per verify-gate). 30 findings closed (16 P0 + 21 P1) across 5 sub-stacks (R5 / R5-CONT / R5-CONT-2 / R5-CONT-3 / R5-CONT-4) and rounds 4-8 of 6-AI cross-verification. **Round 4** walker symmetry across headers/footers/footnotes/endnotes (`accept_revision` / `reject_revision` / `get_hyperlinks` / `replace_text` reach all parts). **Round 5** per-container relationships round-trip (`update_hyperlink` URL sync targets owning part rels). **Round 6** `delete_hyperlink` mirror + container `<w:tbl>` capture preserved. **Round 7** `reject_revision` typed clearMarker (file/API state convergence). **Round 8** `accept_revision` typed clearMarker (mirror) + matrix-pin asymmetry-guard removal + `repairContainerFileNames` rels-dirty. Convergence: Devil's Advocate wrote 5 adversarial tests targeting the convergence-cycle pattern; all PASSED. **No che-word-mcp source changes** — entire fix architecture in ooxml-swift. See [closing summary](https://github.com/PsychQuant/che-word-mcp/issues/56#issuecomment-4322638865). |
-| v3.13.4 | 2026-04-26 | **(skipped — held back per verify-gate)**. R3 stack content rolled into v3.13.5. |
-| v3.13.3 | 2026-04-26 | Bumps ooxml-swift v0.19.2 → v0.19.3. Closes 8 P0 + 3 must-fix P1 from #56 round-2 verify (Hyperlink API path visual-style restoration / tgtFrame / docLocation Reader filter / ordered children source-order preservation; sort-path contentControls + commentIds / footnoteIds / endnoteIds / hasPageBreak emission; non-text wrapper preservation; nested hyperlink/SDT/fieldSimple round-trip; nextBookmarkId calibration; bookmark wrap-around restoration). No source changes. |
-| v3.13.2 | 2026-04-26 | Bumps ooxml-swift v0.19.1 → v0.19.2. Closes 4 blocking findings from #56 round-1 verify (F1 `Hyperlink.toXML()` emits Reader-collected runs/rawAttributes/rawChildren; F2 `add_bookmark`/`delete_bookmark` sync `bookmarkMarkers`; F3 ins/del/moveFrom/moveTo round-trip preserves position+revisionId+wrapper; F4 namespace preservation extends from `document.xml` to header/footer/footnote/endnote). No source changes. |
-| v3.13.1 | 2026-04-25 | `pPr` double-emission silent regression on sort-by-position round-trip — hot-fix (ooxml-swift v0.19.1). |
-| v3.13.0 | 2026-04-25 | **`document.xml` lossless round-trip + tool-mediated wrapper edits** (closes [#56](https://github.com/PsychQuant/che-word-mcp/issues/56) P0). Hybrid model preserves namespace map (34 xmlns), bookmarks, structural wrappers (`<w:hyperlink>` / `<w:fldSimple>` / `<mc:AlternateContent>`). |
-| v3.12.0 | 2026-04-25 | **Programmatic Track Changes generation** (closes [#45](https://github.com/PsychQuant/che-word-mcp/issues/45)) — 3 new tools (`insert_text_as_revision` / `delete_text_as_revision` / `move_text_as_revision`) + `as_revision` flag on `format_text` / `set_paragraph_format`. Emits `<w:ins>` / `<w:del>` / `<w:moveFrom>` / `<w:moveTo>` / `<w:rPrChange>` / `<w:pPrChange>` markup. |
-| v3.11.0 | 2026-04-25 | **Tables / Hyperlinks / Headers extensions** (closes [#49](https://github.com/PsychQuant/che-word-mcp/issues/49) [#50](https://github.com/PsychQuant/che-word-mcp/issues/50) [#51](https://github.com/PsychQuant/che-word-mcp/issues/51)) — 16 new tools: table conditional styles (10 region types) / nested tables (max 5 deep) / explicit layout / table indent; three typed hyperlinks (URL / bookmark / email); even/odd header toggle / link-to-previous / `get_section_header_map`. |
-| v3.10.0 | 2026-04-24 | **Styles + Numbering + Sections foundation** (closes [#46](https://github.com/PsychQuant/che-word-mcp/issues/46) [#47](https://github.com/PsychQuant/che-word-mcp/issues/47) [#48](https://github.com/PsychQuant/che-word-mcp/issues/48)) — 19 new tools + 6 extended args. `get_style_inheritance_chain`, `link_styles`, `set_latent_styles`, `add_style_name_alias`; full Numbering CRUD lifecycle; section vertical alignment / page-number format / break-type / title-page distinct / per-section header refs. |
-| v3.9.0 | 2026-04-24 | **Content Controls (SDT) read/write** (closes [#44](https://github.com/PsychQuant/che-word-mcp/issues/44)) — 7 new tools, 12-type discrimination (richText / plainText / picture / date / dropDownList / comboBox / checkBox / bibliography / citation / group / repeatingSection / repeatingSectionItem). Nested SDT trees, deterministic id allocator, `keep_content` unwrap, whitelist-validated XML replacement. |
-| v3.8.0 | 2026-04-24 | **Header/footer raw-element preservation + counter-isolation flag** (closes [#52](https://github.com/PsychQuant/che-word-mcp/issues/52)). |
-| v3.7.2 | 2026-04-24 | 3-issue bundle from #42 verification (closes [#53](https://github.com/PsychQuant/che-word-mcp/issues/53), [#54](https://github.com/PsychQuant/che-word-mcp/issues/54), [#55](https://github.com/PsychQuant/che-word-mcp/issues/55) path traversal hardening). |
-| v3.7.1 | 2026-04-24 | `update_all_fields` no longer strips headers/footers (closes [#42](https://github.com/PsychQuant/che-word-mcp/issues/42)). |
-| v3.7.0 | 2026-04-24 | **Insert crash hardening + autosave Design B** (closes [#40](https://github.com/PsychQuant/che-word-mcp/issues/40), [#41](https://github.com/PsychQuant/che-word-mcp/issues/41)). v3.6.0 shipped autosave_every Design A (post-mutation counter) which couldn't preserve K-1 mutations on crash at K when K%N≠0. v3.7.0 switches to **Design B** (snapshot fires at the START of every mutating handler before the mutation runs); default `autosave_every` flipped from `0` to `1` (every mutation snapshots prior state). Pass `autosave_every: 0` to opt out. **BREAKING (effective)**: callers who relied on Design A semantics or default disabled. Also adds Phase A `CHE_WORD_MCP_LOG_LEVEL=debug` structured logging gate for #41 investigation. Built on ooxml-swift 0.13.3 which kills `DocxReader.concurrentPerform` (parsing determinism prerequisite for `recover_from_autosave`) and refactors `nextImageRelationshipId` to use the rId allocator. **Migration from v3.6.0**: code passing `autosave_every: 0` explicitly is unaffected; code that omitted the arg now gets `1` (full safety) — to restore v3.6.0 disabled-by-default behavior, add `autosave_every: 0` to `open_document` calls. |
-| v3.6.0 | 2026-04-23 | **Autosave + checkpoint + recover_from_autosave** (closes [#37](https://github.com/PsychQuant/che-word-mcp/issues/37)). `open_document` gains `autosave_every: Int = 0` parameter — when N > 0, every Nth mutation triggers a checkpoint write to `<source>.autosave.docx` (separate file, NOT eager-save to source). New tools: `checkpoint(doc_id, path?)` for manual snapshot, `recover_from_autosave(doc_id, discard_changes?)` to replace in-memory state with autosave bytes. `get_session_state` adds `autosave_detected` + `autosave_path` fields. Successful `save_document` / `finalize_document` cleans up `<source>.autosave.docx`. Phase 4 of save-durability-stack SDD. |
-| v3.5.5 | 2026-04-23 | **`keep_bak` opt-in for rollback escape hatch** (closes [#38](https://github.com/PsychQuant/che-word-mcp/issues/38)). `save_document` gains optional `keep_bak: Bool = false`; when `true` and target exists, server renames target → `<path>.bak` BEFORE atomic-rename save (single slot, overwrites prior `.bak`). User can `mv <path>.bak <path>` to roll back if a future save ships silent OOXML damage. `.bak` lives at server layer NOT ooxml-swift — `macdoc` CLI users don't get unwanted `.bak` files. Phase 3 of save-durability-stack SDD. |
-| v3.5.4 | 2026-04-23 | **`class WordMCPServer` → `actor WordMCPServer`** (closes [#39](https://github.com/PsychQuant/che-word-mcp/issues/39)). 8 mutable session state dictionaries become actor-isolated; compiler enforces every cross-actor access via `await`. Eliminates the Dictionary hash-table corruption race that pre-v3.5.4 12-parallel `insert_image_from_path` calls triggered. Phase 2 of save-durability-stack SDD. |
-| v3.5.3 | 2026-04-23 | **Atomic-rename save** (closes [#36](https://github.com/PsychQuant/che-word-mcp/issues/36)). Bumps to ooxml-swift 0.13.2 which refactors `DocxWriter.write` to write `<url>.tmp.<UUID>` + `fsync` + `replaceItemAt`. Any throw or process kill mid-write leaves the original byte-preserved (POSIX `rename(2)` is kernel-atomic; cross-volume falls back to copy+delete). 397/397 ooxml-swift tests pass; concurrent-observer regression test added. Phase 1 of save-durability-stack SDD. |
-| v3.5.2 | 2026-04-23 | **Rels overlay merge** (closes [#35](https://github.com/PsychQuant/che-word-mcp/issues/35)) — Reader-loaded document no-op `save_document` round-trip now preserves theme / webSettings / people / customXml / commentsExtended / commentsIds rels. v3.5.0/v3.5.1 fixed the parts layer; v3.5.2 fixes the rels layer. No che-word-mcp source change — fix entirely in ooxml-swift v0.13.1 (`RelationshipsOverlay` + relationship-driven `extractImages`). |
-| v3.5.1 | 2026-04-23 | **Universal binary** (`x86_64 + arm64`) — restores Intel Mac compatibility. v3.5.0 was arm64-only because release-build skipped the documented `lipo -create` step. No source changes — drop-in replacement. |
-| v3.5.0 | 2026-04-23 | **True byte-preservation via dirty tracking** (closes [#23 round-2](https://github.com/PsychQuant/che-word-mcp/issues/23) + [#32](https://github.com/PsychQuant/che-word-mcp/issues/32) [#33](https://github.com/PsychQuant/che-word-mcp/issues/33) [#34](https://github.com/PsychQuant/che-word-mcp/issues/34)). Reader-loaded <org> theses survive no-op `save_document` round-trip with all 13 fontTable + 6 distinct headers + 4 footers + three-segment PAGE field + `<w15:presenceInfo>` identity preserved. Built on ooxml-swift 0.13.0 (`modifiedParts: Set<String>` + `Header.originalFileName` + overlay-mode skip-when-not-dirty). `list_people` returns dual identity: `person_id` (GUID, stable across rename) + `display_name_id` (= author legacy). |
-| v3.4.0 | 2026-04-23 | **Phase 2B + 2C combined** (closes #24 #25 #29 #30 #31): comment threads (`list_comment_threads` / `get_comment_thread` / `sync_extended_comments`), people (`list_people` / `add_person` / `update_person` / `delete_person`), notes update (`get_endnote` / `update_endnote` / `get_footnote` / `update_footnote` — preserves note IDs), web settings (`get_web_settings` / `update_web_settings`). 13 new MCP tools. |
-| v3.3.0 | 2026-04-23 | **Phase 2A** (closes #26 #27 #28): theme tools (`get_theme` / `update_theme_fonts` / `update_theme_color` / `set_theme`), headers (`list_headers` / `get_header` / `delete_header`), watermarks (`list_watermarks` / `get_watermark`), footers (`list_footers` / `get_footer` / `delete_footer`). 12 new MCP tools. Bumped to ooxml-swift 0.12.x for preserve-by-default round-trip. |
-| v3.2.0 | 2026-04-23 | **`insert_equation` LaTeX parser delegated to `latex-math-swift`** (closes #22). Full LaTeX subset: `\frac`, `\sqrt`, `\hat`/`\bar`/`\tilde`, `\left`/`\right`, `\sum`/`\int`/`\prod` with bounds, `\ln`/`\sin`/`\cos`/`\tan`/`\log`/`\exp`/`\max`/`\min`/`\det`, `\sup`/`\inf`/`\lim`, `\text{}`, all Greek letters (incl. `\varepsilon` variants), common operators. 18 econometrics fixture equations now all parse. Adds `MathAccent` via ooxml-swift 0.11.0. |
-| v3.1.0 | 2026-04-22 | 9 readback tools: Caption CRUD (`list_captions` / `get_caption` / `update_caption` / `delete_caption`), `update_all_fields` (F9-equivalent SEQ recount), Equation CRUD (`list_equations` / `get_equation` / `update_equation` / `delete_equation`). Built on new ooxml-swift 0.10.0 `FieldParser` + `OMMLParser`. |
-| v3.0.0 | 2026-04-22 | **BREAKING**: session state API. New tools `get_session_state` / `revert_to_disk` / `reload_from_disk` / `check_disk_drift`. `open_document` track_changes default flipped from true to false. `close_document` dirty-check now returns `E_DIRTY_DOC` text response with recovery options (`save_document` / `discard_changes: true` / `finalize_document`). |
-| v2.3.0 | 2026-04-22 | Text-anchor compound tool — `insert_caption` / `insert_image_from_path` accept `after_text` / `before_text` / `text_instance`. Eliminates the `search_text + insert_*` two-call pattern (~50% RPC reduction for document caption workflows). |
-| v2.2.0 | 2026-04-22 | Batch API — `replace_text_batch` (sequential, single save at end, `dry_run`/`stop_on_first_failure` flags) + `search_text_batch` (aggregated multi-query response, Direct + Session Mode). |
-| v2.1.0 | 2026-04-22 | Expose v2.0.0 params via `inputSchema` — schemas for `insert_caption` / `insert_equation` / `insert_image_from_path` / `replace_text` now advertise new params (Chinese labels, `components`, `into_table_cell`, `scope`, `regex`). |
-| v2.0.0 | 2026-04-22 | **BREAKING**: `word-mcp-insertion-primitives` Spectra change. Real OOXML SEQ fields (was literal text), OMML `MathComponent` AST (was string substitution), auto-aspect image sizing + table-cell target, cross-run-safe `replace_text` with `scope` + regex backreferences. |
-| v1.19.0 | 2026-04-15 | Manuscript review markdown export: `export_revision_summary_markdown` / `compare_documents_markdown` / `export_comment_threads_markdown`. **BREAKING**: `get_revisions` + `compare_documents` `full_text` param replaced by `summarize` (inverted default). |
-| v1.18.0 | 2026-04-14 | Fix `get_revisions` hardcoded 30-char truncation (bug since v1.2.0); add `full_text` opt-in. |
-| v1.17.0 | 2026-03-11 | Session state management: dirty tracking, autosave, `finalize_document`, `get_document_session_state`, shutdown flush (contributed by [@ildunari](https://github.com/ildunari)) |
-| v1.16.0 | 2026-03-10 | Dual-Mode: 15 read-only tools now support `source_path` (Direct Mode); MCP server instructions added |
-| v1.15.2 | 2026-03-07 | Improve `list_all_formatted_text` tool description for better LLM parameter handling |
-| v1.15.1 | 2026-03-01 | Fix heading heuristic style fallback (resolve fontSize from style inheritance chain) |
-| v1.15.0 | 2026-03-01 | Practical Mode: EMF→PNG auto-conversion + heading heuristic for style-less documents |
-| v1.14.0 | 2026-03-01 | Embed `word-to-md-swift` library: no external macdoc binary needed, restore `doc_id` support |
-| v1.13.0 | 2026-03-01 | Upgrade ooxml-swift to v0.5.0: parallel multi-core parsing (~0.64s for large docs) |
-| v1.12.1 | 2026-03-01 | Upgrade ooxml-swift to v0.4.0: large document performance fix (>30s → ~2.3s) |
-| v1.12.0 | 2026-02-28 | `export_markdown` uses `source_path` only, removes `doc_id`, adds lock file check |
-| v1.11.1 | 2026-02-28 | Fix `export_markdown` stdout mode (pipe fsync issue) |
-| v1.11.0 | 2026-02-28 | `export_markdown` delegates to `macdoc` CLI; removed `word-to-md-swift` dependency |
-| v1.9.0 | 2026-02-28 | `export_markdown` upgraded to use `word-to-md-swift` for high-quality output (145 total) |
-| v1.8.0 | 2026-02-03 | Remove hard diff limit, add `max_results` & `heading_styles` params to `compare_documents` |
-| v1.7.0 | 2026-02-03 | Add `compare_documents` tool for server-side document diff (105 total) |
-| v1.2.1 | 2026-01-16 | Fix MCP SDK compatibility (actor→class, add capabilities) |
-| v1.2.0 | 2026-01-16 | Add 12 new tools (95 total): search, hyperlinks, bookmarks, footnotes, endnotes, revisions, properties |
-| v1.1.0 | 2026-01-16 | Fix MCPB manifest.json format for Claude Desktop |
-| v1.0.0 | 2026-01-16 | Initial release with 83 tools, refactored to use ooxml-swift |
+Release notes for every version are in [CHANGELOG.md](CHANGELOG.md).
 
 ## Quick Start
 
@@ -306,7 +253,7 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
   https://raw.githubusercontent.com/PsychQuant/che-word-mcp/main/skills/che-word-mcp/SKILL.md
 ```
 
-## Available Tools (234 Total)
+## Available Tools (248 Total)
 
 ### Paragraph Index Conventions
 
@@ -331,7 +278,16 @@ for the per-tool inventory before reusing an index across tools.
 | `finalize_document` | Save and close in one guarded step |
 | `list_open_documents` | List all open documents |
 
-### Session State API (5 tools, v3.0.0+)
+### Document Info & Properties (4 tools)
+
+| Tool | Description |
+|------|-------------|
+| `get_document_info` | Paragraph, word and image counts (images counted by their references in body, headers and footers; Direct Mode) |
+| `get_document_properties` | Read core properties: title, author, dates (Direct Mode) |
+| `set_document_properties` | Set core properties: title, author, subject, keywords |
+| `get_word_count_by_section` | Word count per section, with a custom separator (e.g. References) and excluded sections (Direct Mode) |
+
+### Session State API (7 tools, v3.0.0+)
 
 | Tool | Description |
 |------|-------------|
@@ -340,30 +296,57 @@ for the per-tool inventory before reusing an index across tools.
 | `revert_to_disk` | Re-read source path, discard in-memory edits (destructive-by-design) |
 | `reload_from_disk` | Cooperative reload; requires `force: true` on dirty doc |
 | `check_disk_drift` | Informational — returns `{ drifted, disk_mtime, stored_mtime, disk_hash_matches }` |
+| `checkpoint` | Write the in-memory session to `<source>.autosave.docx` (or a given `path`) without clearing the dirty flag |
+| `recover_from_autosave` | Restore the session from `<source>.autosave.docx`; a dirty session needs `discard_changes: true` |
 
-### Content Operations (9 tools)
+### Content Operations (12 tools)
 
 | Tool | Description |
 |------|-------------|
 | `get_text` | Get plain text content |
 | `get_paragraphs` | Get all paragraphs with formatting |
+| `get_document_text` | Full plain text of a .docx (alias of `get_text`; Direct Mode) |
+| `get_paragraph_runs` | Runs of one paragraph with their formatting (colour, bold, italic, …) |
+| `get_text_with_formatting` | Document text with formatting written as Markdown marks (`**bold**`, `*italic*`, `{{color:red}}`) |
 | `estimate_paragraph_for_page` | **v3.18.0+** — estimate a Word UI page number to a `get_paragraphs` candidate range (heuristic JSON with confidence + warning). See [docs/estimate-paragraph-for-page.md](docs/estimate-paragraph-for-page.md) for the `chars_per_page` derivation formula, confidence-tier table, and known limitations. |
 | `insert_paragraph` | Insert a new paragraph |
+| `insert_text` | Insert text at a position inside a paragraph |
 | `update_paragraph` | Update paragraph content |
 | `delete_paragraph` | Delete a paragraph |
 | `replace_text` | Cross-run-safe find & replace with `scope` (body\|all) + `regex` + `$1..$N` backreferences |
 | `replace_text_batch` | **v2.2.0** — sequential N-replacement batch, single save at end, `dry_run` / `stop_on_first_failure` |
-| `search_text_batch` | **v2.2.0** — aggregated multi-query search, works in Direct + Session Mode |
 
-### Formatting (3 tools)
+### Search (5 tools)
+
+| Tool | Description |
+|------|-------------|
+| `search_text` | Find text and return every match position, nested tables included (Direct Mode) |
+| `search_text_batch` | **v2.2.0** — aggregated multi-query search, works in Direct + Session Mode |
+| `search_text_with_formatting` | Find text and return each match with its formatting marks |
+| `search_by_formatting` | Find text that carries a given format (e.g. red, bold) |
+| `list_all_formatted_text` | List all text with one format (`format_type`: italic, bold, underline, color, highlight, strikethrough) |
+
+### Formatting (4 tools)
 
 | Tool | Description |
 |------|-------------|
 | `format_text` | Apply text formatting (bold, italic, color, font) |
 | `set_paragraph_format` | Set paragraph formatting (alignment, spacing) |
 | `apply_style` | Apply built-in or custom styles |
+| `set_language` | Set the proofing language of text (spell check) — not implemented: reports success but writes nothing |
 
-### Tables (15 tools, **v3.11.0+ extensions** [#49](https://github.com/PsychQuant/che-word-mcp/issues/49))
+### Paragraph Layout (6 tools)
+
+| Tool | Description |
+|------|-------------|
+| `set_keep_with_next` | Keep the paragraph on the same page as the next one |
+| `set_keep_lines` | Keep all lines of the paragraph on one page |
+| `set_page_break_before` | Start the paragraph on a new page |
+| `set_widow_orphan` | Widow and orphan control |
+| `insert_tab_stop` | Add a tab stop to a paragraph |
+| `clear_tab_stops` | Remove all tab stops from a paragraph |
+
+### Tables (21 tools, **v3.11.0+ extensions** [#49](https://github.com/PsychQuant/che-word-mcp/issues/49))
 
 Core (6):
 | Tool | Description |
@@ -375,13 +358,19 @@ Core (6):
 | `merge_cells` | Merge cells horizontally or vertically |
 | `set_table_style` | Set table borders and shading |
 
-Row / column / cell (8):
+Row / column / cell (10):
 | Tool | Description |
 |------|-------------|
-| `add_row_to_table`, `delete_row_from_table` | Row management |
-| `add_column_to_table`, `delete_column_from_table` | Column management |
-| `set_cell_width`, `set_cell_vertical_alignment` | Cell sizing + alignment |
-| `set_row_height`, `set_table_alignment` | Row height + table alignment |
+| `add_row_to_table` | Add a row |
+| `delete_row_from_table` | Delete a row |
+| `add_column_to_table` | Add a column |
+| `delete_column_from_table` | Delete a column |
+| `set_cell_width` | Set cell width |
+| `set_cell_vertical_alignment` | Set cell vertical alignment — not implemented: reports success but writes nothing |
+| `set_row_height` | Set row height |
+| `set_table_alignment` | Set table alignment — not implemented: reports success but writes nothing |
+| `get_cell_paragraphs` | Paragraphs inside a table cell with their `paragraph_index` (Direct Mode), for addressing `update_cell_paragraph` |
+| `update_cell_paragraph` | Rewrite the text of one paragraph inside a cell; the cell's other paragraphs stay as they are |
 
 Advanced (5, **v3.11.0**):
 | Tool | Description |
@@ -432,9 +421,9 @@ Definition CRUD (8, **v3.10.0**):
 | `start_new_list` | Reset numbering to start |
 | `gc_orphan_numbering` | Sweep unreferenced num definitions (abstractNums preserved) |
 
-### Sections / Page Setup (12 tools, **v3.10.0+ extensions** [#47](https://github.com/PsychQuant/che-word-mcp/issues/47))
+### Sections / Page Setup (19 tools, **v3.10.0+ extensions** [#47](https://github.com/PsychQuant/che-word-mcp/issues/47))
 
-Basic page setup (5):
+Basic page setup (12):
 | Tool | Description |
 |------|-------------|
 | `set_page_size` | Set page size (A4, Letter, etc.) |
@@ -442,6 +431,13 @@ Basic page setup (5):
 | `set_page_orientation` | Set portrait or landscape |
 | `insert_page_break` | Insert page break |
 | `insert_section_break` | Insert section break |
+| `get_section_properties` | Read section properties such as page setup (Direct Mode) |
+| `insert_continuous_section_break` | Insert a continuous section break (no page break) |
+| `insert_column_break` | Insert a column break at a paragraph |
+| `set_columns` | Number of columns (1–4) and column spacing of the document's last section; `separator` is accepted but not written |
+| `set_line_numbers` | Show line numbers for the document — not implemented: reports success but writes nothing (use `set_line_numbers_for_section`) |
+| `set_page_borders` | Page borders: each side on or off; style, colour, width and measure-from shared by all sides |
+| `set_text_direction` | Text direction of a paragraph or the document (vertical text) — not implemented: reports success but writes nothing |
 
 Section properties (7, **v3.10.0**):
 | Tool | Description |
@@ -454,9 +450,9 @@ Section properties (7, **v3.10.0**):
 | `set_title_page_distinct` | Toggle `<w:titlePg/>` per section |
 | `set_section_header_footer_references` | Assign per-type rId (default/first/even) |
 
-### Headers & Footers (17 tools, **v3.11.0+ even/odd + section map** [#51](https://github.com/PsychQuant/che-word-mcp/issues/51))
+### Headers & Footers (20 tools, **v3.11.0+ even/odd + section map** [#51](https://github.com/PsychQuant/che-word-mcp/issues/51))
 
-Write tools (5):
+Write tools (8):
 | Tool | Description |
 |------|-------------|
 | `add_header` | Add header content (uses `RelationshipIdAllocator` since v3.3.0+ — collision-free rIds in overlay mode) |
@@ -464,6 +460,9 @@ Write tools (5):
 | `add_footer` | Add footer content |
 | `update_footer` | Update footer content |
 | `insert_page_number` | Insert page number field |
+| `insert_watermark` | Insert a diagonal text watermark into every header part (creates a default header when there is none) |
+| `insert_image_watermark` | Insert a centred picture watermark (png, jpg, jpeg, gif, bmp, tif, tiff; up to 10 MB) into every header part; a new document must be saved once first |
+| `remove_watermark` | Remove text and picture watermarks from every header part (succeeds when there is none) |
 
 Read + delete tools (8, **v3.3.0+**, closes #26 #27):
 | Tool | Description |
@@ -494,7 +493,7 @@ Even/odd + section linkage (4, **v3.11.0**):
 | `update_theme_color` | Slot-named hex color update with validation (rejects invalid slot + non-6-char-hex) |
 | `set_theme` | Low-level escape hatch — replace theme1.xml verbatim (validates `<a:theme>` root + well-formed XML) |
 
-### Images (7 tools)
+### Images (9 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -505,8 +504,10 @@ Even/odd + section linkage (4, **v3.11.0**):
 | `delete_image` | Delete image |
 | `list_images` | List images — document body + header/footer, each flagged `referenced: yes/orphan/unknown` against the same package scan `save_document`'s consistency gate uses ([#199](https://github.com/PsychQuant/che-word-mcp/issues/199), [#219](https://github.com/PsychQuant/che-word-mcp/issues/219)) |
 | `set_image_style` | Set image border and effects |
+| `export_image` | Export one image to a file; looks in document, header, footer and chart parts |
+| `export_all_images` | Export every image (document, headers, footers, charts) to a directory; same-name files get `_2`, `_3`, … suffixes |
 
-### Captions (5 tools)
+### Captions (6 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -515,8 +516,9 @@ Even/odd + section linkage (4, **v3.11.0**):
 | `get_caption` | **v3.1.0** — detailed single caption info including optional `chapter_number` from STYLEREF |
 | `update_caption` | **v3.1.0** — modify caption text or label without breaking the SEQ field structure |
 | `delete_caption` | **v3.1.0** — remove caption paragraph |
+| `wrap_caption_seq` | Wrap the plain-text number of matching captions in SEQ field runs across the body |
 
-### Equations (5 tools)
+### Equations (8 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -525,8 +527,11 @@ Even/odd + section linkage (4, **v3.11.0**):
 | `get_equation` | **v3.1.0** — detailed single equation info with component summary |
 | `update_equation` | **v3.1.0** — replace target equation's components tree |
 | `delete_equation` | **v3.1.0** — remove equation run or empty paragraph |
+| `find_inline_math_gaps` | Find whitespace gaps that look like missing inline math symbols, with context (Direct Mode) |
+| `splice_omath_from_source` | Copy one `<m:oMath>` block verbatim from a paragraph of another document |
+| `splice_paragraph_omath_from_source` | Copy every `<m:oMath>` block of a source paragraph into the matching positions of a target paragraph |
 
-### Export (5 tools)
+### Export (6 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -534,20 +539,31 @@ Even/odd + section linkage (4, **v3.11.0**):
 | `export_markdown` | Export as Markdown (uses embedded `word-to-md-swift`) |
 | `export_revision_summary_markdown` | **v1.19.0** — per-document revision timeline for manuscript review |
 | `compare_documents_markdown` | **v1.19.0** — multi-document cumulative revision timeline |
+| `compare_documents` | Paragraph-level diff of two documents (text, format or structure mode), returning only the differences |
 | `export_comment_threads_markdown` | **v1.19.0** — comment threading with author alias normalization |
 
-### Hyperlinks & Bookmarks (10 tools, **v3.11.0+ typed variants** [#50](https://github.com/PsychQuant/che-word-mcp/issues/50))
+### Script Pipeline (3 tools)
 
-Generic + bookmarks (7):
+| Tool | Description |
+|------|-------------|
+| `export_script` | docx → full-fidelity `.mdocx.swift` rebuild script (same transcoder as `macdoc word reverse`); optional named slots |
+| `get_script_coverage` | Per-part DSL/raw coverage report of a docx (same numbers as `macdoc word reverse --coverage`) |
+| `execute_script` | `.mdocx.swift` script → docx; refuses to overwrite an existing `output_path` unless `overwrite: true`; optional byte-equal verification against a reference file |
+
+### Hyperlinks & Bookmarks (12 tools, **v3.11.0+ typed variants** [#50](https://github.com/PsychQuant/che-word-mcp/issues/50))
+
+Generic + bookmarks (9):
 | Tool | Description |
 |------|-------------|
 | `insert_hyperlink` | Insert external hyperlink |
 | `insert_internal_link` | Insert link to bookmark |
-| `insert_cross_reference` | Insert cross-reference |
+| `insert_cross_reference` | Insert cross-reference — not implemented: reports success but writes nothing |
 | `update_hyperlink` | Update hyperlink |
 | `delete_hyperlink` | Delete hyperlink |
+| `list_hyperlinks` | List all hyperlinks (Direct Mode) |
 | `insert_bookmark` | Insert bookmark |
 | `delete_bookmark` | Delete bookmark |
+| `list_bookmarks` | List all bookmarks (Direct Mode) |
 
 Typed hyperlinks (3, **v3.11.0**, auto-create Hyperlink character style):
 | Tool | Description |
@@ -556,9 +572,9 @@ Typed hyperlinks (3, **v3.11.0**, auto-create Hyperlink character style):
 | `insert_bookmark_hyperlink` | Internal anchor link (`w:anchor`, no rId) |
 | `insert_email_hyperlink` | `mailto:` with optional URL-encoded subject |
 
-### Comments & Revisions (13 tools)
+### Comments & Revisions (22 tools)
 
-Comment write + read (7):
+Comment write + read (10):
 | Tool | Description |
 |------|-------------|
 | `insert_comment` | Insert comment |
@@ -567,6 +583,9 @@ Comment write + read (7):
 | `list_comments` | List all comments |
 | `reply_to_comment` | Reply to existing comment |
 | `resolve_comment` | Mark comment as resolved |
+| `add_comment_reply` | Reply to a root comment, with template/vars, and optionally mark it resolved in the same call |
+| `bulk_resolve_comments` | Mark many comments resolved in one call; reports the count and the failures (up to 1000 distinct ids) |
+| `find_unresolved_comments` | List unresolved top-level comments, optionally with replies and anchor context (Direct Mode) |
 | `list_comment_threads` | **v3.4.0** — enumerate threads (root_comment_id + replies + resolved + durable_id) using typed `Comment.parentId` from `commentsExtended.xml` |
 
 Comment thread tools (2, **v3.4.0+**, closes #29):
@@ -647,7 +666,7 @@ List + read + update (6, **v3.4.0+**, closes #24 #25):
 | `insert_sequence_field` | Insert auto-numbering sequence |
 | `update_all_fields` | **v3.1.0** — F9-equivalent SEQ recount across body + headers + footers + footnotes + endnotes. Supports chapter-reset when `pStyle=="Heading N"` matches SEQ `resetLevel` |
 
-### Content Controls / SDT (10 tools, **v3.9.0+ full read/write** [#44](https://github.com/PsychQuant/che-word-mcp/issues/44))
+### Content Controls / SDT (13 tools, **v3.9.0+ full read/write** [#44](https://github.com/PsychQuant/che-word-mcp/issues/44))
 
 Insert + form helpers (5):
 | Tool | Description |
@@ -658,12 +677,13 @@ Insert + form helpers (5):
 | `insert_dropdown` | Insert dropdown SDT |
 | `insert_text_field` | Insert plain-text SDT |
 
-Read tools (3):
+Read tools (4):
 | Tool | Description |
 |------|-------------|
 | `list_content_controls` | Enumerate every SDT, flat (default) or nested tree mode (Direct Mode supported) |
 | `get_content_control` | Fetch single SDT by `id`, `tag`, or `alias`. Returns full metadata + `<w:sdtContent>` XML. Surfaces `not_found` / `multiple_matches` errors. |
 | `list_repeating_section_items` | Enumerate items inside a repeating-section SDT in document order |
+| `list_custom_xml_parts` | List CustomXml parts — not implemented yet: always returns an empty list |
 
 Modify tools (4):
 | Tool | Description |
@@ -675,20 +695,40 @@ Modify tools (4):
 
 SDT id allocation uses deterministic max+1 (was random in pre-v3.9.0). `list_custom_xml_parts` ships as empty-list stub for forward compat (real impl in `che-word-mcp-customxml-databinding` Change B).
 
-### Advanced Features (10 tools)
+### Forms (2 tools)
+
+| Tool | Description |
+|------|-------------|
+| `classify_form` | List the paragraphs of a .docx form that carry `w14:paraId`, with their kind and text (reads the file on disk) |
+| `apply_form` | Tidy a filled .docx form (the library behind `macdoc word form apply`) and write it to `output_path` |
+
+### Document Protection (5 tools)
+
+| Tool | Description |
+|------|-------------|
+| `restrict_editing_region` | Mark paragraphs `[start_paragraph, end_paragraph]` as an editable region with `<w:permStart>`/`<w:permEnd>` (`start_paragraph` ≥ 1); restricts nothing unless the document is already protected (`protect_document` is not implemented, #172) |
+| `protect_document` | Restrict editing or make read-only — not implemented: returns isError naming the missing OOXML (#172) |
+| `unprotect_document` | Remove document protection — not implemented: returns isError (#172) |
+| `set_document_password` | Set an open password — not implemented: returns isError (the password is container encryption outside OOXML, #172) |
+| `remove_document_password` | Remove the open password — not implemented: returns isError (#172) |
+
+### Advanced Features (11 tools)
 
 | Tool | Description |
 |------|-------------|
 | `insert_toc` | Insert table of contents |
 | `insert_table_of_figures` | Insert table of figures |
-| `insert_index`, `insert_index_entry` | Index generation |
+| `insert_index` | Insert an index |
+| `insert_index_entry` | Mark an index entry — not implemented: reports success but writes nothing |
 | `set_paragraph_border` | Set paragraph border |
 | `set_paragraph_shading` | Set paragraph background color |
 | `set_character_spacing` | Set character spacing |
 | `set_text_effect` | Set text animation effect |
-| `insert_horizontal_line`, `insert_drop_cap`, `insert_symbol` | Decorative elements |
+| `insert_horizontal_line` | Insert a horizontal line |
+| `insert_drop_cap` | Insert a drop cap |
+| `insert_symbol` | Insert a symbol |
 
-> **Note**: The counts above cover key tool categories. Total surface is **233 tools** as of v3.13.5 including Document Comparison, Track Changes (read + programmatic write side via `<w:ins>` / `<w:del>` / `<w:moveFrom>` / `<w:moveTo>` / `<w:rPrChange>` / `<w:pPrChange>`), Content Controls (12-type SDT discrimination), Field Codes, Theme Editing, Header/Footer CRUD + Watermark read (write side not implemented, #201/#208) with even/odd + section linkage, Comment Threads + People (dual identity), Notes Update, Web Settings, Styles (inheritance + linkage + latent + alias), Numbering (full definition lifecycle), Sections (vertical alignment + page-number format + title-page distinct + per-section refs), Tables (conditional / nested / layout / indent), Hyperlinks (typed url/bookmark/email), and Formatting helpers (with `as_revision` flag). Run the server and call `tools/list` for the complete, authoritative set.
+> **Note**: The tables above list every tool the server registers; `Issue306ToolCountDocsTests` fails `swift test` when a tool is added or removed without updating them. Run the server and call `tools/list` for each tool's full description and input schema.
 
 ## Usage Examples
 
@@ -792,7 +832,7 @@ clean clones / CI do not false-fail. Mirrors the `.note` smoke pattern from
 | Requires Word | Yes | No | No | **No** |
 | Runtime | Node.js | Python | Node.js | **None** |
 | Single Binary | No | No | No | **Yes** |
-| Tools Count | ~10 | N/A | N/A | **233** |
+| Tools Count | ~10 | N/A | N/A | **248** |
 | Images | Limited | Yes | Yes | **Yes** |
 | Comments | No | Limited | Limited | **Yes** |
 | Track Changes | No | No | No | **Yes** |

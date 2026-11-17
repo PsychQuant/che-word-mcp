@@ -9,7 +9,7 @@
 - **純 Swift 實作**：不需要 Node.js、Python 或其他執行環境
 - **直接操作 OOXML**：直接處理 XML，不需要安裝 Microsoft Word
 - **單一執行檔**：只有一個 binary 檔案
-- **233 MCP 工具**：完整的文件操作功能（涵蓋 documents / tables / hyperlinks / headers / sections / styles / numbering / content controls / comments / footnotes / equations / fields / Track Changes）
+- **248 MCP 工具**：完整的文件操作功能（涵蓋 documents / tables / hyperlinks / headers / sections / styles / numbering / content controls / comments / footnotes / equations / fields / Track Changes）
 - **Round-trip 靜默損毀已修正（v3.13.5，[#56](https://github.com/PsychQuant/che-word-mcp/issues/56)）**：5 個 sub-stack-completion rounds（R5 / R5-CONT / R5-CONT-2 / R5-CONT-3 / R5-CONT-4）關掉了 6-AI 跨驗證 rounds 4-8 找到的 30 個 findings（16 P0 + 21 P1）。`ooxml-swift` 升到 v0.19.5（v0.19.4 因 verify-gate 暫不發布）。**MCP 端零 source 變更** — fix 全在 ooxml-swift。Round 4 walker symmetry 跨 headers/footers/footnotes/endnotes（`accept_revision` / `reject_revision` / `get_hyperlinks` / `replace_text` 在所有 part 都能找到目標）。Round 5 per-container relationships round-trip（`update_hyperlink` URL sync 對應 owning part 的 rels 檔）。Round 6 `delete_hyperlink` mirror + container `<w:tbl>` capture 保留。Round 7 `reject_revision` typed clearMarker（file/API state 收斂）。Round 8 `accept_revision` typed clearMarker（mirror）+ matrix-pin asymmetry-guard 移除 + `Document.repairContainerFileNames` 將 `document.xml.rels` + `[Content_Types].xml` 標記 dirty。Convergence: Devil's Advocate 寫了 5 個 adversarial tests，全部 PASSED。詳見 [closing summary](https://github.com/PsychQuant/che-word-mcp/issues/56#issuecomment-4322638865) 與 [v3.13.5 release notes](https://github.com/PsychQuant/che-word-mcp/releases/tag/v3.13.5)。
 - **Save Durability Stack（v3.5.3+）**：atomic-rename save（#36）、actor-based 並行安全（#39）、`keep_bak` opt-in rollback（#38）、`autosave_every` Design B pre-mutation snapshot + 顯式 `recover_from_autosave`（#37、#40 v3.7.0）。預設 `autosave_every: 1`（每次 mutation 前 snapshot 上一個 state）；想完全關閉請傳 `autosave_every: 0`。
 - **Dual-Mode 存取**：Direct Mode（唯讀、一步完成）與 Session Mode（完整生命週期）
@@ -26,58 +26,7 @@
 
 ## 版本歷史
 
-| 版本 | 日期 | 變更 |
-|------|------|------|
-| **v3.13.5** | 2026-04-27 | **R5 stack-completion**（closes [#56](https://github.com/PsychQuant/che-word-mcp/issues/56) round-trip 靜默損毀）。Bump ooxml-swift v0.19.3 → v0.19.5（v0.19.4 因 verify-gate 暫不發布）。5 個 sub-stack rounds（R5 / R5-CONT / R5-CONT-2 / R5-CONT-3 / R5-CONT-4）關掉 6-AI 跨驗證 rounds 4-8 的 30 個 findings（16 P0 + 21 P1）。**Round 4** walker symmetry 跨 headers/footers/footnotes/endnotes（`accept_revision` / `reject_revision` / `get_hyperlinks` / `replace_text` 在所有 part 都能找到目標）。**Round 5** per-container relationships round-trip。**Round 6** `delete_hyperlink` mirror + container `<w:tbl>` capture 保留。**Round 7** `reject_revision` typed clearMarker（file/API state 收斂）。**Round 8** `accept_revision` typed clearMarker（mirror）+ matrix-pin asymmetry-guard 移除 + `repairContainerFileNames` rels-dirty。Convergence: Devil's Advocate 寫了 5 個 adversarial tests，全部 PASSED。**MCP 端零 source 變更** — fix 全在 ooxml-swift。詳見 [closing summary](https://github.com/PsychQuant/che-word-mcp/issues/56#issuecomment-4322638865)。|
-| v3.13.4 | 2026-04-26 | **(skip — 因 verify-gate 暫不發布)**。R3 stack 內容已併入 v3.13.5。|
-| v3.13.3 | 2026-04-26 | Bump ooxml-swift v0.19.2 → v0.19.3。關掉 #56 round-2 verify 的 8 P0 + 3 must-fix P1（Hyperlink API path 視覺樣式恢復、tgtFrame/docLocation Reader filter、ordered children 保留 source order；sort path contentControls + commentIds/footnoteIds/endnoteIds/hasPageBreak emission；非文字 wrapper 保留；nested hyperlink/SDT/fieldSimple round-trip；nextBookmarkId 校準；bookmark wrap-around 還原）。無 source 變更。|
-| v3.13.2 | 2026-04-26 | Bump ooxml-swift v0.19.1 → v0.19.2。關掉 #56 round-1 verify 的 4 個 blocking findings（F1 `Hyperlink.toXML()` emit Reader 解出的 runs/rawAttributes/rawChildren；F2 `add_bookmark`/`delete_bookmark` 同步 `bookmarkMarkers`；F3 ins/del/moveFrom/moveTo round-trip 保留 position+revisionId+wrapper；F4 namespace 保留從 document.xml 擴展到 header/footer/footnote/endnote）。無 source 變更。|
-| v3.13.1 | 2026-04-25 | `pPr` double-emission 在 sort-by-position round-trip 的 silent regression — hot-fix（ooxml-swift v0.19.1）。|
-| v3.13.0 | 2026-04-25 | **`document.xml` lossless round-trip + tool-mediated wrapper edits**（closes [#56](https://github.com/PsychQuant/che-word-mcp/issues/56) P0）。Hybrid model 保留 namespace map（34 xmlns）、bookmarks、結構化 wrapper（`<w:hyperlink>` / `<w:fldSimple>` / `<mc:AlternateContent>`）。|
-| v3.12.0 | 2026-04-25 | **Programmatic Track Changes 生成**（closes [#45](https://github.com/PsychQuant/che-word-mcp/issues/45)）— 3 個新工具（`insert_text_as_revision` / `delete_text_as_revision` / `move_text_as_revision`）+ `format_text` / `set_paragraph_format` 加 `as_revision` flag。Emit `<w:ins>` / `<w:del>` / `<w:moveFrom>` / `<w:moveTo>` / `<w:rPrChange>` / `<w:pPrChange>` markup。|
-| v3.11.0 | 2026-04-25 | **Tables / Hyperlinks / Headers extensions**（closes [#49](https://github.com/PsychQuant/che-word-mcp/issues/49) [#50](https://github.com/PsychQuant/che-word-mcp/issues/50) [#51](https://github.com/PsychQuant/che-word-mcp/issues/51)）— 16 個新工具：table conditional styles（10 region types）、nested tables（最多 5 層）、explicit layout、table indent；3 種 typed hyperlinks（URL / bookmark / email）；even/odd header toggle / link-to-previous / `get_section_header_map`。|
-| v3.10.0 | 2026-04-24 | **Styles + Numbering + Sections foundation**（closes [#46](https://github.com/PsychQuant/che-word-mcp/issues/46) [#47](https://github.com/PsychQuant/che-word-mcp/issues/47) [#48](https://github.com/PsychQuant/che-word-mcp/issues/48)）— 19 個新工具 + 6 個 extended args。`get_style_inheritance_chain`、`link_styles`、`set_latent_styles`、`add_style_name_alias`；完整 Numbering CRUD lifecycle；section vertical alignment / page-number format / break-type / title-page distinction / per-section header refs。|
-| v3.9.0 | 2026-04-24 | **Content Controls (SDT) read/write**（closes [#44](https://github.com/PsychQuant/che-word-mcp/issues/44)）— 7 個新工具，12 種 SDT 區分（richText / plainText / picture / date / dropDownList / comboBox / checkBox / bibliography / citation / group / repeatingSection / repeatingSectionItem）。Nested SDT trees、deterministic id allocator、`keep_content` unwrap、whitelist-validated XML replacement。|
-| v3.8.0 | 2026-04-24 | **頁首/頁尾 raw-element 保留 + counter-isolation flag**（closes [#52](https://github.com/PsychQuant/che-word-mcp/issues/52)）。|
-| v3.7.2 | 2026-04-24 | #42 verification 的 3-issue bundle（closes [#53](https://github.com/PsychQuant/che-word-mcp/issues/53)、[#54](https://github.com/PsychQuant/che-word-mcp/issues/54)、[#55](https://github.com/PsychQuant/che-word-mcp/issues/55) 路徑遊歷漏洞修補）。|
-| v3.7.1 | 2026-04-24 | `update_all_fields` 不再吃掉 headers/footers（closes [#42](https://github.com/PsychQuant/che-word-mcp/issues/42)）。|
-| v3.7.0 | 2026-04-24 | **插入崩潰防護 + autosave Design B**（closes [#40](https://github.com/PsychQuant/che-word-mcp/issues/40)、[#41](https://github.com/PsychQuant/che-word-mcp/issues/41)）。v3.6.0 shipped autosave_every Design A（mutation 後計數），無法在 crash on K（K%N≠0）保留 K-1 mutation。v3.7.0 切換到 **Design B**（snapshot 在每個 mutating handler 開始時觸發、在 mutation 執行前）；預設 `autosave_every` 從 `0` 翻成 `1`（每次 mutation 前 snapshot 上一個 state）。傳 `autosave_every: 0` 顯式關閉。**BREAKING（行為）**：依賴 Design A 語義或預設關閉的 caller。同時新增 Phase A `CHE_WORD_MCP_LOG_LEVEL=debug` 結構化 logging gate 供 #41 調查。基於 ooxml-swift 0.13.3，後者 kill 了 `DocxReader.concurrentPerform`（`recover_from_autosave` 必要的 parsing determinism）並把 `nextImageRelationshipId` 改用 rId allocator。**v3.6.0 遷移**：原本顯式傳 `autosave_every: 0` 的 code 不受影響；省略該 arg 的 code 現在會拿到 `1`（最安全）— 想恢復 v3.6.0 預設關閉行為請在 `open_document` 加 `autosave_every: 0`。 |
-| v3.6.0 | 2026-04-23 | **Autosave + checkpoint + recover_from_autosave**（closes [#37](https://github.com/PsychQuant/che-word-mcp/issues/37)）。`open_document` 加 `autosave_every: Int = 0` 參數；N > 0 時每 N 次 mutation 觸發 checkpoint 寫入 `<source>.autosave.docx`（分離檔案，**不**是 eager-save 到 source）。新增工具：`checkpoint(doc_id, path?)` 手動快照，`recover_from_autosave(doc_id, discard_changes?)` 把 in-memory state 取代成 autosave bytes。`get_session_state` 加 `autosave_detected` + `autosave_path` 欄位。`save_document` / `finalize_document` 成功後自動清掉 `<source>.autosave.docx`。Phase 4 of save-durability-stack SDD。|
-| v3.5.5 | 2026-04-23 | **`keep_bak` opt-in 提供 rollback escape hatch**（closes [#38](https://github.com/PsychQuant/che-word-mcp/issues/38)）。`save_document` 加可選 `keep_bak: Bool = false`；`true` 且 target 已存在時 server 在 atomic-rename save 之前把舊檔搬到 `<path>.bak`（單一槽，會覆蓋舊 `.bak`）。如果未來 release 帶進 silent OOXML damage，使用者可 `mv <path>.bak <path>` 還原。`.bak` 放在 server 層 NOT ooxml-swift，`macdoc` CLI 用戶不會被 `.bak` 副作用打擾。Phase 3 of save-durability-stack SDD。|
-| v3.5.4 | 2026-04-23 | **`class WordMCPServer` → `actor WordMCPServer`**（closes [#39](https://github.com/PsychQuant/che-word-mcp/issues/39)）。8 個 mutable session state dictionaries 變成 actor-isolated；compiler 強制每個 cross-actor 存取必須 `await`。消除 pre-v3.5.4 12 個並行 `insert_image_from_path` 觸發的 Dictionary hash table 腐壞 race condition。Phase 2 of save-durability-stack SDD。|
-| v3.5.3 | 2026-04-23 | **Atomic-rename save**（closes [#36](https://github.com/PsychQuant/che-word-mcp/issues/36)）。Bump 到 ooxml-swift 0.13.2，把 `DocxWriter.write` 重構為先寫 `<url>.tmp.<UUID>` + `fsync` + `replaceItemAt`。任何 throw 或 process kill 中途中斷都會留下原檔不變（POSIX `rename(2)` 同 volume 是 kernel-atomic；跨 volume 自動 fallback 到 copy+delete）。397/397 ooxml-swift tests pass；新增 concurrent-observer regression test。Phase 1 of save-durability-stack SDD。|
-| v3.5.2 | 2026-04-23 | **Rels overlay merge**（closes [#35](https://github.com/PsychQuant/che-word-mcp/issues/35)）— Reader-loaded document no-op `save_document` round-trip 後完整保留 theme / webSettings / people / customXml / commentsExtended / commentsIds rels。v3.5.0/v3.5.1 修了 parts 層；v3.5.2 修了 rels 層。無 che-word-mcp source 變更，修復全在 ooxml-swift v0.13.1（`RelationshipsOverlay` + relationship-driven `extractImages`）。|
-| v3.5.1 | 2026-04-23 | **Universal binary**（`x86_64 + arm64`）— 修復 Intel Mac 相容性。v3.5.0 release-build 漏跑 `lipo -create` 步驟導致只發 arm64。無 source 變更，drop-in replacement。|
-| v3.5.0 | 2026-04-23 | **True byte-preservation via dirty tracking**（closes [#23 round-2](https://github.com/PsychQuant/che-word-mcp/issues/23) + [#32](https://github.com/PsychQuant/che-word-mcp/issues/32) [#33](https://github.com/PsychQuant/che-word-mcp/issues/33) [#34](https://github.com/PsychQuant/che-word-mcp/issues/34))。Reader-loaded document no-op `save_document` round-trip 後完整保留 13 fontTable + 6 distinct headers + 4 footers + three-segment PAGE field + `<w15:presenceInfo>` identity。基於 ooxml-swift 0.13.0（`modifiedParts: Set<String>` + `Header.originalFileName` + overlay-mode skip-when-not-dirty）。`list_people` 回傳 dual identity：`person_id`（GUID, rename 跨版本穩定）+ `display_name_id`（= author legacy）。|
-| v3.4.0 | 2026-04-23 | **Phase 2B + 2C 合併**（closes #24 #25 #29 #30 #31）：comment threads（`list_comment_threads` / `get_comment_thread` / `sync_extended_comments`）、people（`list_people` / `add_person` / `update_person` / `delete_person`）、notes update（`get_endnote` / `update_endnote` / `get_footnote` / `update_footnote`，保留 note ID）、web settings（`get_web_settings` / `update_web_settings`）。13 個新 MCP 工具。|
-| v3.3.0 | 2026-04-23 | **Phase 2A**（closes #26 #27 #28）：theme tools（`get_theme` / `update_theme_fonts` / `update_theme_color` / `set_theme`）、headers（`list_headers` / `get_header` / `delete_header`）、watermarks（`list_watermarks` / `get_watermark`）、footers（`list_footers` / `get_footer` / `delete_footer`）。12 個新 MCP 工具。底層升級到 ooxml-swift 0.12.x（preserve-by-default round-trip 架構）。|
-| v3.2.0 | 2026-04-23 | **`insert_equation` LaTeX parser 委派給 `latex-math-swift`**（closes #22）。完整 LaTeX 子集：`\frac`、`\sqrt`、`\hat`/`\bar`/`\tilde`、`\left`/`\right`、`\sum`/`\int`/`\prod` 含 bound、`\ln`/`\sin`/`\cos`/`\tan`/`\log`/`\exp`/`\max`/`\min`/`\det`、`\sup`/`\inf`/`\lim`、`\text{}`、全部希臘字母（含 `\varepsilon` 變體）、常用運算子。18 個經濟學 fixture 公式現在全部能 parse。新增 `MathAccent`（透過 ooxml-swift 0.11.0）。|
-| v3.1.0 | 2026-04-22 | 9 個 readback 工具：Caption CRUD（`list_captions` / `get_caption` / `update_caption` / `delete_caption`）、`update_all_fields`（F9 等效 SEQ 重編號）、Equation CRUD（`list_equations` / `get_equation` / `update_equation` / `delete_equation`）。底層使用新的 ooxml-swift 0.10.0 `FieldParser` + `OMMLParser`。|
-| v3.0.0 | 2026-04-22 | **BREAKING**：session state API。新增 `get_session_state` / `revert_to_disk` / `reload_from_disk` / `check_disk_drift` 工具。`open_document` 的 track_changes 預設從 true 翻成 false。`close_document` 遇 dirty 文件改回傳 `E_DIRTY_DOC` 文字回應，列出三條復原路徑（`save_document` / `discard_changes: true` / `finalize_document`）。|
-| v2.3.0 | 2026-04-22 | Text-anchor 複合工具 — `insert_caption` / `insert_image_from_path` 支援 `after_text` / `before_text` / `text_instance`，省掉 `search_text + insert_*` 的兩段式流程（論文圖表 caption 工作流 RPC 減半）。|
-| v2.2.0 | 2026-04-22 | Batch API — `replace_text_batch`（依序執行、結尾單次儲存、`dry_run` / `stop_on_first_failure`）+ `search_text_batch`（多 query 聚合回應，支援 Direct + Session Mode）。|
-| v2.1.0 | 2026-04-22 | Expose v2.0.0 參數到 `inputSchema` — `insert_caption` / `insert_equation` / `insert_image_from_path` / `replace_text` 的 schema 公開新增的參數（中文標籤、`components`、`into_table_cell`、`scope`、`regex`）。|
-| v2.0.0 | 2026-04-22 | **BREAKING**：`word-mcp-insertion-primitives` Spectra change。真正的 OOXML SEQ 欄位（原本是寫死字串）、OMML `MathComponent` AST（原本字串替換）、圖片自動長寬比 + 表格儲存格目標、跨 run 安全的 `replace_text` 含 `scope` + regex 回溯引用。|
-| v1.19.0 | 2026-04-15 | 論文審閱 Markdown 匯出：`export_revision_summary_markdown` / `compare_documents_markdown` / `export_comment_threads_markdown`。**BREAKING**：`get_revisions` + `compare_documents` 的 `full_text` 參數換成 `summarize`（預設反轉）。|
-| v1.18.0 | 2026-04-14 | 修復 `get_revisions` 硬編 30 字元截斷（v1.2.0 以來的 bug）；新增 `full_text` opt-in。|
-| v1.17.0 | 2026-03-11 | Session 狀態管理：dirty tracking、autosave、`finalize_document`、`get_document_session_state`、shutdown flush（contributed by [@ildunari](https://github.com/ildunari)）|
-| v1.16.0 | 2026-03-10 | Dual-Mode：15 個唯讀工具支援 `source_path`（Direct Mode）；新增 MCP server instructions |
-| v1.15.2 | 2026-03-07 | 改善 `list_all_formatted_text` tool description，讓 LLM 更準確傳遞必要參數 |
-| v1.15.1 | 2026-03-01 | 修復 heading heuristic style fallback（從 style 繼承鏈解析 fontSize）|
-| v1.15.0 | 2026-03-01 | Practical Mode：EMF→PNG 自動轉換 + heading heuristic（無 Word 標題樣式時統計推斷）|
-| v1.14.0 | 2026-03-01 | 嵌入 `word-to-md-swift` library：不需外部 macdoc binary，恢復 `doc_id` 支援 |
-| v1.13.0 | 2026-03-01 | 升級 ooxml-swift 至 v0.5.0：多核心平行解析（大型文件 ~0.64s）|
-| v1.12.1 | 2026-03-01 | 升級 ooxml-swift 至 v0.4.0：大型文件效能修復（>30s → ~2.3s）|
-| v1.12.0 | 2026-02-28 | `export_markdown` 改用 `source_path`，移除 `doc_id`，加入 lock file 檢查 |
-| v1.11.1 | 2026-02-28 | 修復 `export_markdown` stdout 模式（pipe fsync 問題）|
-| v1.11.0 | 2026-02-28 | `export_markdown` 改為委託 `macdoc` CLI；移除 `word-to-md-swift` 依賴 |
-| v1.9.0 | 2026-02-28 | `export_markdown` 改用 `word-to-md-swift` 大幅提升 Markdown 輸出品質（共 145 個工具）|
-| v1.8.0 | 2026-02-03 | 移除硬性 diff 上限，新增 `max_results` 和 `heading_styles` 參數至 `compare_documents` |
-| v1.7.0 | 2026-02-03 | 新增 `compare_documents` 工具，Server 端文件比對（共 105 個工具）|
-| v1.2.1 | 2026-01-16 | 修復 MCP SDK 相容性（actor→class、新增 capabilities）|
-| v1.2.0 | 2026-01-16 | 新增 12 個工具（共 95 個）|
-| v1.1.0 | 2026-01-16 | 修復 MCPB manifest.json 格式 |
-| v1.0.0 | 2026-01-16 | 初始版本，83 個工具 |
+各版本的變更見 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 快速安裝
 
@@ -224,7 +173,7 @@ curl -o .claude/skills/che-word-mcp/SKILL.md \
 cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 ```
 
-## 可用工具（共 233 個）
+## 可用工具（共 248 個）
 
 ### 文件管理 (6 個)
 
@@ -237,7 +186,16 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `finalize_document` | 儲存並關閉（一步到位）|
 | `list_open_documents` | 列出所有已開啟的文件 |
 
-### Session State API (5 個，v3.0.0+)
+### 文件資訊與屬性 (4 個)
+
+| 工具 | 說明 |
+|------|------|
+| `get_document_info` | 取得文件資訊（段落數、字數、圖片等） |
+| `get_document_properties` | 取得文件屬性（標題、作者、建立日期等）（支援 Direct Mode） |
+| `set_document_properties` | 設定文件屬性（標題、作者、主旨、關鍵字等） |
+| `get_word_count_by_section` | 按區段統計字數，可自訂分隔標記（如 References）並排除特定區段（支援 Direct Mode） |
+
+### Session State API (7 個，v3.0.0+)
 
 | 工具 | 說明 |
 |------|------|
@@ -246,30 +204,59 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `revert_to_disk` | 重新讀取來源檔案，丟棄記憶體中的編輯（destructive by design）|
 | `reload_from_disk` | 協作式重載；dirty 文件需帶 `force: true` |
 | `check_disk_drift` | 僅回報狀態：`{ drifted, disk_mtime, stored_mtime, disk_hash_matches }` |
+| `checkpoint` | 把目前的 session 寫到 `<source>.autosave.docx`（或指定的 `path`），不清除 dirty 狀態 |
+| `recover_from_autosave` | 從 `<source>.autosave.docx` 還原 session（dirty session 要帶 `discard_changes: true`） |
 
-### 內容操作 (8 個)
+### 內容操作 (12 個)
 
 | 工具 | 說明 |
 |------|------|
 | `get_text` | 取得純文字內容 |
 | `get_paragraphs` | 取得所有段落（含格式資訊）|
+| `get_document_text` | 取得 .docx 檔案的完整純文字內容（get_text 的別名，Direct Mode, Tier 1） |
+| `get_paragraph_runs` | 取得指定段落的所有 runs（文字片段）及其格式資訊，包含顏色、粗體、斜體等 |
+| `get_text_with_formatting` | 取得文件文字，格式以 Markdown 記號標出（粗體、斜體、`{{color:red}}`） |
+| `estimate_paragraph_for_page` | 估算 Word UI 第 N 頁大約落在哪些 get_paragraphs 段落索引 |
 | `insert_paragraph` | 插入新段落 |
+| `insert_text` | 在指定段落的指定位置插入文字 |
 | `update_paragraph` | 更新段落內容 |
 | `delete_paragraph` | 刪除段落 |
 | `replace_text` | 跨 run 安全的搜尋取代，支援 `scope`（body\|all）+ `regex` + `$1..$N` 回溯引用 |
 | `replace_text_batch` | **v2.2.0** — 依序執行 N 次取代、結尾單次儲存、`dry_run` / `stop_on_first_failure` |
-| `search_text_batch` | **v2.2.0** — 多 query 聚合搜尋，支援 Direct + Session Mode |
 
-### 格式化 (3 個)
+### 搜尋 (5 個)
+
+| 工具 | 說明 |
+|------|------|
+| `search_text` | 在文件中搜尋指定文字，返回所有符合的位置（支援 Direct Mode） |
+| `search_text_batch` | **v2.2.0** — 多 query 聚合搜尋，支援 Direct + Session Mode |
+| `search_text_with_formatting` | 搜尋文字並返回匹配位置及其格式標記（粗體、斜體、顏色等） |
+| `search_by_formatting` | 搜尋具有特定格式的文字（如紅色、粗體） |
+| `list_all_formatted_text` | 列出所有具有特定格式的文字 |
+
+### 格式化 (4 個)
 
 | 工具 | 說明 |
 |------|------|
 | `format_text` | 設定文字格式（粗體、斜體、顏色、字型）|
 | `set_paragraph_format` | 設定段落格式（對齊、間距）|
 | `apply_style` | 套用內建或自訂樣式 |
+| `set_language` | 設定文字的校訂語言（用於拼字檢查）——尚未實作：回報成功但不寫入 |
 
-### 表格 (6 個)
+### 段落版面 (6 個)
 
+| 工具 | 說明 |
+|------|------|
+| `set_keep_with_next` | 設定段落與下一段同頁（避免分頁時分離） |
+| `set_keep_lines` | 設定段落不分頁（整個段落保持在同一頁） |
+| `set_page_break_before` | 設定段落前分頁（段落從新頁開始） |
+| `set_widow_orphan` | 設定段落避頭尾（孤行/寡行控制） |
+| `insert_tab_stop` | 在段落中設定定位點 |
+| `clear_tab_stops` | 清除段落的所有定位點 |
+
+### 表格 (21 個，**v3.11.0+ 擴充** [#49](https://github.com/PsychQuant/che-word-mcp/issues/49))
+
+基本 (6)：
 | 工具 | 說明 |
 |------|------|
 | `insert_table` | 插入表格（可含資料）|
@@ -279,8 +266,32 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `merge_cells` | 合併儲存格（水平或垂直）|
 | `set_table_style` | 設定表格邊框和底色 |
 
-### 樣式管理 (4 個)
+列、欄與儲存格 (10)：
+| 工具 | 說明 |
+|------|------|
+| `add_row_to_table` | 在表格中新增一列 |
+| `delete_row_from_table` | 從表格中刪除一列 |
+| `add_column_to_table` | 在表格中新增一欄 |
+| `delete_column_from_table` | 從表格中刪除一欄 |
+| `set_cell_width` | 設定表格儲存格寬度 |
+| `set_cell_vertical_alignment` | 設定表格儲存格的垂直對齊方式——尚未實作：回報成功但不寫入 |
+| `set_row_height` | 設定表格列高 |
+| `set_table_alignment` | 設定表格在頁面上的對齊方式——尚未實作：回報成功但不寫入 |
+| `get_cell_paragraphs` | 列出表格儲存格內的段落與 `paragraph_index`（支援 Direct Mode），供 `update_cell_paragraph` 定址 |
+| `update_cell_paragraph` | 只改寫儲存格內第 `paragraph_index` 個段落的文字，同格其他段落不動 |
 
+進階 (5，**v3.11.0**)：
+| 工具 | 說明 |
+|------|------|
+| `set_table_conditional_style` | 套用條件式格式（firstRow / lastRow / bandedRows 等 10 種區域）到表格的 tblStylePr |
+| `insert_nested_table` | 在指定 cell 內插入新表格（深度上限 5 層，超過會 throw nested_too_deep） |
+| `set_table_layout` | 切換表格版面配置（fixed = 固定欄寬 / autofit = 自動） |
+| `set_header_row` | 標記表格標題列（emit `<w:tblHeader/>`），跨頁分割時自動重複 |
+| `set_table_indent` | 設定表格左縮排（twips 單位，emit `<w:tblInd>`） |
+
+### 樣式管理 (8 個 + 6 個擴充參數，**v3.10.0+** [#48](https://github.com/PsychQuant/che-word-mcp/issues/48))
+
+基本 (4)：
 | 工具 | 說明 |
 |------|------|
 | `list_styles` | 列出所有可用樣式 |
@@ -288,16 +299,39 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `update_style` | 更新樣式定義 |
 | `delete_style` | 刪除自訂樣式 |
 
-### 清單 (3 個)
+繼承與連結 (4，**v3.10.0**)：
+| 工具 | 說明 |
+|------|------|
+| `get_style_inheritance_chain` | 回傳樣式繼承鏈（從查詢樣式向上沿 basedOn 至根） |
+| `link_styles` | 雙向連結 paragraph 與 character 樣式（emit `<w:link>`） |
+| `set_latent_styles` | 設定 `<w:latentStyles>` block — 控制 Quick Style Gallery 中內建樣式的可見性 |
+| `add_style_name_alias` | 為樣式加入本地化名稱別名（同 lang 已存在則替換） |
 
+### 編號與清單 (12 個，**v3.10.0+ 定義生命週期** [#46](https://github.com/PsychQuant/che-word-mcp/issues/46))
+
+建立清單 (4)：
 | 工具 | 說明 |
 |------|------|
 | `insert_bullet_list` | 插入項目符號清單 |
 | `insert_numbered_list` | 插入編號清單 |
 | `set_list_level` | 設定清單縮排層級 |
+| `set_outline_level` | 設定段落的大綱層級（用於生成目錄和導覽） |
 
-### 頁面設定 (5 個)
+編號定義 CRUD (8，**v3.10.0**)：
+| 工具 | 說明 |
+|------|------|
+| `list_numbering_definitions` | 列出 numbering.xml 所有 abstractNum + num 定義 |
+| `get_numbering_definition` | 依 numId 取得單一 numbering 定義（含 abstractNumId 與 levels） |
+| `create_numbering_definition` | 建立新的 abstractNum + 配對 num（最多 9 層），回傳新 numId |
+| `override_numbering_level` | 為 num 加 lvlOverride，覆寫指定 level 的起始值 |
+| `assign_numbering_to_paragraph` | 將 numId+level 指派到段落（emit `<w:numPr>`） |
+| `continue_list` | 延續既有 list — 將同一 num_id 指派給新段落 |
+| `start_new_list` | 從既有 abstractNum 建立新 num 並指派到段落，回傳新 numId |
+| `gc_orphan_numbering` | 刪除無段落引用的 num 定義（abstractNum 不會刪除），回傳被刪 num_id 陣列 |
 
+### 分節與頁面設定 (19 個，**v3.10.0+ 擴充** [#47](https://github.com/PsychQuant/che-word-mcp/issues/47))
+
+基本頁面設定 (12)：
 | 工具 | 說明 |
 |------|------|
 | `set_page_size` | 設定頁面大小（A4、Letter 等）|
@@ -305,10 +339,28 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `set_page_orientation` | 設定直向或橫向 |
 | `insert_page_break` | 插入分頁符號 |
 | `insert_section_break` | 插入分節符號 |
+| `get_section_properties` | 取得文件的節屬性（頁面設定等）（支援 Direct Mode） |
+| `insert_continuous_section_break` | 插入連續分節符（不換頁的分節） |
+| `insert_column_break` | 在指定段落插入分欄符號 |
+| `set_columns` | 設定文件最後一節的欄數（1–4）與欄距；`separator` 會接受但不會寫入 |
+| `set_line_numbers` | 設定文件行號顯示——尚未實作：回報成功但不寫入（請用 `set_line_numbers_for_section`） |
+| `set_page_borders` | 設定頁面邊框（四邊可獨立顯示/隱藏，樣式/顏色/粗細/起算位置四邊共用） |
+| `set_text_direction` | 設定段落或文件的文字方向（直書）——尚未實作：回報成功但不寫入 |
 
-### 頁首與頁尾 (13 個)
+分節屬性 (7，**v3.10.0**)：
+| 工具 | 說明 |
+|------|------|
+| `get_all_sections` | 回傳每個 section 的完整屬性摘要（page_size / margins / orientation / line_numbers / vertical_alignment / page_number_format / break_type / titlePg / header+footer refs） |
+| `set_section_break_type` | 切換分節符類型（emit `<w:type>`） |
+| `set_section_vertical_alignment` | 設定 section 內容垂直對齊（emit `<w:vAlign>`） |
+| `set_page_number_format` | 設定頁碼格式與起始值（emit `<w:pgNumType>`） |
+| `set_line_numbers_for_section` | 啟用 section 行號標記（emit `<w:lnNumType>`） |
+| `set_title_page_distinct` | 切換首頁獨立頁首頁尾（emit/移除 `<w:titlePg/>`） |
+| `set_section_header_footer_references` | 為 section 指派 default/first/even 類型的 header/footer rId |
 
-寫入工具 (5)：
+### 頁首、頁尾與浮水印 (20 個，**v3.11.0+ 奇偶頁與分節對應** [#51](https://github.com/PsychQuant/che-word-mcp/issues/51))
+
+寫入工具 (8)：
 | 工具 | 說明 |
 |------|------|
 | `add_header` | 新增頁首內容（v3.3.0+ 用 `RelationshipIdAllocator` — overlay mode 不會 rId 衝突）|
@@ -316,6 +368,9 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `add_footer` | 新增頁尾內容 |
 | `update_footer` | 更新頁尾內容 |
 | `insert_page_number` | 插入頁碼欄位 |
+| `insert_watermark` | 插入斜向文字浮水印，寫進每個 header part（沒有 header 時自動建立） |
+| `insert_image_watermark` | 插入置中的圖片浮水印（png、jpg、jpeg、gif、bmp、tif、tiff，上限 10MB），寫進每個 header part；新建的文件要先存檔一次 |
+| `remove_watermark` | 移除每個 header part 的文字與圖片浮水印（沒有浮水印時也回成功） |
 
 讀取與刪除工具 (8，**v3.3.0+**，closes #26 #27)：
 | 工具 | 說明 |
@@ -329,6 +384,14 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `get_footer` | 讀取文字 + XML + 解析後的 fields（PAGE / NUMPAGES / REF / STYLEREF）|
 | `delete_footer` | 與 delete_header 對稱 |
 
+奇偶頁與分節連結 (4，**v3.11.0**)：
+| 工具 | 說明 |
+|------|------|
+| `enable_even_odd_headers` | 切換文件級 `<w:evenAndOddHeaders/>` flag（settings.xml） |
+| `link_section_header_to_previous` | 讓 section 共用前一 section 的 header XML part（共用 rId） |
+| `unlink_section_header_from_previous` | 為 section 建立獨立 header XML part（複製當前共用的 part） |
+| `get_section_header_map` | 回傳每個 section 的 header / footer 檔案對應（哪個 section 用哪個 headerN.xml） |
+
 ### Theme 編輯 (4 個，**v3.3.0+**，closes #28)
 
 | 工具 | 說明 |
@@ -338,7 +401,7 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `update_theme_color` | 按 slot 名稱 hex color 更新（拒絕無效 slot + 非 6 字元 hex）|
 | `set_theme` | 低階 escape hatch — 完整覆寫 theme1.xml（驗證 `<a:theme>` 根 + well-formed XML）|
 
-### 圖片 (7 個)
+### 圖片 (9 個)
 
 | 工具 | 說明 |
 |------|------|
@@ -349,8 +412,10 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `delete_image` | 刪除圖片 |
 | `list_images` | 列出所有圖片 |
 | `set_image_style` | 設定圖片邊框和效果 |
+| `export_image` | 匯出單一圖片到檔案（會在內文、頁首頁尾與圖表的圖片中查找） |
+| `export_all_images` | 匯出所有圖片（內文、頁首頁尾、圖表）到目錄；同名檔案加上 `_2`、`_3` 等後綴 |
 
-### 圖表標題 (5 個)
+### 圖表標題 (6 個)
 
 | 工具 | 說明 |
 |------|------|
@@ -359,8 +424,9 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `get_caption` | **v3.1.0** — 單一 caption 詳細資訊（含 STYLEREF 抽出的 `chapter_number`）|
 | `update_caption` | **v3.1.0** — 修改 caption 文字或 label，不破壞 SEQ 欄位結構 |
 | `delete_caption` | **v3.1.0** — 移除 caption 段落 |
+| `wrap_caption_seq` | 把內文中符合 `pattern` 的圖表標號數字包成 SEQ 欄位 |
 
-### 公式 (5 個)
+### 公式 (8 個)
 
 | 工具 | 說明 |
 |------|------|
@@ -369,8 +435,11 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `get_equation` | **v3.1.0** — 單一公式詳細資訊，含 component 概要 |
 | `update_equation` | **v3.1.0** — 置換指定公式的 components tree |
 | `delete_equation` | **v3.1.0** — 移除公式 run 或空段落 |
+| `find_inline_math_gaps` | 掃描段落中疑似遺失 inline math symbol 的連續空白 gap，回傳位置與前後文（支援 Direct Mode） |
+| `splice_omath_from_source` | 從另一份文件的段落逐字拷貝一個 `<m:oMath>` 區塊 |
+| `splice_paragraph_omath_from_source` | 把來源段落的所有 `<m:oMath>` 區塊依序拷貝到目標段落的對應位置 |
 
-### 匯出 (5 個)
+### 匯出與比對 (6 個)
 
 | 工具 | 說明 |
 |------|------|
@@ -378,22 +447,42 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `export_markdown` | 匯出為 Markdown（內嵌 `word-to-md-swift`）|
 | `export_revision_summary_markdown` | **v1.19.0** — 單一文件的修訂時間軸（論文審閱）|
 | `compare_documents_markdown` | **v1.19.0** — 多文件累積修訂時間軸 |
+| `compare_documents` | 比對兩個 Word 文件的差異（段落層級），只回傳差異部分 |
 | `export_comment_threads_markdown` | **v1.19.0** — 註解對話串，含 author 別名正規化 |
 
-### 超連結與書籤 (6 個)
+### 腳本管線 (3 個)
 
+| 工具 | 說明 |
+|------|------|
+| `export_script` | docx → full-fidelity .mdocx.swift 重建腳本（與 macdoc word reverse 同一條 transcoder code path：raw byte-equal floor + typed DSL 升級） |
+| `get_script_coverage` | docx 的 dual-track 覆蓋率報告（與 macdoc word reverse --coverage 同數字）：每個 XML part 的 DSL/raw channel、位元組數、DSL ratio，加 aggregate |
+| `execute_script` | `.mdocx.swift` 重建腳本 → docx；`output_path` 已存在時預設拒絕，要帶 `overwrite: true`；可選擇對照參考檔做 byte-equal 驗證 |
+
+### 超連結與書籤 (12 個，**v3.11.0+ 分型變體** [#50](https://github.com/PsychQuant/che-word-mcp/issues/50))
+
+一般與書籤 (9)：
 | 工具 | 說明 |
 |------|------|
 | `insert_hyperlink` | 插入外部超連結 |
 | `insert_internal_link` | 插入連結至書籤 |
+| `insert_cross_reference` | 插入交互參照——尚未實作：回報成功但不寫入 |
 | `update_hyperlink` | 更新超連結 |
 | `delete_hyperlink` | 刪除超連結 |
+| `list_hyperlinks` | 列出文件中所有的超連結（支援 Direct Mode） |
 | `insert_bookmark` | 插入書籤 |
 | `delete_bookmark` | 刪除書籤 |
+| `list_bookmarks` | 列出文件中所有的書籤（支援 Direct Mode） |
 
-### 註解與修訂 (13 個)
+分型超連結 (3，**v3.11.0**，自動建立 Hyperlink 字元樣式)：
+| 工具 | 說明 |
+|------|------|
+| `insert_url_hyperlink` | 插入外部 URL 連結（自動建立 Hyperlink character style 若不存在） |
+| `insert_bookmark_hyperlink` | 插入內部書籤連結（emit w:anchor，無 r:id） |
+| `insert_email_hyperlink` | 插入 mailto: 連結（自動 URL-encode subject） |
 
-註解寫入與讀取 (7)：
+### 註解與修訂 (22 個)
+
+註解寫入與讀取 (10)：
 | 工具 | 說明 |
 |------|------|
 | `insert_comment` | 插入註解 |
@@ -402,6 +491,9 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `list_comments` | 列出所有註解 |
 | `reply_to_comment` | 回覆現有註解 |
 | `resolve_comment` | 標記註解為已解決 |
+| `add_comment_reply` | 回覆 thread root 註解，可用 template/vars，並可在同一次呼叫標記 resolved |
+| `bulk_resolve_comments` | 批次標記多個註解為 resolved |
+| `find_unresolved_comments` | 列出尚未 resolved 的頂層註解（支援 Direct Mode，可包含 anchor context） |
 | `list_comment_threads` | **v3.4.0** — 列舉 thread 結構（root_comment_id + replies + resolved + durable_id），用 typed `Comment.parentId`（從 `commentsExtended.xml` 解析）|
 
 註解 thread 工具 (2，**v3.4.0+**，closes #29)：
@@ -410,13 +502,23 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `get_comment_thread` | 讀取 root + 走遍 children 建構完整 reply tree |
 | `sync_extended_comments` | 回報 typed comment count，用於 triplet sync 規劃 |
 
-修訂追蹤 (4)：
+修訂追蹤——接受與拒絕 (7)：
 | 工具 | 說明 |
 |------|------|
 | `enable_track_changes` | 啟用追蹤修訂 |
 | `disable_track_changes` | 停用追蹤修訂 |
+| `get_revisions` | 取得文件中所有的修訂追蹤記錄 |
 | `accept_revision` | 接受修訂 |
 | `reject_revision` | 拒絕修訂 |
+| `accept_all_revisions` | 接受文件中所有的修訂 |
+| `reject_all_revisions` | 拒絕文件中所有的修訂 |
+
+修訂追蹤——以程式寫入 (3，**v3.12.0** [#45](https://github.com/PsychQuant/che-word-mcp/issues/45))：
+| 工具 | 說明 |
+|------|------|
+| `insert_text_as_revision` | 在指定段落位置插入文字並包覆 `<w:ins>` 修訂標記（需先 enable_track_changes） |
+| `delete_text_as_revision` | 刪除指定段落 [start, end) 範圍的文字並包覆 `<w:del>` 修訂標記（需先 enable_track_changes） |
+| `move_text_as_revision` | 將文字從來源段落 [from_start, from_end) 移到目標段落 to_position，產生成對的 `<w:moveFrom>`/`<w:moveTo>` 修訂（需先 enable_track_changes） |
 
 ### People — 註解作者 (4 個，**v3.4.0+**，closes #30)
 
@@ -454,7 +556,7 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `get_web_settings` | 解析 `word/webSettings.xml` 旗標元素（`relyOnVML` / `optimizeForBrowser` / `allowPNG` / `doNotSaveAsSingleFile`）；無 part 時回 `{ error: "no webSettings part" }` |
 | `update_web_settings` | 按 key 部分更新；不存在則 auto-create part |
 
-### 欄位代碼 (8 個)
+### 欄位代碼 (7 個)
 
 | 工具 | 說明 |
 |------|------|
@@ -464,29 +566,69 @@ cp -r /path/to/che-word-mcp/skills/che-word-mcp .claude/skills/
 | `insert_page_field` | 插入頁碼欄位 |
 | `insert_merge_field` | 插入合併列印欄位 |
 | `insert_sequence_field` | 插入自動編號序列 |
-| `insert_content_control` | 插入 SDT 內容控制項 |
 | `update_all_fields` | **v3.1.0** — F9 等效的 SEQ 重編號，涵蓋 body + headers + footers + footnotes + endnotes。當 `pStyle=="Heading N"` 匹配 SEQ `resetLevel` 時支援章節重置 |
 
-### 重複區段 (1 個)
+### 內容控制項（SDT） (13 個，**v3.9.0+ 完整讀寫** [#44](https://github.com/PsychQuant/che-word-mcp/issues/44))
+
+插入與表單輔助 (5)：
+| 工具 | 說明 |
+|------|------|
+| `insert_content_control` | 插入 SDT 內容控制項 |
+| `insert_repeating_section` | 插入重複區段（Word 2012+）|
+| `insert_checkbox` | 插入表單核取方塊 |
+| `insert_dropdown` | 插入表單下拉選單 |
+| `insert_text_field` | 插入表單文字欄位 |
+
+讀取工具 (4)：
+| 工具 | 說明 |
+|------|------|
+| `list_content_controls` | 列出文件中所有的內容控制項（SDT），支援巢狀展開 |
+| `get_content_control` | 依 id / tag / alias 取得單一內容控制項，含完整 metadata 與內容 XML |
+| `list_repeating_section_items` | 列出指定重複區段 SDT 內所有項目（順序、id、文字內容） |
+| `list_custom_xml_parts` | 列出文件的 CustomXml parts——尚未實作，目前一律回傳空陣列 |
+
+修改工具 (4)：
+| 工具 | 說明 |
+|------|------|
+| `update_content_control_text` | 修改純文字 SDT 的文字內容（保留 sdtPr） |
+| `replace_content_control_content` | 替換 SDT 的完整 sdtContent XML（白名單：禁止 w:sdt / w:body / w:sectPr / XML 宣告） |
+| `delete_content_control` | 刪除指定 SDT，可選擇是否保留內容 |
+| `update_repeating_section_item` | 修改重複區段內單一項目的文字內容 |
+
+### 表單整理 (2 個)
 
 | 工具 | 說明 |
 |------|------|
-| `insert_repeating_section` | 插入重複區段（Word 2012+）|
+| `classify_form` | 列出 .docx 表單裡帶 `w14:paraId` 的段落（paraId、類型、全文），供 `apply_form` 點名（讀磁碟上的檔案） |
+| `apply_form` | 整理已填寫的 .docx 表單（與 `macdoc word form apply` 同一個函式庫），結果寫到 `output_path` |
 
-### 進階功能 (8 個)
+### 文件保護 (5 個)
+
+| 工具 | 說明 |
+|------|------|
+| `restrict_editing_region` | 在 `[start_paragraph, end_paragraph]` 前後寫入 `<w:permStart>`／`<w:permEnd>`，標出可編輯區域（`start_paragraph` 須 ≥ 1）；文件本身沒有受保護時不會限制任何編輯（`protect_document` 尚未實作，#172） |
+| `protect_document` | 設定文件保護（限制編輯、唯讀）——尚未實作，呼叫會回 isError（#172） |
+| `unprotect_document` | 移除文件保護——尚未實作，呼叫會回 isError（#172） |
+| `set_document_password` | 設定文件開啟密碼——尚未實作，呼叫會回 isError（開啟密碼是容器層級的加密，不在 OOXML 範圍內，#172） |
+| `remove_document_password` | 移除文件開啟密碼——尚未實作，呼叫會回 isError（#172） |
+
+### 進階功能 (11 個)
 
 | 工具 | 說明 |
 |------|------|
 | `insert_toc` | 插入目錄 |
-| `insert_text_field` | 插入表單文字欄位 |
-| `insert_checkbox` | 插入表單核取方塊 |
-| `insert_dropdown` | 插入表單下拉選單 |
+| `insert_table_of_figures` | 插入圖表目錄 |
+| `insert_index` | 插入索引（根據已標記的索引項目） |
+| `insert_index_entry` | 標記文字為索引項目——尚未實作：回報成功但不寫入 |
 | `set_paragraph_border` | 設定段落邊框 |
 | `set_paragraph_shading` | 設定段落背景色 |
 | `set_character_spacing` | 設定字元間距 |
 | `set_text_effect` | 設定文字動畫效果 |
+| `insert_horizontal_line` | 在指定段落插入水平線（段落邊框方式） |
+| `insert_drop_cap` | 將段落首字放大（首字下沉效果） |
+| `insert_symbol` | 在指定段落插入特殊符號（使用字型符號或 Unicode） |
 
-> **備註**：上述分類涵蓋主要工具。截至 v3.13.5 總工具面共 **233 個**，包含 Content Controls (SDT)、Styles + Numbering + Sections (v3.10.0+)、Tables + Hyperlinks + Headers extensions (v3.11.0+)、Programmatic Track Changes (v3.12.0+)、Document Comparison、Revision Tracking、Field Codes、Theme Editing、Header/Footer CRUD + Watermark read（寫側未實作，見 #201／#208）、Comment Threads + People、Notes Update、Web Settings、Formatting 等其他專門工具。啟動 server 後呼叫 `tools/list` 可取得完整清單。
+> **備註**：上面的表列出 server 註冊的全部工具；新增或移除工具卻沒有更新這些表時，`Issue306ToolCountDocsTests` 會讓 `swift test` 失敗。每個工具完整的說明與參數，執行 server 後呼叫 `tools/list` 查看。
 
 ## 使用範例
 
@@ -572,7 +714,7 @@ document.docx (ZIP)
 | 需要 Word | 是 | 否 | 否 | **否** |
 | 執行環境 | Node.js | Python | Node.js | **無** |
 | 單一執行檔 | 否 | 否 | 否 | **是** |
-| 工具數量 | ~10 | N/A | N/A | **233** |
+| 工具數量 | ~10 | N/A | N/A | **248** |
 | 圖片支援 | 有限 | 是 | 是 | **是** |
 | 註解 | 否 | 有限 | 有限 | **是** |
 | 追蹤修訂 | 否 | 否 | 否 | **是** |
