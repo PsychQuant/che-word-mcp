@@ -700,19 +700,23 @@ final class ScriptPipelineParityTests: XCTestCase {
                      "no CLI-side version declared → no alignment claim, no skip reason")
     }
 
-    func testSkipReasonNamesBothVersionsOnMismatch() {
-        let mcpVersion = try! XCTUnwrap(Self.resolvedOOXMLSwiftVersion())
+    // `throws` + `try`, not `try!`: XCTUnwrap reports a nil value by throwing,
+    // and `try!` turns that into a process trap that takes every later test
+    // down with it (#283 — happens whenever the ooxml-swift pin is missing,
+    // e.g. under `swift package edit`).
+    func testSkipReasonNamesBothVersionsOnMismatch() throws {
+        let mcpVersion = try XCTUnwrap(Self.resolvedOOXMLSwiftVersion())
         setenv("MACDOC_CLI_OOXML_SWIFT_VERSION", "0.0.1-definitely-not-\(mcpVersion)", 1)
         addTeardownBlock { unsetenv("MACDOC_CLI_OOXML_SWIFT_VERSION") }
         let reason = Self.skipReasonForOOXMLVersionMismatch()
-        let unwrapped = try! XCTUnwrap(reason)
+        let unwrapped = try XCTUnwrap(reason)
         XCTAssertTrue(unwrapped.contains(mcpVersion), "reason must name the MCP-side version: \(unwrapped)")
         XCTAssertTrue(unwrapped.contains("0.0.1-definitely-not-\(mcpVersion)"),
                       "reason must name the declared CLI-side version: \(unwrapped)")
     }
 
-    func testSkipReasonIsNilWhenBothVersionsAgree() {
-        let mcpVersion = try! XCTUnwrap(Self.resolvedOOXMLSwiftVersion())
+    func testSkipReasonIsNilWhenBothVersionsAgree() throws {
+        let mcpVersion = try XCTUnwrap(Self.resolvedOOXMLSwiftVersion())
         setenv("MACDOC_CLI_OOXML_SWIFT_VERSION", mcpVersion, 1)
         addTeardownBlock { unsetenv("MACDOC_CLI_OOXML_SWIFT_VERSION") }
         XCTAssertNil(Self.skipReasonForOOXMLVersionMismatch(),
